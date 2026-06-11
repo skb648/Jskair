@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Navy background circle -->
+    <path
+        android:fillColor="#161B22"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0"/>
+    <!-- Electric Blue ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2F81F7"
+        android:strokeWidth="3"
+        android:pathData="M54,54m-32,0a32,32 0,1 1,64 0a32,32 0,1 1,-64 0"/>
+    <!-- Hand outline - simplified open palm silhouette -->
+    <path
+        android:fillColor="#2F81F7"
+        android:pathData="M54,36c-1,0 -2,1 -2,2v12l-0.5,-10c-0.1,-1 -1,-2 -2,-1.9c-1,0.1 -1.8,1 -1.7,2l0.5,10.4l-1,-9.5c-0.1,-1 -1,-1.8 -2,-1.7c-1,0.1 -1.8,1 -1.7,2l1.2,10l-0.8,-7.5c-0.1,-1 -1,-1.7 -2,-1.6c-1,0.1 -1.7,1 -1.6,2l1.5,13c0,4 3,8 8,10l0,4c0,1 1,2 2,2l4,0c1,0 2,-1 2,-2l0,-4c5,-2 8,-6 8,-10l1.2,-8.5c0.1,-1 -0.6,-1.9 -1.6,-2c-1,-0.1 -1.9,0.6 -2,1.6l-0.8,7.5l1.2,-10c0.1,-1 -0.6,-1.9 -1.7,-2c-1,-0.1 -1.9,0.6 -2,1.7l-1,9.5l0.5,-10.4c0.1,-1 -0.7,-1.9 -1.7,-2c-1,-0.1 -1.9,0.8 -2,1.9l-0.5,10v-12c0,-1 -1,-2 -2,-2z"/>
+</vector>

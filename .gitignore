@@ -1,0 +1,44 @@
+# AirControl - .gitignore
+
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Java/Kotlin class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+
+# Gradle files
+.gradle/
+build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+.navigation/
+captures/
+
+# Keystore / Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Log files
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Ktlint
+reports/
+
+# CI
+.gitlab-ci.yml.bak

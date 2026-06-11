@@ -1,0 +1,27 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_size = 4
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ij_kotlin_imports_layout = *,java.**,javax.**,kotlin.**,kotlinx.**,androidx.**,com.android.**,com.google.**
+ij_kotlin_packages_to_use_import_on_demand = unset
+
+[*.xml]
+indent_size = 4
+
+[*.toml]
+indent_size = 2
+
+[*.properties]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

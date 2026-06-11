@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirControl</string>
+
+    <!-- Navigation -->
+    <string name="route_home">Home</string>
+    <string name="route_onboarding">Onboarding</string>
+    <string name="route_gesture_map">Gesture Map</string>
+    <string name="route_settings">Settings</string>
+    <string name="route_calibration">Calibration</string>
+
+    <!-- Home -->
+    <string name="home_title">AirControl</string>
+    <string name="home_subtitle">Air gesture control for your device</string>
+    <string name="home_status_active">Active</string>
+    <string name="home_status_inactive">Inactive</string>
+    <string name="home_status_paused">Paused</string>
+    <string name="home_enable_gestures">Enable Gestures</string>
+    <string name="home_disable_gestures">Disable Gestures</string>
+    <string name="home_open_settings">Settings</string>
+    <string name="home_open_calibration">Calibrate</string>
+    <string name="home_view_gesture_map">Gesture Map</string>
+    <string name="home_gestures_executed">Gestures</string>
+    <string name="home_uptime">Uptime</string>
+    <string name="home_hand_detected">Hand detected</string>
+    <string name="home_no_hand">No hand detected</string>
+    <string name="home_cursor_mode">Cursor</string>
+    <string name="home_haptics">Haptics</string>
+    <string name="home_battery_saver">Saver</string>
+
+    <!-- Home - Permission Warnings -->
+    <string name="home_warning_camera_title">Camera permission required</string>
+    <string name="home_warning_camera_message">AirControl needs camera access to detect hand gestures. Without it, gesture tracking cannot function.</string>
+    <string name="home_warning_accessibility_title">Accessibility permission required</string>
+    <string name="home_warning_accessibility_message">Accessibility enables system-wide gesture control. Without it, AirControl cannot interact with other apps.</string>
+    <string name="home_warning_overlay_title">Overlay permission required</string>
+    <string name="home_warning_overlay_message">Overlay permission allows AirControl to display the cursor and visual feedback over other apps.</string>
+    <string name="home_warning_fix_button">Fix Now</string>
+    <string name="home_warning_rerun_button">Re-run Setup</string>
+
+    <!-- Onboarding - Common -->
+    <string name="onboarding_back">Back</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_get_started">Get Started</string>
+    <string name="onboarding_permission_granted">Granted</string>
+    <string name="onboarding_open_settings">Open Settings</string>
+    <string name="onboarding_page_indicator_desc">Step %1$d of %2$d</string>
+
+    <!-- Onboarding - Step 1: Welcome -->
+    <string name="onboarding_welcome_title">Welcome to AirControl</string>
+    <string name="onboarding_welcome_subtitle">Control your device with intuitive air gestures — no touch required</string>
+    <string name="onboarding_hand_wave_desc">Animated hand wave illustration</string>
+
+    <!-- Onboarding - Step 2: Camera -->
+    <string name="onboarding_camera_title">Camera Access</string>
+    <string name="onboarding_camera_rationale">AirControl uses your front camera to track hand movements and recognize gestures in real time. Your camera feed is processed entirely on-device and never recorded or transmitted.</string>
+    <string name="onboarding_camera_button">Allow Camera</string>
+    <string name="onboarding_camera_button_desc">Request camera permission for hand tracking</string>
+    <string name="onboarding_camera_denied">Camera permission was denied. You can enable it in Settings.</string>
+
+    <!-- Onboarding - Step 3: Accessibility -->
+    <string name="onboarding_accessibility_title">Accessibility Service</string>
+    <string name="onboarding_accessibility_rationale">Accessibility allows AirControl to perform actions like taps, swipes, and navigation on your behalf based on detected gestures.</string>
+    <string name="onboarding_accessibility_guide">After tapping the button, find AirControl in the list, enable the service, and return here.</string>
+    <string name="onboarding_accessibility_button">Open Accessibility Settings</string>
+    <string name="onboarding_accessibility_button_desc">Open accessibility settings to enable AirControl service</string>
+
+    <!-- Onboarding - Step 4: Overlay -->
+    <string name="onboarding_overlay_title">Display Over Apps</string>
+    <string name="onboarding_overlay_rationale">To show the cursor and gesture feedback while you use other apps, AirControl needs permission to draw over other applications.</string>
+    <string name="onboarding_overlay_button">Allow Overlay</string>
+    <string name="onboarding_overlay_button_desc">Open overlay permission settings for AirControl</string>
+
+    <!-- Gesture Map -->
+    <string name="gesture_map_title">Gesture Map</string>
+    <string name="gesture_map_description">Tap any gesture to remap its action</string>
+    <string name="gesture_map_swipe_left">Swipe Left</string>
+    <string name="gesture_map_swipe_right">Swipe Right</string>
+    <string name="gesture_map_swipe_up">Swipe Up</string>
+    <string name="gesture_map_swipe_down">Swipe Down</string>
+    <string name="gesture_map_pinch">Pinch</string>
+    <string name="gesture_map_fist">Fist</string>
+    <string name="gesture_map_open_palm">Open Palm</string>
+    <string name="gesture_map_pointing">Pointing</string>
+    <string name="gesture_map_victory">Victory</string>
+    <string name="gesture_map_thumb_up">Thumb Up</string>
+    <string name="gesture_map_thumb_down">Thumb Down</string>
+    <string name="gesture_map_select_action">Choose what this gesture does</string>
+    <string name="gesture_map_conflict_title">Conflict detected</string>
+    <string name="gesture_map_conflict_message">\"%1$s\" is already mapped to %2$s</string>
+    <string name="gesture_map_swap">Swap</string>
+    <string name="gesture_map_cancel">Cancel</string>
+    <string name="gesture_map_reset">Reset</string>
+    <string name="gesture_map_reset_snackbar">Gesture map reset to defaults</string>
+    <string name="gesture_map_undo">Undo</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_gestures_enabled">Gestures Enabled</string>
+    <string name="settings_sensitivity">Sensitivity</string>
+    <string name="settings_hand_preference">Hand Preference</string>
+    <string name="settings_analysis_fps">Analysis FPS</string>
+    <string name="settings_analysis_fps_value">%d FPS</string>
+    <string name="settings_cursor_enabled">Cursor Enabled</string>
+    <string name="settings_haptic_feedback">Haptic Feedback</string>
+    <string name="settings_cursor_speed">Cursor Speed</string>
+    <string name="settings_hold_duration">Hold Duration</string>
+    <string name="settings_battery_saver">Battery Saver</string>
+    <string name="settings_start_on_boot">Start on Boot</string>
+    <string name="settings_status_pill">Status Pill</string>
+    <string name="settings_hand_left">Left</string>
+    <string name="settings_hand_right">Right</string>
+    <string name="settings_hand_any">Any</string>
+    <string name="settings_about">About</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_privacy_note">All processing happens on-device. No camera data is recorded, transmitted, or stored. AirControl never requires network access.</string>
+    <string name="settings_licenses">Open Source Licenses</string>
+    <string name="settings_licenses_detail">This app uses MediaPipe, CameraX, Hilt, Compose, Kotlin Coroutines, and other open-source libraries.</string>
+
+    <!-- Calibration -->
+    <string name="calibration_title">Calibration</string>
+    <string name="calibration_intro_title">Calibrate Your Hand</string>
+    <string name="calibration_intro_description">We\'ll measure your hand size and pinch distance to personalize gesture recognition. This takes about 30 seconds.</string>
+    <string name="calibration_start">Start Calibration</string>
+    <string name="calibration_skip">Skip for now</string>
+    <string name="calibration_palm_detect">Hold your open palm in front of the camera</string>
+    <string name="calibration_hand_detected">Hand detected!</string>
+    <string name="calibration_proceed">Proceed</string>
+    <string name="calibration_measuring">Measuring your hand…</string>
+    <string name="calibration_measuring_hint">Keep your hand steady with fingers spread</string>
+    <string name="calibration_progress">%1$d%% complete</string>
+    <string name="calibration_test_title">Test Your Gestures</string>
+    <string name="calibration_test_description">Perform 3 gestures to verify recognition</string>
+    <string name="calibration_test_open_palm">Open Palm</string>
+    <string name="calibration_test_fist">Fist</string>
+    <string name="calibration_test_pinch">Pinch</string>
+    <string name="calibration_complete">Calibration Complete</string>
+    <string name="calibration_complete_hint">Your personal thresholds have been saved. You can re-run calibration anytime from Settings.</string>
+    <string name="calibration_simulate_complete">Simulate Complete</string>
+    <string name="calibration_hand_size">Hand Size</string>
+    <string name="calibration_pinch_distance">Pinch Distance</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_name">Hand Tracking</string>
+    <string name="notification_channel_description">Controls for the hand tracking foreground service</string>
+    <string name="notification_title">AirControl Tracking</string>
+    <string name="notification_text_active">Hand tracking is active</string>
+    <string name="notification_text_paused">Hand tracking is paused</string>
+    <string name="notification_action_pause">Pause</string>
+    <string name="notification_action_resume">Resume</string>
+    <string name="notification_action_stop">Stop</string>
+    <string name="notification_text_thermal">Paused — device is overheating</string>
+    <string name="thermal_severe_notification">AirControl paused: Device is overheating. Tracking will resume when it cools down.</string>
+
+    <!-- Debug Screen -->
+    <string name="debug_title">Debug</string>
+    <string name="debug_fps_label">FPS: %d</string>
+    <string name="debug_target_fps_label">Target: %d</string>
+    <string name="debug_hand_detected">Hand: Detected</string>
+    <string name="debug_no_hand">Hand: None</string>
+    <string name="debug_confidence_label">Conf: %d%%</string>
+    <string name="debug_skeleton_desc">Hand skeleton overlay showing 21 landmarks and bone connections</string>
+    <string name="debug_camera_preview_desc">Live camera preview with hand tracking skeleton overlay</string>
+    <string name="debug_engine_state_label">State: %s</string>
+    <string name="debug_pose_label">Pose: %s</string>
+    <string name="debug_gesture_label_desc">Currently recognized gesture name</string>
+
+    <!-- Common -->
+    <string name="content_description_navigate_back">Navigate back</string>
+    <string name="content_description_settings">Settings</string>
+    <string name="content_description_calibration">Calibration</string>
+    <string name="content_description_power_button">Power toggle for gesture control</string>
+    <string name="content_description_hand_presence">Hand presence indicator</string>
+
+    <!-- Accessibility Service -->
+    <string name="accessibility_service_description">AirControl uses accessibility to perform gestures on your behalf based on hand tracking. This allows scrolling, navigation, and cursor control without touching the screen. No window content is read.</string>
+</resources>

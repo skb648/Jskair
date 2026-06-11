@@ -1,0 +1,109 @@
+# AirControl GitLab CI Pipeline
+# Requirements: GitLab Runner with Android SDK 35, Java 17
+
+image: eclipse-temurin:17-jdk
+
+variables:
+  ANDROID_COMPILE_SDK: "35"
+  ANDROID_BUILD_TOOLS: "35.0.1"
+  ANDROID_SDK_TOOLS: "11076708"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
+  ANDROID_HOME: "/opt/android-sdk"
+
+stages:
+  - lint
+  - test
+  - build
+  - instrumented
+
+before_script:
+  - apt-get --quiet update --yes
+  - apt-get --quiet install --yes wget unzip
+  - install -d $ANDROID_HOME
+  - wget --output-document=$ANDROID_HOME/commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_SDK_TOOLS}_latest.zip
+  - pushd $ANDROID_HOME
+  - unzip -d cmdline-tools commandlinetools.zip
+  - pushd cmdline-tools
+  - mv cmdline-tools latest
+  - popd
+  - popd
+  - export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools/
+  - sdkmanager --version
+  - yes | sdkmanager --licenses > /dev/null || true
+  - sdkmanager "platforms;android-${ANDROID_COMPILE_SDK}"
+  - sdkmanager "build-tools;${ANDROID_BUILD_TOOLS}"
+  - sdkmanager "platform-tools"
+  - chmod +x ./gradlew
+
+# ========== Lint ==========
+
+ktlint:
+  stage: lint
+  script:
+    - ./gradlew ktlintCheck || true  # Add ktlint plugin first
+    - ./gradlew lintDebug
+  artifacts:
+    reports:
+      android_lint: app/build/reports/lint-results-debug.xml
+    expire_in: 1 week
+  only:
+    - merge_requests
+    - main
+    - develop
+
+# ========== Unit Tests ==========
+
+unit-tests:
+  stage: test
+  script:
+    - ./gradlew testDebugUnitTest --info
+    - ./gradlew :gesture-engine:test --info
+  artifacts:
+    reports:
+      junit:
+        - app/build/test-results/testDebugUnitTest/*.xml
+        - gesture-engine/build/test-results/test/*.xml
+    expire_in: 1 week
+  coverage: '/Line coverage: \d+\.\d+%/'
+
+# ========== Build ==========
+
+assemble-release:
+  stage: build
+  script:
+    - ./gradlew assembleRelease --info
+  artifacts:
+    paths:
+      - app/build/outputs/apk/release/app-release.apk
+    expire_in: 1 month
+  only:
+    - main
+    - tags
+
+assemble-debug:
+  stage: build
+  script:
+    - ./gradlew assembleDebug --info
+  artifacts:
+    paths:
+      - app/build/outputs/apk/debug/app-debug.apk
+    expire_in: 1 week
+
+# ========== Instrumented Tests ==========
+
+instrumented-tests:
+  stage: instrumented
+  image: reactivecircus/android-emulator-runner:2.0.0
+  tags:
+    - android-emulator
+  script:
+    - adb devices
+    - ./gradlew connectedDebugAndroidTest --info
+  artifacts:
+    reports:
+      junit: app/build/reports/androidTests/connected/flavors/debug/*.xml
+    expire_in: 1 week
+  only:
+    - main
+    - merge_requests
+  when: manual  # Run manually to avoid burning emulator credits on every commit
