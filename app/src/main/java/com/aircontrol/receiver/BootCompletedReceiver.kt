@@ -31,40 +31,45 @@ class BootCompletedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
+        val pendingResult = goAsync()
         Timber.i("Boot completed received, checking if auto-start is required")
 
         scope.launch {
-            val prefs = settingsRepository.userPreferences.first()
+            try {
+                val prefs = settingsRepository.userPreferences.first()
 
-            if (!prefs.startOnBoot) {
-                Timber.d("Start on boot is disabled, skipping auto-start")
-                return@launch
+                if (!prefs.startOnBoot) {
+                    Timber.d("Start on boot is disabled, skipping auto-start")
+                    return@launch
+                }
+
+                if (!prefs.gesturesEnabled) {
+                    Timber.d("Gestures were not enabled before reboot, skipping auto-start")
+                    return@launch
+                }
+
+                // Refresh and check permissions
+                permissionsManager.refreshAllPermissions()
+                val permStates = permissionsManager.permissionStates.first()
+
+                if (!permStates.allGranted) {
+                    Timber.w(
+                        "Cannot auto-start: missing permissions camera=%s a11y=%s overlay=%s",
+                        permStates.cameraGranted,
+                        permStates.accessibilityGranted,
+                        permStates.overlayGranted,
+                    )
+                    return@launch
+                }
+
+                Timber.i("All conditions met, starting camera service on boot")
+                val serviceIntent = Intent(context, CameraService::class.java).apply {
+                    action = CameraService.ACTION_START
+                }
+                context.startForegroundService(serviceIntent)
+            } finally {
+                pendingResult.finish()
             }
-
-            if (!prefs.gesturesEnabled) {
-                Timber.d("Gestures were not enabled before reboot, skipping auto-start")
-                return@launch
-            }
-
-            // Refresh and check permissions
-            permissionsManager.refreshAllPermissions()
-            val permStates = permissionsManager.permissionStates.first()
-
-            if (!permStates.allGranted) {
-                Timber.w(
-                    "Cannot auto-start: missing permissions camera=%s a11y=%s overlay=%s",
-                    permStates.cameraGranted,
-                    permStates.accessibilityGranted,
-                    permStates.overlayGranted,
-                )
-                return@launch
-            }
-
-            Timber.i("All conditions met, starting camera service on boot")
-            val serviceIntent = Intent(context, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
-            }
-            context.startForegroundService(serviceIntent)
         }
     }
 }

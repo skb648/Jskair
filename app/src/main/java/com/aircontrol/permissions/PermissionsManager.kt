@@ -21,15 +21,16 @@ import javax.inject.Singleton
 data class PermissionStates(
     val cameraGranted: Boolean = false,
     val accessibilityGranted: Boolean = false,
-    val overlayGranted: Boolean = false,
+    // Kept for UI/backward compatibility. AirControl uses TYPE_ACCESSIBILITY_OVERLAY
+    // on minSdk 26+, so SYSTEM_ALERT_WINDOW is not required for runtime.
+    val overlayGranted: Boolean = true,
 ) {
-    val allGranted: Boolean get() = cameraGranted && accessibilityGranted && overlayGranted
+    val allGranted: Boolean get() = cameraGranted && accessibilityGranted
 
     val missingPermissions: List<MissingPermission>
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
             if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
-            if (!overlayGranted) add(MissingPermission.OVERLAY)
         }
 }
 
@@ -142,12 +143,10 @@ class PermissionsManager constructor(
     }
 
     private fun checkOverlayPermission(): Boolean {
-        val granted = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(context)
-        } else {
-            true
-        }
-        Timber.v("Overlay permission check: %s", granted)
-        return granted
+        // minSdk is 26 and overlays are added as TYPE_ACCESSIBILITY_OVERLAY from
+        // the enabled accessibility service, so the separate draw-over-apps
+        // permission is not needed.
+        Timber.v("Overlay permission check: true (accessibility overlay)")
+        return true
     }
 }

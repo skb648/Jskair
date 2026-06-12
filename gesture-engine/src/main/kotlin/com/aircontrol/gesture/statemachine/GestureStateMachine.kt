@@ -71,10 +71,10 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         }
 
         when (currentState) {
-            GestureEngineState.DISARMED -> processDisarmed(pose, handDetected, timestampMs)
+            GestureEngineState.DISARMED -> processDisarmed(pose, handDetected)
             GestureEngineState.ARMING -> processArming(pose, handDetected, timestampMs)
             GestureEngineState.ARMED -> processArmed(pose, handDetected, timestampMs)
-            GestureEngineState.EXECUTING -> processExecuting(pose, timestampMs)
+            GestureEngineState.EXECUTING -> processExecuting()
             GestureEngineState.COOLDOWN -> processCooldown(timestampMs)
         }
 
@@ -98,9 +98,9 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
     /**
      * DISARMED: Waiting for open palm to start arming.
      */
-    private fun processDisarmed(pose: Pose, handDetected: Boolean, timestampMs: Long) {
+    private fun processDisarmed(pose: Pose, handDetected: Boolean) {
         if (handDetected && pose == Pose.OPEN_PALM) {
-            transitionTo(GestureEngineState.ARMING, timestampMs)
+            transitionTo(GestureEngineState.ARMING)
         }
     }
 
@@ -115,11 +115,11 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         if (!handDetected || pose != Pose.OPEN_PALM) {
             // Palm lost during arming
             armingProgress = 0f
-            transitionTo(GestureEngineState.DISARMED, timestampMs)
+            transitionTo(GestureEngineState.DISARMED)
         } else if (elapsed >= config.armingDurationMs) {
             // Arming complete
             armingProgress = 1f
-            transitionTo(GestureEngineState.ARMED, timestampMs)
+            transitionTo(GestureEngineState.ARMED)
         }
     }
 
@@ -135,7 +135,7 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
             val timeSinceHand = timestampMs - lastHandDetectedTimeMs
             if (timeSinceHand >= config.autoDisarmTimeoutMs) {
                 resetFistTracking()
-                transitionTo(GestureEngineState.DISARMED, timestampMs)
+                transitionTo(GestureEngineState.DISARMED)
                 return
             }
         }
@@ -147,7 +147,7 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
                 fistWasHeld = true
             } else if (timestampMs - fistHoldStartMs >= config.fistDisarmDurationMs) {
                 resetFistTracking()
-                transitionTo(GestureEngineState.DISARMED, timestampMs)
+                transitionTo(GestureEngineState.DISARMED)
                 return
             }
         } else {
@@ -157,7 +157,7 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         // Execute gesture on any actionable pose (not NONE, OPEN_PALM, or FIST)
         if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST) {
             resetFistTracking()
-            transitionTo(GestureEngineState.EXECUTING, timestampMs)
+            transitionTo(GestureEngineState.EXECUTING)
         }
     }
 
@@ -165,8 +165,8 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
      * EXECUTING: A gesture was just triggered.
      * Immediately transition to COOLDOWN.
      */
-    private fun processExecuting(pose: Pose, timestampMs: Long) {
-        transitionTo(GestureEngineState.COOLDOWN, timestampMs)
+    private fun processExecuting() {
+        transitionTo(GestureEngineState.COOLDOWN)
     }
 
     /**
@@ -178,14 +178,14 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         val elapsed = timestampMs - stateEntryTimeMs
         if (elapsed >= config.cooldownDurationMs) {
             if (handCurrentlyDetected) {
-                transitionTo(GestureEngineState.ARMED, timestampMs)
+                transitionTo(GestureEngineState.ARMED)
             } else {
-                transitionTo(GestureEngineState.DISARMED, timestampMs)
+                transitionTo(GestureEngineState.DISARMED)
             }
         }
     }
 
-    private fun transitionTo(state: GestureEngineState, timestampMs: Long) {
+    private fun transitionTo(state: GestureEngineState) {
         currentState = state
         if (state != GestureEngineState.ARMING) {
             armingProgress = 0f

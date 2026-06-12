@@ -68,7 +68,7 @@ class StaticPoseClassifier(private val config: GestureEngineConfig) {
         val landmarks = input.landmarks
 
         // 1. PINCH — thumb-index distance < dynamic threshold (scaled by hand size)
-        if (isPinch(landmarks, fingerState)) return Pose.PINCH
+        if (isPinch(landmarks)) return Pose.PINCH
 
         // 2. FIST — no digits extended at all
         if (fingerState.totalExtendedCount == 0) return Pose.FIST
@@ -102,7 +102,7 @@ class StaticPoseClassifier(private val config: GestureEngineConfig) {
      * and index tip, scaled by hand size (wrist-to-middle-MCP distance).
      * This normalization ensures pinch works at any distance from the camera.
      */
-    internal fun isPinch(landmarks: List<Landmark3D>, fingerState: FingerExtensionState): Boolean {
+    internal fun isPinch(landmarks: List<Landmark3D>): Boolean {
         val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
         val indexTip = landmarks[LandmarkIndex.INDEX_TIP]
         val wrist = landmarks[LandmarkIndex.WRIST]

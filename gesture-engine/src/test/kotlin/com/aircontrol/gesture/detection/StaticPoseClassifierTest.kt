@@ -214,8 +214,7 @@ class StaticPoseClassifierTest {
     fun `isPinch returns false when fingers are far apart`() {
         // Use open palm landmarks — thumb and index should be far apart
         val landmarks = openPalmLandmarks()
-        val fingerState = classifier.getFingerState(handInput(landmarks))
-        assertFalse(classifier.isPinch(landmarks, fingerState))
+        assertFalse(classifier.isPinch(landmarks))
     }
 
     // ========== Reset ==========

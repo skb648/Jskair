@@ -94,6 +94,15 @@ class ActionDispatcher @Inject constructor(
                 currentPreferences = prefs
             }
         }
+        scope.launch {
+            settingsRepository.gestureMapConfig.collect { config ->
+                gestureMap.clear()
+                config.entries.forEach { entry ->
+                    gestureMap[entry.key] = entry.action
+                }
+                Timber.d("Loaded %d gesture mappings from settings", gestureMap.size)
+            }
+        }
     }
 
     /**
@@ -218,7 +227,6 @@ class ActionDispatcher @Inject constructor(
             val steps = 10
             for (i in 1..steps) {
                 val t = i.toFloat() / steps
-                val y = startY + (endY - startY) * t
                 // Ease-out curve for natural feel
                 val easedT = 1f - (1f - t) * (1f - t)
                 lineTo(centerX, startY + (endY - startY) * easedT)
@@ -275,6 +283,15 @@ class ActionDispatcher @Inject constructor(
                 pinchStartTimeMs = System.currentTimeMillis()
                 pinchStartX = cursorX
                 pinchStartY = cursorY
+
+                // Initialize drag state in screen coordinates. If the mapped action
+                // is not DRAG this state is harmless and will be ignored.
+                dragStartX = normalizeToScreenX(cursorX, screenWidth)
+                dragStartY = normalizeToScreenY(cursorY, screenHeight)
+                dragCurrentX = dragStartX
+                dragCurrentY = dragStartY
+                isDragging = false
+
                 Timber.v("Pinch START at (%.2f, %.2f)", cursorX, cursorY)
                 true // Acknowledge start
             }
@@ -339,32 +356,23 @@ class ActionDispatcher @Inject constructor(
     private fun dispatchDragStroke(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         val x = normalizeToScreenX(normX, screenWidth)
         val y = normalizeToScreenY(normY, screenHeight)
+        val fromX = dragCurrentX
+        val fromY = dragCurrentY
 
+        val path = Path().apply {
+            moveTo(fromX, fromY)
+            lineTo(x, y)
+        }
+
+        val label = if (!isDragging) "drag_start" else "drag_continue"
+        isDragging = true
         dragCurrentX = x
         dragCurrentY = y
 
-        // For drag continuation, we use willContinue on the stroke
-        if (!isDragging) {
-            isDragging = true
-            val path = Path().apply {
-                moveTo(dragStartX, dragStartY)
-                lineTo(x, y)
-            }
-            val stroke = GestureDescription.StrokeDescription(path, 0L, 16L, true)
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            return dispatchGestureWithRetry(gesture, "drag_start")
-        } else {
-            val path = Path().apply {
-                moveTo(dragCurrentX, dragCurrentY)
-                lineTo(x, y)
-            }
-            val stroke = GestureDescription.StrokeDescription(path, 0L, 16L, true)
-            // Note: Multi-stroke drag continuation uses continueStroke on the original stroke
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0L, 16L))
-                .build()
-            return dispatchGestureWithRetry(gesture, "drag_continue")
-        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, DRAG_STEP_DURATION_MS))
+            .build()
+        return dispatchGestureWithRetry(gesture, label)
     }
 
     /**
@@ -599,6 +607,7 @@ class ActionDispatcher @Inject constructor(
         private const val TAP_DURATION_MS = 50L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val LONG_PRESS_THRESHOLD_MS = 600L
+        private const val DRAG_STEP_DURATION_MS = 16L
         private const val HAPTIC_TICK_MS = 15L
         private const val EDGE_MARGIN_FRACTION = 0.1f
 
@@ -649,5 +658,4 @@ class ActionDispatcher @Inject constructor(
     private var dragStartY = 0f
     private var dragCurrentX = 0f
     private var dragCurrentY = 0f
-    private var dragContinuationId = 0L
 }

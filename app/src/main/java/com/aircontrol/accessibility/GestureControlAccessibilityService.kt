@@ -11,6 +11,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import com.aircontrol.camera.CameraService
 import com.aircontrol.control.CursorController
+import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
@@ -22,7 +23,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
@@ -76,17 +76,23 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var thermalMonitoringJob: Job? = null
     private var isThermalPaused = false
 
+    // Runtime settings cache
+    private var currentPreferences = UserPreferences()
+    private var lastAppliedSensitivity: Int? = null
+
     // Broadcast receiver for screen state
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
-                    Timber.i("Screen off — suspending gesture injection")
+                    Timber.i("Screen off — suspending gesture injection and camera")
                     stopTrackingPipeline()
+                    stopCameraService()
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    Timber.i("Screen on — resuming gesture injection")
+                    Timber.i("Screen on — resuming gesture injection and camera")
                     startTrackingPipeline()
+                    startCameraService()
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     Timber.i("User unlocked — fully active")
@@ -194,8 +200,39 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // ========== Tracking pipeline ==========
 
     private fun startTrackingPipeline() {
-        handTracker.initialize()
+        if (pipelineJobs.isNotEmpty()) {
+            Timber.d("Tracking pipeline already running")
+            return
+        }
+
         lastFrameReceivedMs = System.currentTimeMillis()
+
+        // Collect settings → gesture detector and overlays
+        pipelineJobs.add(serviceScope.launch {
+            settingsRepository.userPreferences.collect { prefs ->
+                currentPreferences = prefs
+
+                if (lastAppliedSensitivity != prefs.sensitivity) {
+                    gestureDetector.updateSensitivity(prefs.sensitivity)
+                    lastAppliedSensitivity = prefs.sensitivity
+                }
+
+                if (prefs.statusPillEnabled && statusOverlay == null) {
+                    statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
+                } else if (!prefs.statusPillEnabled && statusOverlay != null) {
+                    statusOverlay?.remove()
+                    statusOverlay = null
+                }
+
+                if (prefs.cursorEnabled && cursorOverlay == null) {
+                    cursorOverlay = CursorOverlay(this@GestureControlAccessibilityService, screenWidth, screenHeight)
+                } else if (!prefs.cursorEnabled && cursorOverlay != null) {
+                    cursorOverlay?.remove()
+                    cursorOverlay = null
+                    cursorController.hide()
+                }
+            }
+        })
 
         // Collect hand frames → gesture detector
         pipelineJobs.add(serviceScope.launch {
@@ -211,17 +248,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
-        // Collect gesture events → action dispatcher
+        // Collect gesture events → action dispatcher. Read the latest state at
+        // event time instead of combine(), which can replay the previous event
+        // whenever only the state changes.
         pipelineJobs.add(serviceScope.launch {
-            combine(
-                gestureDetector.gestureEvents,
-                gestureDetector.engineState,
-            ) { event, state ->
-                EventWithState(event, state)
-            }.collect { (event, state) ->
+            gestureDetector.gestureEvents.collect { event ->
                 try {
                     if (!isThermalPaused) {
-                        handleGestureEvent(event, state)
+                        handleGestureEvent(event, gestureDetector.engineState.value)
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error handling gesture event — skipping")
@@ -233,7 +267,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             gestureDetector.engineState.collect { state ->
                 try {
-                    statusOverlay?.updateState(state)
+                    if (currentPreferences.statusPillEnabled) {
+                        statusOverlay?.updateState(state)
+                    }
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating status overlay — skipping")
                 }
@@ -244,7 +280,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             gestureDetector.gestureEvents.collect { event ->
                 try {
-                    if (event is GestureEvent.CursorMoved) {
+                    if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled) {
                         cursorOverlay?.updatePosition(event.x, event.y, screenWidth, screenHeight)
                         cursorController.updatePosition(
                             com.aircontrol.tracking.HandFrame(
@@ -280,9 +316,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     private fun restartTrackingPipeline() {
-        Timber.i("Restarting tracking pipeline")
+        Timber.i("Restarting tracking pipeline and camera service")
         stopTrackingPipeline()
         startTrackingPipeline()
+        startCameraService()
     }
 
     private fun stopTrackingPipeline() {
@@ -291,7 +328,6 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.forEach { it.cancel() }
         pipelineJobs.clear()
         stopThermalMonitoring()
-        handTracker.close()
         gestureDetector.reset()
     }
 
@@ -345,8 +381,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
             GestureEngineState.ARMED,
             GestureEngineState.EXECUTING,
             GestureEngineState.COOLDOWN -> {
-                cursorOverlay?.show()
-                cursorController.show()
+                if (currentPreferences.cursorEnabled) {
+                    cursorOverlay?.show()
+                    cursorController.show()
+                }
             }
             GestureEngineState.DISARMED -> {
                 cursorOverlay?.hide()
@@ -373,19 +411,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // ========== Camera service ==========
 
     private fun startCameraService() {
-        val intent = Intent(this, CameraService::class.java).apply {
-            action = CameraService.ACTION_START
+        runCatching {
+            val intent = Intent(this, CameraService::class.java).apply {
+                action = CameraService.ACTION_START
+            }
+            startForegroundService(intent)
+            Timber.i("Camera service start requested from accessibility service")
+        }.onFailure { error ->
+            Timber.e(error, "Failed to start camera service from accessibility service")
         }
-        startForegroundService(intent)
-        Timber.i("Camera service started from accessibility service")
     }
 
     private fun stopCameraService() {
-        val intent = Intent(this, CameraService::class.java).apply {
-            action = CameraService.ACTION_STOP
+        runCatching {
+            val intent = Intent(this, CameraService::class.java).apply {
+                action = CameraService.ACTION_STOP
+            }
+            startService(intent)
+            Timber.i("Camera service stop requested from accessibility service")
+        }.onFailure { error ->
+            Timber.e(error, "Failed to stop camera service from accessibility service")
         }
-        startService(intent)
-        Timber.i("Camera service stopped from accessibility service")
     }
 
     // ========== Overlays ==========
@@ -427,12 +473,4 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     // ========== Utility ==========
 
-    private data class EventWithState(
-        val event: GestureEvent,
-        val state: GestureEngineState,
-    )
-
-    companion object {
-        private const val TAG = "GestureCtrlA11y"
-    }
 }

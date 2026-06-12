@@ -5,7 +5,6 @@ import com.aircontrol.gesture.model.FingerExtensionState
 import com.aircontrol.gesture.model.HandInput
 import com.aircontrol.gesture.model.Landmark3D
 import com.aircontrol.gesture.model.LandmarkIndex
-import kotlin.math.atan2
 import kotlin.math.sqrt
 
 /**

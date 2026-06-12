@@ -54,7 +54,7 @@ class CursorControllerImpl @Inject constructor() : CursorController {
     override fun performClick() {
         _cursorState.value = _cursorState.value.copy(isPressed = true)
         Timber.d("Cursor click performed")
-        // TODO: Trigger haptic feedback if enabled
+        // Haptic feedback is performed centrally by ActionDispatcher after actions.
     }
 
     override fun show() {

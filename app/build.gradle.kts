@@ -2,9 +2,10 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.hilt)
-    alias(libs.plugins.ksp)
 }
+
+apply(plugin = "com.google.dagger.hilt.android")
+apply(plugin = "com.google.devtools.ksp")
 
 // Auto versionCode from git commit count
 val gitCommitCount = providers.exec {
@@ -116,7 +117,7 @@ dependencies {
 
     // Hilt
     implementation(libs.hilt.android)
-    ksp(libs.hilt.android.compiler)
+    add("ksp", libs.hilt.android.compiler)
     implementation(libs.hilt.navigation.compose)
 
     // CameraX
@@ -160,7 +161,7 @@ dependencies {
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
-    kspAndroidTest(libs.hilt.android.compiler)
+    add("kspAndroidTest", libs.hilt.android.compiler)
     androidTestImplementation(libs.kotlinx.coroutines.test)
 
     // Compose test manifest for debug

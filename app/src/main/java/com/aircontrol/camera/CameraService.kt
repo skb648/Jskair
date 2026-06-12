@@ -28,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -72,6 +73,7 @@ class CameraService : LifecycleService() {
     }
 
     private lateinit var handTracker: HandTracker
+    private lateinit var settingsRepository: com.aircontrol.data.repository.SettingsRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val analysisExecutor = Executors.newSingleThreadExecutor { r ->
@@ -88,6 +90,7 @@ class CameraService : LifecycleService() {
 
     // Frame watchdog — detects camera pipeline stalls
     private var frameWatchdogJob: Job? = null
+    private val trackingJobs: MutableList<Job> = mutableListOf()
 
     // Thermal monitoring
     private lateinit var thermalMonitor: com.aircontrol.tracking.ThermalMonitor
@@ -109,6 +112,7 @@ class CameraService : LifecycleService() {
         (applicationContext as? com.aircontrol.AirControlApp)?.let { app ->
             val entryPoint = com.aircontrol.di.AccessibilityServiceEntryPoint.getFromApplication(app)
             handTracker = entryPoint.handTracker()
+            settingsRepository = entryPoint.settingsRepository()
         } ?: run {
             Timber.e("Application is not AirControlApp — cannot inject HandTracker")
         }
@@ -173,14 +177,35 @@ class CameraService : LifecycleService() {
     private fun startTracking() {
         if (_isRunning.value) return
 
-        startForeground(NOTIFICATION_ID, buildNotification(isPaused = false))
+        if (!::handTracker.isInitialized || !::settingsRepository.isInitialized) {
+            Timber.e("CameraService dependencies not initialized; cannot start tracking")
+            stopSelf()
+            return
+        }
+
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(isPaused = false))
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to enter foreground; cannot start camera tracking")
+            stopSelf()
+            return
+        }
+
         _isRunning.value = true
         _isPaused.value = false
 
         handTracker.initialize()
 
-        // Subscribe to hand detection events for adaptive FPS
-        serviceScope.launch {
+        // Subscribe to settings updates that affect the camera pipeline.
+        trackingJobs.add(serviceScope.launch {
+            settingsRepository.userPreferences.collect { prefs ->
+                configuredFps = if (prefs.batterySaver) minOf(15, prefs.analysisFps) else prefs.analysisFps
+                adaptiveFpsController.updateConfiguredFps(configuredFps)
+            }
+        })
+
+        // Subscribe to hand detection events for adaptive FPS.
+        trackingJobs.add(serviceScope.launch {
             handTracker.handFrames.collect { frame ->
                 if (frame.isDetected) {
                     adaptiveFpsController.onHandDetected(frame.timestampMs)
@@ -188,36 +213,38 @@ class CameraService : LifecycleService() {
                     adaptiveFpsController.onHandLost(frame.timestampMs)
                 }
             }
-        }
+        })
 
-        serviceScope.launch {
+        trackingJobs.add(serviceScope.launch {
             try {
-                val provider = ProcessCameraProvider.getInstance(this@CameraService).get()
-                cameraProvider = provider
+                withContext(Dispatchers.Main.immediate) {
+                    val provider = ProcessCameraProvider.getInstance(this@CameraService).get()
+                    cameraProvider = provider
 
-                val cameraSelector = CameraSelector.Builder()
-                    .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-                    .build()
+                    val cameraSelector = CameraSelector.Builder()
+                        .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+                        .build()
 
-                // ImageAnalysis for hand tracking
-                @Suppress("DEPRECATION")
-                val analysis = ImageAnalysis.Builder()
-                    .setTargetResolution(android.util.Size(640, 480))
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also { imgAnalysis ->
-                        imgAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                            processImageFrame(imageProxy)
+                    // ImageAnalysis for hand tracking
+                    @Suppress("DEPRECATION")
+                    val analysis = ImageAnalysis.Builder()
+                        .setTargetResolution(android.util.Size(640, 480))
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                        .also { imgAnalysis ->
+                            imgAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                                processImageFrame(imageProxy)
+                            }
                         }
-                    }
-                imageAnalysis = analysis
+                    imageAnalysis = analysis
 
-                provider.unbindAll()
-                provider.bindToLifecycle(
-                    this@CameraService,
-                    cameraSelector,
-                    analysis,
-                )
+                    provider.unbindAll()
+                    provider.bindToLifecycle(
+                        this@CameraService,
+                        cameraSelector,
+                        analysis,
+                    )
+                }
 
                 Timber.i("Camera started successfully")
 
@@ -225,9 +252,9 @@ class CameraService : LifecycleService() {
                 startFrameWatchdog()
             } catch (e: Exception) {
                 Timber.e(e, "Failed to start camera")
-                stopTracking()
+                withContext(Dispatchers.Main.immediate) { stopTracking() }
             }
-        }
+        })
 
         // Start thermal monitoring
         startThermalMonitoring()
@@ -236,6 +263,8 @@ class CameraService : LifecycleService() {
     private fun stopTracking() {
         frameWatchdogJob?.cancel()
         frameWatchdogJob = null
+        trackingJobs.forEach { it.cancel() }
+        trackingJobs.clear()
         stopThermalMonitoring()
 
         try {
@@ -280,7 +309,6 @@ class CameraService : LifecycleService() {
     private fun processImageFrame(imageProxy: ImageProxy) {
         try {
             if (isPaused.get()) {
-                imageProxy.close()
                 return
             }
 
@@ -289,7 +317,6 @@ class CameraService : LifecycleService() {
             // Adaptive FPS check - skip frame if too soon
             val intervalMs = adaptiveFpsController.analysisIntervalMs
             if (currentTimestampMs - lastFrameTimestampMs < intervalMs) {
-                imageProxy.close()
                 return
             }
             lastFrameTimestampMs = currentTimestampMs
@@ -490,31 +517,33 @@ class CameraService : LifecycleService() {
 
         serviceScope.launch {
             try {
-                val provider = cameraProvider ?: ProcessCameraProvider.getInstance(this@CameraService).get()
-                cameraProvider = provider
+                withContext(Dispatchers.Main.immediate) {
+                    val provider = cameraProvider ?: ProcessCameraProvider.getInstance(this@CameraService).get()
+                    cameraProvider = provider
 
-                val cameraSelector = CameraSelector.Builder()
-                    .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-                    .build()
+                    val cameraSelector = CameraSelector.Builder()
+                        .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+                        .build()
 
-                @Suppress("DEPRECATION")
-                val analysis = ImageAnalysis.Builder()
-                    .setTargetResolution(android.util.Size(640, 480))
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also { imgAnalysis ->
-                        imgAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                            processImageFrame(imageProxy)
+                    @Suppress("DEPRECATION")
+                    val analysis = ImageAnalysis.Builder()
+                        .setTargetResolution(android.util.Size(640, 480))
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                        .also { imgAnalysis ->
+                            imgAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                                processImageFrame(imageProxy)
+                            }
                         }
-                    }
-                imageAnalysis = analysis
+                    imageAnalysis = analysis
 
-                provider.unbindAll()
-                provider.bindToLifecycle(
-                    this@CameraService,
-                    cameraSelector,
-                    analysis,
-                )
+                    provider.unbindAll()
+                    provider.bindToLifecycle(
+                        this@CameraService,
+                        cameraSelector,
+                        analysis,
+                    )
+                }
 
                 Timber.i("Camera restarted successfully")
             } catch (e: Exception) {

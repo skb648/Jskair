@@ -24,6 +24,7 @@ import com.aircontrol.tracking.HandTracker
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -86,6 +87,7 @@ class DebugViewModel @Inject constructor(
     }
     private var cameraProvider: ProcessCameraProvider? = null
     private var wasServiceRunning = false
+    private val trackingJobs: MutableList<Job> = mutableListOf()
     @Volatile
     private var isPreviewBound = false
 
@@ -94,6 +96,8 @@ class DebugViewModel @Inject constructor(
      * and prepares for camera binding via [bindPreview].
      */
     fun startTracking(context: Context) {
+        if (_isServiceRunning.value) return
+
         // Check if CameraService is running and stop it to take over camera
         wasServiceRunning = CameraService.isRunning.value
         if (wasServiceRunning) {
@@ -108,7 +112,7 @@ class DebugViewModel @Inject constructor(
         _isServiceRunning.value = true
 
         // Collect hand frames for skeleton overlay and FPS measurement
-        viewModelScope.launch {
+        trackingJobs.add(viewModelScope.launch {
             handTracker.handFrames.collect { frame ->
                 _handFrame.value = frame
                 _isHandDetected.value = frame.isDetected
@@ -129,10 +133,10 @@ class DebugViewModel @Inject constructor(
                     lastFpsMeasureTimeMs = now
                 }
             }
-        }
+        })
 
         // Collect gesture events for debug label
-        viewModelScope.launch {
+        trackingJobs.add(viewModelScope.launch {
             gestureDetector.gestureEvents.collect { event ->
                 val label = when (event) {
                     is GestureEvent.Swipe -> "Swipe ${event.direction}"
@@ -146,27 +150,27 @@ class DebugViewModel @Inject constructor(
                     _gestureLabel.value = label
                 }
             }
-        }
+        })
 
         // Collect engine state
-        viewModelScope.launch {
+        trackingJobs.add(viewModelScope.launch {
             gestureDetector.engineState.collect { state ->
                 _engineState.value = state
             }
-        }
+        })
 
         // Collect current pose and arming progress
-        viewModelScope.launch {
+        trackingJobs.add(viewModelScope.launch {
             gestureDetector.currentPose.collect { pose ->
                 _currentPose.value = pose
             }
-        }
+        })
 
-        viewModelScope.launch {
+        trackingJobs.add(viewModelScope.launch {
             gestureDetector.armingProgress.collect { progress ->
                 _armingProgress.value = progress
             }
-        }
+        })
     }
 
     /**
@@ -261,21 +265,28 @@ class DebugViewModel @Inject constructor(
             } else {
                 rawBitmap.width
             }
-            matrix.postScale(-1f, 1f, targetWidth / 2f, targetHeight(targetWidth, rawBitmap, rotationDegrees) / 2f)
+            matrix.postScale(
+                -1f,
+                1f,
+                targetWidth / 2f,
+                targetHeight(rawBitmap, rotationDegrees) / 2f,
+            )
 
             val transformedBitmap = Bitmap.createBitmap(
                 rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true,
             )
             rawBitmap.recycle()
 
-            BitmapImageBuilder(transformedBitmap).build()
+            val mpImage = BitmapImageBuilder(transformedBitmap).build()
+            transformedBitmap.recycle()
+            mpImage
         } catch (e: Exception) {
             Timber.e(e, "Error converting debug ImageProxy to MPImage")
             null
         }
     }
 
-    private fun targetHeight(targetWidth: Int, rawBitmap: Bitmap, rotationDegrees: Int): Int {
+    private fun targetHeight(rawBitmap: Bitmap, rotationDegrees: Int): Int {
         return if (rotationDegrees == 90 || rotationDegrees == 270) {
             rawBitmap.width
         } else {
@@ -292,6 +303,8 @@ class DebugViewModel @Inject constructor(
         cameraProvider = null
         isPreviewBound = false
 
+        trackingJobs.forEach { it.cancel() }
+        trackingJobs.clear()
         handTracker.close()
         gestureDetector.reset()
         _isServiceRunning.value = false

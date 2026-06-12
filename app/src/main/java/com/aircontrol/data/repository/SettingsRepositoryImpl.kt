@@ -158,12 +158,18 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     override suspend fun updateGestureAction(key: String, action: String) {
+        val parsedAction = runCatching { GestureAction.valueOf(action) }
+            .getOrElse { exception ->
+                Timber.w(exception, "Invalid gesture action '%s'; storing NONE", action)
+                GestureAction.NONE
+            }
+
         dataStore.edit { preferences ->
             // Store individual action overrides as key-action pairs in the JSON
             val currentConfig = mapGestureMapConfig(preferences)
             val updatedEntries = currentConfig.entries.map { entry ->
                 if (entry.key == key) {
-                    entry.copy(action = GestureAction.valueOf(action))
+                    entry.copy(action = parsedAction)
                 } else {
                     entry
                 }
@@ -172,7 +178,7 @@ class SettingsRepositoryImpl @Inject constructor(
             preferences[PreferencesKeys.GESTURE_MAP_JSON] = serializeGestureMap(updatedConfig)
             preferences[PreferencesKeys.GESTURE_MAP_VERSION] = updatedConfig.schemaVersion
         }
-        Timber.d("Updated gesture action: %s → %s", key, action)
+        Timber.d("Updated gesture action: %s → %s", key, parsedAction)
     }
 
     override suspend fun resetGestureMapToDefaults() {
@@ -188,7 +194,7 @@ class SettingsRepositoryImpl @Inject constructor(
         gesturesEnabled = preferences[PreferencesKeys.GESTURES_ENABLED] ?: true,
         sensitivity = preferences[PreferencesKeys.SENSITIVITY] ?: 50,
         handPreference = (preferences[PreferencesKeys.HAND_PREFERENCE] as? String)
-            ?.let { HandPreference.valueOf(it) }
+            ?.let { stored -> runCatching { HandPreference.valueOf(stored) }.getOrNull() }
             ?: HandPreference.ANY,
         analysisFps = preferences[PreferencesKeys.ANALYSIS_FPS] ?: DEFAULT_FPS,
         cursorEnabled = preferences[PreferencesKeys.CURSOR_ENABLED] ?: true,

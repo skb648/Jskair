@@ -9,6 +9,7 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.tracking.HandFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,8 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var engine: GestureEngine = GestureEngine(GestureEngineConfig())
+    private var engineEventsJob: Job? = null
+    private var currentSensitivity: Int = 50
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
         extraBufferCapacity = 16,
@@ -60,13 +63,8 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val _armingProgress = MutableStateFlow(0f)
     override val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
 
-    // Collect engine events and forward them
     init {
-        scope.launch {
-            engine.gestureEvents.collect { event ->
-                _gestureEvents.tryEmit(event)
-            }
-        }
+        collectEngineEvents()
     }
 
     override fun processHandFrame(frame: HandFrame) {
@@ -80,24 +78,36 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     }
 
     override fun updateSensitivity(sensitivity: Int) {
-        Timber.d("Updating gesture engine sensitivity to %d", sensitivity)
+        val clamped = sensitivity.coerceIn(0, 100)
+        if (clamped == currentSensitivity) return
+
+        Timber.d("Updating gesture engine sensitivity to %d", clamped)
+        currentSensitivity = clamped
+        engineEventsJob?.cancel()
         engine.reset()
-        engine = GestureEngine(GestureEngineConfig(sensitivity = sensitivity))
-        // Always start collecting from the new engine — the old SharedFlow
-        // will complete naturally since the old engine is no longer fed frames
-        scope.launch {
+        engine = GestureEngine(GestureEngineConfig(sensitivity = clamped))
+        collectEngineEvents()
+        resetStateFlows()
+    }
+
+    override fun reset() {
+        engine.reset()
+        resetStateFlows()
+        Timber.d("Gesture detector reset")
+    }
+
+    private fun collectEngineEvents() {
+        engineEventsJob = scope.launch {
             engine.gestureEvents.collect { event ->
                 _gestureEvents.tryEmit(event)
             }
         }
     }
 
-    override fun reset() {
-        engine.reset()
+    private fun resetStateFlows() {
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
         _armingProgress.value = 0f
-        Timber.d("Gesture detector reset")
     }
 
     /**

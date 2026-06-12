@@ -1,11 +1,10 @@
 package com.aircontrol.service
 
-import com.aircontrol.camera.CameraService
 import com.aircontrol.gestures.GestureDetector
-import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.HandTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +20,11 @@ interface AirControlService {
     suspend fun stop()
 }
 
+/**
+ * Lightweight coordinator used by UI/tests. The production camera ownership is
+ * handled by CameraService; callers should not run this at the same time as the
+ * foreground camera service.
+ */
 @Singleton
 class AirControlServiceImpl @Inject constructor(
     private val handTracker: HandTracker,
@@ -28,6 +32,7 @@ class AirControlServiceImpl @Inject constructor(
 ) : AirControlService {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val jobs = mutableListOf<Job>()
 
     private var _isRunning = false
     override val isRunning: Boolean get() = _isRunning
@@ -45,7 +50,7 @@ class AirControlServiceImpl @Inject constructor(
         _isRunning = true
 
         // Collect hand frames and feed to gesture detector
-        scope.launch {
+        jobs.add(scope.launch {
             handTracker.handFrames.collect { frame ->
                 try {
                     gestureDetector.processHandFrame(frame)
@@ -53,10 +58,10 @@ class AirControlServiceImpl @Inject constructor(
                     Timber.e(e, "Error processing hand frame — skipping")
                 }
             }
-        }
+        })
 
         // Collect gesture events for label updates
-        scope.launch {
+        jobs.add(scope.launch {
             gestureDetector.gestureEvents.collect { event ->
                 try {
                     val label = when (event) {
@@ -80,7 +85,7 @@ class AirControlServiceImpl @Inject constructor(
                     Timber.e(e, "Error processing gesture event label — skipping")
                 }
             }
-        }
+        })
 
         Timber.i("AirControl service started")
     }
@@ -91,6 +96,8 @@ class AirControlServiceImpl @Inject constructor(
             return
         }
         Timber.i("Stopping AirControl service")
+        jobs.forEach { it.cancel() }
+        jobs.clear()
         handTracker.close()
         gestureDetector.reset()
         _isRunning = false

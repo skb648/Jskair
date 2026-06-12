@@ -8,9 +8,6 @@ import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -45,8 +42,6 @@ class HandTrackerImpl @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : HandTracker {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     private var handLandmarker: HandLandmarker? = null
     @Volatile
     private var _isInitialized = false
@@ -67,9 +62,11 @@ class HandTrackerImpl @Inject constructor(
     private var mediaPipeTimestampBaseUs: Long = 0L
     private var systemTimestampBaseMs: Long = 0L
 
-    // Track the latest frame timestamp for result callback
-    @Volatile
-    private var lastSubmittedFrameTimestampMs: Long = 0L
+    // Timestamps for result callbacks. MediaPipe LIVE_STREAM callbacks are
+    // asynchronous, so using only the last submitted timestamp can attach the
+    // wrong time to older results. Keep a small FIFO queue instead.
+    private val timestampLock = Any()
+    private val pendingFrameTimestampsMs = ArrayDeque<Long>()
 
     override fun initialize() {
         if (_isInitialized) {
@@ -108,15 +105,28 @@ class HandTrackerImpl @Inject constructor(
 
         if (!_isInitialized) return
 
+        var timestampQueued = false
         try {
             // Convert system timestamp to MediaPipe's monotonic microseconds
             val mediaPipeTimestampUs = systemMsToMediaPipeUs(timestampMs)
 
-            // Track the frame timestamp for result callback
-            lastSubmittedFrameTimestampMs = timestampMs
+            synchronized(timestampLock) {
+                pendingFrameTimestampsMs.addLast(timestampMs)
+                timestampQueued = true
+                while (pendingFrameTimestampsMs.size > MAX_PENDING_TIMESTAMPS) {
+                    pendingFrameTimestampsMs.removeFirst()
+                }
+            }
 
             landmarker.detectAsync(mpImage, mediaPipeTimestampUs)
         } catch (e: Exception) {
+            if (timestampQueued) {
+                synchronized(timestampLock) {
+                    if (pendingFrameTimestampsMs.isNotEmpty() && pendingFrameTimestampsMs.last() == timestampMs) {
+                        pendingFrameTimestampsMs.removeLast()
+                    }
+                }
+            }
             Timber.e(e, "Error processing frame at timestamp %d", timestampMs)
         }
     }
@@ -130,6 +140,7 @@ class HandTrackerImpl @Inject constructor(
         handLandmarker = null
         _isInitialized = false
         handFrameFilter.reset()
+        synchronized(timestampLock) { pendingFrameTimestampsMs.clear() }
         Timber.i("HandTracker closed")
     }
 
@@ -137,8 +148,13 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult) {
-        // Use the last submitted frame timestamp
-        val systemTimestampMs = lastSubmittedFrameTimestampMs
+        val systemTimestampMs = synchronized(timestampLock) {
+            if (pendingFrameTimestampsMs.isNotEmpty()) {
+                pendingFrameTimestampsMs.removeFirst()
+            } else {
+                System.currentTimeMillis()
+            }
+        }
 
         if (result.landmarks().isEmpty()) {
             // No hand detected - emit empty frame with correct timestamp
@@ -253,5 +269,6 @@ class HandTrackerImpl @Inject constructor(
         private const val NUM_HANDS = 1
         private const val MIN_DETECTION_CONFIDENCE = 0.6f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
+        private const val MAX_PENDING_TIMESTAMPS = 8
     }
 }
