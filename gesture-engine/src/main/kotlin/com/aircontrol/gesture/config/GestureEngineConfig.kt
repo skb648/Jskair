@@ -50,7 +50,7 @@ package com.aircontrol.gesture.config
  */
 data class GestureEngineConfig(
     val sensitivity: Int = 50,
-    val poseDebounceFrames: Int = 3,
+    val poseDebounceFrames: Int = 5,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 150f,
     val pinchDistanceRatio: Float = 0.35f,
@@ -59,7 +59,7 @@ data class GestureEngineConfig(
     val swipeVelocityThreshold: Float = 1.5f,
     val swipeAxisDominanceRatio: Float = 2.0f,
     val armingDurationMs: Long = 400L,
-    val cooldownDurationMs: Long = 350L,
+    val cooldownDurationMs: Long = 400L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 500L,

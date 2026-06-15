@@ -80,6 +80,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var thermalMonitoringJob: Job? = null
     private var isThermalPaused = false
 
+    // Issue 5 Fix: Thermal frame skip counter for graceful degradation.
+    // Instead of fully pausing the service (which causes UX disruption),
+    // we progressively skip frames to reduce thermal load:
+    // - MODERATE: Skip every other frame (50% reduction)
+    // - SEVERE: Skip 2 of every 3 frames (67% reduction) but keep pipeline alive
+    // This keeps the service running and responsive without crashing or pausing.
+    private var thermalFrameSkipCounter = 0
+
     // Runtime settings cache
     private var currentPreferences = UserPreferences()
     private var lastAppliedSensitivity: Int? = null
@@ -87,6 +95,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // Cursor freeze during gesture execution for better accuracy
     private var isCursorFrozen = false
     private var cursorFreezeJob: Job? = null
+
+    // Issue 1 Fix: Cursor-level smoothing with dead-zone for micro-jitter elimination
+    private val cursorSmoother = com.aircontrol.tracking.CursorSmoother(
+        minCutoff = 0.6f,
+        beta = 0.1f,
+    )
 
     // Broadcast receiver for screen state
     private val screenReceiver = object : BroadcastReceiver() {
@@ -255,11 +269,25 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
-        // Collect hand frames → gesture detector
+        // Collect hand frames → gesture detector (with thermal frame skipping)
         pipelineJobs.add(serviceScope.launch {
+            var thermalSkipIndex = 0
             handTracker?.handFrames?.collect { frame ->
                 try {
                     lastFrameReceivedMs = System.currentTimeMillis()
+
+                    // Issue 5 Fix: Thermal frame skipping — instead of pausing the
+                    // entire service, we skip frames progressively to reduce thermal load.
+                    // This keeps the pipeline alive and responsive.
+                    if (thermalFrameSkipCounter > 0) {
+                        thermalSkipIndex++
+                        if (thermalSkipIndex % thermalFrameSkipCounter != 0) {
+                            // Skip this frame to reduce thermal load
+                            return@collect
+                        }
+                        thermalSkipIndex = 0
+                    }
+
                     if (!isThermalPaused && frame.matchesHandPreference(currentPreferences.handPreference)) {
                         gestureDetector?.processHandFrame(frame)
                     } else if (!frame.matchesHandPreference(currentPreferences.handPreference)) {
@@ -303,19 +331,25 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
-        // Collect cursor position → overlay
+        // Collect cursor position → overlay (with CursorSmoother for jitter elimination)
         pipelineJobs.add(serviceScope.launch {
             gestureDetector?.gestureEvents?.collect { event ->
                 try {
                     // Freeze cursor during gesture execution for better accuracy
                     if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled && !isCursorFrozen) {
+                        // Issue 1 Fix: Apply cursor-level smoothing with dead-zone.
+                        // This eliminates micro-jitter from hand tremor while preserving
+                        // intentional movements with no perceptible lag.
+                        val (smoothX, smoothY) = cursorSmoother.filter(
+                            event.x, event.y, event.timestampMs,
+                        )
                         withContext(Dispatchers.Main) {
-                            cursorOverlay?.updatePosition(event.x, event.y, screenWidth, screenHeight)
+                            cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                         }
                         cursorController?.updatePosition(
                             com.aircontrol.tracking.HandFrame(
                                 landmarks = listOf(
-                                    com.aircontrol.tracking.Landmark3D(event.x, event.y, 0f)
+                                    com.aircontrol.tracking.Landmark3D(smoothX, smoothY, 0f)
                                 ),
                                 handedness = com.aircontrol.tracking.Handedness.RIGHT,
                                 timestampMs = event.timestampMs,
@@ -367,24 +401,29 @@ class GestureControlAccessibilityService : AccessibilityService() {
         val monitor = thermalMonitor ?: return
         monitor.startMonitoring()
 
-        // Collect thermal status and pause/resume gesture dispatch
+        // Collect thermal status and apply graceful degradation
+        // Issue 5 Fix: Never fully pause the service. Instead, skip frames
+        // progressively to reduce thermal load while keeping the pipeline alive.
         thermalMonitoringJob = serviceScope.launch {
             monitor.thermalStatus.collect { status ->
                 when (status) {
                     com.aircontrol.tracking.ThermalStatus.SEVERE -> {
-                        Timber.w("Thermal SEVERE — pausing gesture dispatch")
-                        isThermalPaused = true
+                        Timber.w("Thermal SEVERE — aggressive frame skipping (1 in 3 frames)")
+                        isThermalPaused = false // Don't pause entirely
+                        thermalFrameSkipCounter = 3 // Process only every 3rd frame
                     }
                     com.aircontrol.tracking.ThermalStatus.MODERATE -> {
-                        Timber.i("Thermal MODERATE — gesture dispatch continues at reduced rate")
-                        // Allow dispatch but camera FPS is reduced by CameraService
+                        Timber.i("Thermal MODERATE — moderate frame skipping (every other frame)")
+                        isThermalPaused = false
+                        thermalFrameSkipCounter = 2 // Process every other frame
                     }
                     com.aircontrol.tracking.ThermalStatus.NONE,
                     com.aircontrol.tracking.ThermalStatus.LIGHT -> {
-                        if (isThermalPaused) {
-                            Timber.i("Thermal recovered — resuming gesture dispatch")
-                            isThermalPaused = false
+                        if (thermalFrameSkipCounter > 0) {
+                            Timber.i("Thermal recovered — full frame processing")
                         }
+                        isThermalPaused = false
+                        thermalFrameSkipCounter = 0 // No frame skipping
                     }
                 }
             }
@@ -400,8 +439,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private suspend fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
         withContext(Dispatchers.Main) {
             val cursorState = cursorController?.cursorState?.value
-            val cursorX = if (event is GestureEvent.Pinch) event.x else cursorState?.x ?: 0f
-            val cursorY = if (event is GestureEvent.Pinch) event.y else cursorState?.y ?: 0f
+            // Use actual position for drag (x/y), anchored position for tap/long-press
+            val cursorX = if (event is GestureEvent.Pinch) {
+                if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) event.x else event.anchoredX
+            } else cursorState?.x ?: 0f
+            val cursorY = if (event is GestureEvent.Pinch) {
+                if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) event.y else event.anchoredY
+            } else cursorState?.y ?: 0f
 
             // Show/hide cursor based on engine state
             when (engineState) {

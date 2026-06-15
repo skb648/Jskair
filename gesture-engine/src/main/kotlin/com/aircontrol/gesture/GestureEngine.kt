@@ -78,6 +78,21 @@ class GestureEngine(
     @Volatile
     private var pinchStartY: Float = 0f
 
+    // Issue 4 Fix: Pinch Intent Shift — anchor cursor at pinch start position.
+    // When pinch starts, the physical movement of bringing fingers together shifts
+    // the hand. We lock the action target to the START position (where the user
+    // was pointing when they initiated the pinch) rather than the midpoint which
+    // drifts as fingers close.
+    @Volatile
+    private var pinchAnchoredX: Float = 0f
+    @Volatile
+    private var pinchAnchoredY: Float = 0f
+
+    // Issue 4 Fix: Use INDEX fingertip as anchor (not pinch center) because
+    // that's where the user was pointing. The pinch center shifts as fingers close.
+    private var lastIndexTipX: Float = 0.5f
+    private var lastIndexTipY: Float = 0.5f
+
     /**
      * Stops the engine, cancelling any ongoing coroutine collection.
      */
@@ -173,14 +188,24 @@ class GestureEngine(
         }
 
         // 7. Cursor position (always emitted when hand is detected and armed)
+        // Track index tip position for pinch anchoring (Issue 4 fix)
+        if (input.isDetected) {
+            val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
+            lastIndexTipX = indexTip.x
+            lastIndexTipY = indexTip.y
+        }
+
+        // During active pinch, emit ANCHORED cursor position (not drifting midpoint)
+        val effectiveCursorX = if (wasPinching) pinchAnchoredX else lastIndexTipX
+        val effectiveCursorY = if (wasPinching) pinchAnchoredY else lastIndexTipY
+
         if (input.isDetected && (
             transition.newState == GestureEngineState.ARMED ||
                 transition.newState == GestureEngineState.COOLDOWN
         )
         ) {
-            val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
             _gestureEvents.tryEmit(
-                GestureEvent.CursorMoved(indexTip.x, indexTip.y, timestampMs),
+                GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs),
             )
         }
     }
@@ -228,20 +253,48 @@ class GestureEngine(
                 wasPinching = true
                 pinchStartX = pinchX
                 pinchStartY = pinchY
+                // Issue 4 Fix: Anchor at INDEX fingertip position (where user was pointing),
+                // NOT the pinch center (which shifts as fingers close together).
+                // This prevents the cursor from drifting away from the target during pinch.
+                pinchAnchoredX = lastIndexTipX
+                pinchAnchoredY = lastIndexTipY
                 _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(PinchPhase.START, pinchX, pinchY, timestampMs),
+                    GestureEvent.Pinch(
+                        phase = PinchPhase.START,
+                        x = pinchAnchoredX,
+                        y = pinchAnchoredY,
+                        timestampMs = timestampMs,
+                        anchoredX = pinchAnchoredX,
+                        anchoredY = pinchAnchoredY,
+                    ),
                 )
             } else {
-                // Pinch MOVE
+                // Pinch MOVE — emit ACTUAL current hand position for drag tracking.
+                // x/y = current position (hand is moving, drag follows the hand)
+                // anchoredX/anchoredY = original anchor (for tap/long-press targeting)
                 _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(PinchPhase.MOVE, pinchX, pinchY, timestampMs),
+                    GestureEvent.Pinch(
+                        phase = PinchPhase.MOVE,
+                        x = lastIndexTipX,
+                        y = lastIndexTipY,
+                        timestampMs = timestampMs,
+                        anchoredX = pinchAnchoredX,
+                        anchoredY = pinchAnchoredY,
+                    ),
                 )
             }
         } else if (wasPinching) {
-            // Pinch END
+            // Pinch END — use the original anchored position, not the drifted one
             wasPinching = false
             _gestureEvents.tryEmit(
-                GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs),
+                GestureEvent.Pinch(
+                    phase = PinchPhase.END,
+                    x = pinchAnchoredX,
+                    y = pinchAnchoredY,
+                    timestampMs = timestampMs,
+                    anchoredX = pinchAnchoredX,
+                    anchoredY = pinchAnchoredY,
+                ),
             )
         }
     }
@@ -254,6 +307,10 @@ class GestureEngine(
         wasPinching = false
         pinchStartX = 0f
         pinchStartY = 0f
+        pinchAnchoredX = 0f
+        pinchAnchoredY = 0f
+        lastIndexTipX = 0.5f
+        lastIndexTipY = 0.5f
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
         _armingProgress.value = 0f

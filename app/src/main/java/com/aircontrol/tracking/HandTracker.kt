@@ -57,8 +57,8 @@ class HandTrackerImpl @Inject constructor(
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
     private val handFrameFilter = HandFrameFilter(
-        minCutoff = 1.5f,
-        beta = 0.0f,
+        minCutoff = 0.8f,
+        beta = 0.08f,
     )
 
     // Timestamp mapping: MediaPipe uses monotonic timestamps in microseconds.

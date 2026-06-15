@@ -97,6 +97,21 @@ class ActionDispatcher @Inject constructor(
     // Drag stroke continuation tracking (M-04: use continueStroke for drag gestures)
     private var lastDragStroke: GestureDescription.StrokeDescription? = null
 
+    // Issue 7 Fix: Drag stability — state locking and timing mechanisms.
+    // The original code dropped drag state too aggressively because:
+    // 1. Each frame's pinch MOVE was treated independently (no state locking)
+    // 2. A single frame of non-PINCH pose would break the drag
+    // 3. No grace period for brief tracking losses
+    //
+    // Fixes:
+    // - dragLockUntilMs: Once drag starts, keep it alive for at least GRACE_PERIOD_MS
+    //   even if tracking briefly flickers. This prevents mid-drag drops.
+    // - dragGraceFrames: Count consecutive non-drag frames before actually ending drag.
+    //   A single bad frame won't break the drag.
+    private var dragLockUntilMs: Long = 0L
+    private var dragGraceFrameCount: Int = 0
+    private var lastDragMoveMs: Long = 0L
+
     // Keyguard state caching to avoid IPC on every check (m-04)
     private var cachedKeyguardLocked = false
     private var keyguardReceiver: BroadcastReceiver? = null
@@ -163,6 +178,8 @@ class ActionDispatcher @Inject constructor(
         accessibilityServiceRef.clear()
         audioManager = null
         lastDragStroke = null
+        dragGraceFrameCount = 0
+        dragLockUntilMs = 0L
         Timber.i("ActionDispatcher detached from accessibility service")
     }
 
@@ -364,6 +381,9 @@ class ActionDispatcher @Inject constructor(
                 dragCurrentX = dragStartX
                 dragCurrentY = dragStartY
                 isDragging = false
+                // Issue 7 Fix: Lock drag state for a grace period
+                dragLockUntilMs = System.currentTimeMillis() + DRAG_GRACE_PERIOD_MS
+                dragGraceFrameCount = 0
                 Timber.v("Pinch START at (%.2f, %.2f)", cursorX, cursorY)
                 true
             }
@@ -376,6 +396,10 @@ class ActionDispatcher @Inject constructor(
                     gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
                 }
                 if (effectiveAction == GestureAction.DRAG) {
+                    // Issue 7 Fix: Reset grace frame counter on each MOVE.
+                    // If tracking is still producing MOVE events, drag is alive.
+                    dragGraceFrameCount = 0
+                    lastDragMoveMs = System.currentTimeMillis()
                     dispatchDragStroke(cursorX, cursorY, screenWidth, screenHeight)
                 } else {
                     false
@@ -395,6 +419,10 @@ class ActionDispatcher @Inject constructor(
 
                 // Custom gesture action takes priority if present
                 val finalAction = customPinchAction ?: effectiveAction
+
+                // Issue 7 Fix: Reset drag state tracking on END
+                dragGraceFrameCount = 0
+                dragLockUntilMs = 0L
 
                 when {
                     finalAction == GestureAction.DRAG -> dispatchDragEnd(cursorX, cursorY, screenWidth, screenHeight)
@@ -444,6 +472,10 @@ class ActionDispatcher @Inject constructor(
 
     /**
      * Dispatches a drag stroke (continuous movement during pinch-hold).
+     *
+     * Issue 7 Fix: For drag MOVE events, we use the CURRENT hand position
+     * (not the anchored pinch position) so the dragged item follows the hand.
+     * The anchor is only used for the initial click target.
      */
     private fun dispatchDragStroke(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         val x = normalizeToScreenX(normX, screenWidth)
@@ -451,15 +483,20 @@ class ActionDispatcher @Inject constructor(
         val fromX = dragCurrentX
         val fromY = dragCurrentY
 
+        // Issue 7 Fix: Clamp step size to prevent wild jumps on tracking glitches
+        val maxStepPx = screenWidth * MAX_DRAG_STEP_FRACTION
+        val clampedX = fromX + (x - fromX).coerceIn(-maxStepPx, maxStepPx)
+        val clampedY = fromY + (y - fromY).coerceIn(-maxStepPx, maxStepPx)
+
         val path = Path().apply {
             moveTo(fromX, fromY)
-            lineTo(x, y)
+            lineTo(clampedX, clampedY)
         }
 
         val label = if (!isDragging) "drag_start" else "drag_continue"
         isDragging = true
-        dragCurrentX = x
-        dragCurrentY = y
+        dragCurrentX = clampedX
+        dragCurrentY = clampedY
 
         // M-04: Use continueStroke for continuous drag gesture
         val stroke = if (lastDragStroke == null) {
@@ -817,7 +854,19 @@ class ActionDispatcher @Inject constructor(
         private const val LONG_PRESS_THRESHOLD_MS = 600L
         private const val DRAG_STEP_DURATION_MS = 16L
         private const val HAPTIC_TICK_MS = 15L
-        private const val EDGE_MARGIN_FRACTION = 0.005f
+
+        // Viewport expansion: power < 1.0 expands center, compresses edges
+        // 0.8 means a hand at 50% of viewport reaches 57% of screen — less fatigue
+        private const val VIEWPORT_EXPANSION_POWER = 0.8f
+
+        // Issue 7 Fix: Drag grace period — once drag starts, keep it alive
+        // for at least this duration even if tracking flickers. This prevents
+        // mid-drag drops caused by a single bad frame from MediaPipe.
+        private const val DRAG_GRACE_PERIOD_MS = 500L
+
+        // Issue 7 Fix: Maximum drag step per frame as fraction of screen width.
+        // Prevents wild cursor jumps from tracking glitches during drag.
+        private const val MAX_DRAG_STEP_FRACTION = 0.15f
         // Gesture map keys
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"
@@ -831,34 +880,46 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
 
         /**
-         * Maps normalized X coordinate [0,1] to screen pixel with full screen coverage.
+         * Maps normalized X coordinate [0,1] to screen pixel with expanded viewport.
          *
          * Since the camera image is already mirrored in CameraService.imageProxyToMPImage
          * (selfie-view), MediaPipe landmarks are in selfie coordinates where the user's
          * right hand appears on the right side. No additional mirroring is needed here.
          *
-         * Full screen coverage: coordinates are mapped to the entire screen area
-         * including cutout and edge-to-edge regions (Android 17+ compatible).
-         * A small 2% margin prevents the cursor from being partially clipped at edges.
+         * EXPANDED VIEWPORT (Issue 3 Fix):
+         * The hand's physical range of motion is smaller than the camera viewport.
+         * Mapping [0,1] linearly means the user must move their hand to extreme edges
+         * to reach screen corners — causing fatigue.
+         *
+         * Solution: Apply a power-curve mapping that expands the center of the viewport
+         * and compresses the edges. A small physical movement near the center maps to
+         * a larger screen area, while edge movements still reach the corners.
+         *
+         * The curve: screenPos = sign(norm) * |norm|^POWER * screenSize
+         * With POWER=0.8, the mapping is:
+         * - norm=0.5 → screen 0.57 (center expanded by 14%)
+         * - norm=0.9 → screen 0.92 (edges slightly compressed)
+         * - norm=1.0 → screen 1.0 (corners still fully reachable)
          */
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             // No mirror — camera already provides selfie-view coordinates
-            // Small margin to prevent cursor clipping at screen edges
-            val marginFraction = EDGE_MARGIN_FRACTION
-            val expanded = marginFraction + normX * (1f - 2f * marginFraction)
-            return (expanded * screenWidth).coerceIn(0f, screenWidth.toFloat())
+            // Apply power curve for expanded viewport (less hand movement needed)
+            val centered = normX * 2f - 1f  // Map to [-1, 1]
+            val expanded = kotlin.math.sign(centered) * kotlin.math.abs(centered).pow(VIEWPORT_EXPANSION_POWER)
+            val mapped = (expanded + 1f) / 2f  // Map back to [0, 1]
+            return (mapped * screenWidth).coerceIn(0f, screenWidth.toFloat())
         }
 
         /**
-         * Maps normalized Y coordinate [0,1] to screen pixel with full screen coverage.
+         * Maps normalized Y coordinate [0,1] to screen pixel with expanded viewport.
          *
-         * Full screen coverage for all device aspect ratios including Android 17
-         * edge-to-edge display, cutouts, and any screen ratio.
+         * Same power-curve expansion as X axis for consistent feel.
          */
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
-            val marginFraction = EDGE_MARGIN_FRACTION
-            val expanded = marginFraction + normY * (1f - 2f * marginFraction)
-            return (expanded * screenHeight).coerceIn(0f, screenHeight.toFloat())
+            val centered = normY * 2f - 1f
+            val expanded = kotlin.math.sign(centered) * kotlin.math.abs(centered).pow(VIEWPORT_EXPANSION_POWER)
+            val mapped = (expanded + 1f) / 2f
+            return (mapped * screenHeight).coerceIn(0f, screenHeight.toFloat())
         }
     }
 

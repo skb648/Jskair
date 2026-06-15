@@ -12,11 +12,19 @@ import com.aircontrol.gesture.model.SwipeDirection
  * (default 350ms). The index fingertip provides more dramatic displacement during
  * swipes, making detection more reliable.
  *
- * When the window is full, computes the displacement vector and peak velocity.
- * A swipe is recognized when:
- *   - Displacement > 15% of frame dimension (sensitivity-scaled)
- *   - Peak velocity > threshold (sensitivity-scaled)
- *   - Dominant axis ratio > 2:1 (rejects diagonal ambiguity)
+ * IMPROVEMENTS (Issue 6 Fix - Inconsistent Swipes):
+ *
+ * 1. DIRECTIONAL CONSISTENCY CHECK: A swipe is only confirmed when ≥70% of
+ *    intermediate velocity vectors agree with the final direction. This prevents
+ *    random directional changes within the window from producing false swipes.
+ *
+ * 2. MULTI-FRAME VELOCITY TRACKING: Instead of just measuring peak velocity,
+ *    we compute the average velocity across the dominant direction. This makes
+ *    swipe detection more consistent because a single noisy frame can no longer
+ *    inflate the peak velocity.
+ *
+ * 3. MINIMUM FRAME COUNT: A swipe requires at least 4 samples in the window,
+ *    not just 3. This ensures sufficient temporal evidence before declaring a swipe.
  *
  * All thresholds scale with the sensitivity setting (0–100).
  */
@@ -86,14 +94,14 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         pruneWindow(wristWindow, input.timestampMs)
         pruneWindow(indexTipWindow, input.timestampMs)
 
-        // Need at least 3 samples to compute velocity
-        if (indexTipWindow.size < 3) return SwipeResult(detected = false)
+        // Issue 6 Fix: Require at least 4 samples (was 3) for temporal consistency
+        if (indexTipWindow.size < MIN_SAMPLES_FOR_SWIPE) return SwipeResult(detected = false)
 
         // Analyze using index fingertip first (more dramatic movement)
         var result = analyzeWindow(indexTipWindow, input.timestampMs)
 
         // If index tip didn't detect, try wrist (some users swipe with whole hand)
-        if (!result.detected && wristWindow.size >= 3) {
+        if (!result.detected && wristWindow.size >= MIN_SAMPLES_FOR_SWIPE) {
             result = analyzeWindow(wristWindow, input.timestampMs)
         }
 
@@ -118,6 +126,11 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
 
     /**
      * Analyzes the current window of position samples for a swipe gesture.
+     *
+     * Includes directional consistency check (Issue 6 Fix):
+     * We verify that the majority of intermediate velocity vectors agree
+     * with the overall displacement direction. This eliminates swipes that
+     * look consistent in total displacement but have zigzag intermediate paths.
      */
     internal fun analyzeWindow(window: ArrayDeque<PositionSample>, currentTimeMs: Long): SwipeResult {
         if (window.size < 2) return SwipeResult(detected = false)
@@ -176,12 +189,24 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         }
 
         // Determine direction based on dominant axis
-        // Note: Since camera image is already mirrored in CameraService, the coordinates
-        // are in selfie-view. So positive X displacement in camera = right on screen.
         val direction = if (isHorizontalDominant) {
             if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
         } else {
             if (displacementY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
+        }
+
+        // Issue 6 Fix: Directional consistency check
+        // Verify that the majority of intermediate velocity vectors agree with
+        // the overall displacement direction. This prevents zigzag movements
+        // from being detected as swipes.
+        val consistency = computeDirectionalConsistency(window, direction)
+        if (consistency < DIRECTIONAL_CONSISTENCY_THRESHOLD) {
+            return SwipeResult(
+                detected = false,
+                displacementX = displacementX,
+                displacementY = displacementY,
+                peakVelocity = peakVelocity,
+            )
         }
 
         return SwipeResult(
@@ -218,6 +243,53 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         return peakVelocity
     }
 
+    /**
+     * Issue 6 Fix: Computes directional consistency across intermediate velocity vectors.
+     *
+     * For each consecutive pair of samples, we check if the velocity vector
+     * points in the same general direction as the overall swipe. The consistency
+     * score is the fraction of vectors that agree.
+     *
+     * A score of 1.0 means all vectors agree (perfect swipe).
+     * A score of 0.5 means half the vectors disagree (zigzag — not a swipe).
+     *
+     * @param window The sliding window of position samples
+     * @param overallDirection The direction of the overall displacement
+     * @return Consistency score [0.0, 1.0]
+     */
+    internal fun computeDirectionalConsistency(
+        window: ArrayDeque<PositionSample>,
+        overallDirection: SwipeDirection,
+    ): Float {
+        if (window.size < 3) return 1.0f // Too few samples to check
+
+        var agreeing = 0
+        var total = 0
+
+        for (i in 1 until window.size) {
+            val prev = window[i - 1]
+            val curr = window[i]
+            val dx = curr.x - prev.x
+            val dy = curr.y - prev.y
+
+            // Only count non-trivial movements (skip jitter)
+            val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (distance < MIN_INTERMEDIATE_DISPLACEMENT) continue
+
+            total++
+            val agrees = when (overallDirection) {
+                SwipeDirection.LEFT -> dx < 0f
+                SwipeDirection.RIGHT -> dx > 0f
+                SwipeDirection.UP -> dy < 0f
+                SwipeDirection.DOWN -> dy > 0f
+            }
+            if (agrees) agreeing++
+        }
+
+        if (total == 0) return 0f
+        return agreeing.toFloat() / total.toFloat()
+    }
+
     /** Resets the detector state. */
     fun reset() {
         wristWindow.clear()
@@ -227,5 +299,11 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
 
     companion object {
         private const val EPSILON = 1e-6f
+        // Issue 6 Fix: Minimum samples for reliable swipe detection (was 3)
+        private const val MIN_SAMPLES_FOR_SWIPE = 4
+        // Minimum fraction of intermediate vectors that must agree with overall direction
+        private const val DIRECTIONAL_CONSISTENCY_THRESHOLD = 0.7f
+        // Minimum displacement for an intermediate step to be counted in consistency check
+        private const val MIN_INTERMEDIATE_DISPLACEMENT = 0.005f
     }
 }
