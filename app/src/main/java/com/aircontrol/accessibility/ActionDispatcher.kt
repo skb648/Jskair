@@ -89,8 +89,6 @@ class ActionDispatcher @Inject constructor(
         KEY_POSE_PINCH_HOLD to GestureAction.DRAG,
     )
 
-    // Gesture dispatch retry tracking
-    private var lastDispatchRetryCount = 0
     private val MAX_RETRIES = 1
 
     // Custom gestures from user configuration
@@ -607,20 +605,20 @@ class ActionDispatcher @Inject constructor(
             return false
         }
 
-        val callback = object : AccessibilityService.GestureResultCallback() {
+        var retryCount = 0
+        lateinit var callback: AccessibilityService.GestureResultCallback
+        callback = object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 Timber.v("Gesture '%s' completed", label)
-                lastDispatchRetryCount = 0
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                if (lastDispatchRetryCount < MAX_RETRIES) {
-                    lastDispatchRetryCount++
-                    Timber.w("Gesture '%s' cancelled, retrying (%d/%d)", label, lastDispatchRetryCount, MAX_RETRIES)
-                    service.dispatchGesture(gesture, null, null)
+                if (retryCount < MAX_RETRIES) {
+                    retryCount++
+                    Timber.w("Gesture '%s' cancelled, retrying (%d/%d)", label, retryCount, MAX_RETRIES)
+                    service.dispatchGesture(gesture, callback, null)
                 } else {
                     Timber.w("Gesture '%s' cancelled, max retries reached", label)
-                    lastDispatchRetryCount = 0
                 }
             }
         }

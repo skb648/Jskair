@@ -151,6 +151,8 @@
     <string name="notification_action_stop">Stop</string>
     <string name="notification_text_thermal">Paused — device is overheating</string>
     <string name="thermal_severe_notification">AirControl paused: Device is overheating. Tracking will resume when it cools down.</string>
+    <string name="boot_resume_notification_title">Resume AirControl tracking</string>
+    <string name="boot_resume_notification_text">Android requires you to open AirControl before camera tracking can resume after reboot.</string>
 
     <!-- Debug Screen -->
     <string name="debug_title">Debug</string>

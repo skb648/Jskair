@@ -89,6 +89,8 @@ class AdaptiveFpsController(
     }
 
     private fun Int.coerceToSupportedFps(): Int = when {
+        this <= 5 -> 5
+        this <= 10 -> 10
         this <= 15 -> 15
         this <= 24 -> 24
         else -> 30
