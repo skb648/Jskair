@@ -148,7 +148,7 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
      * Convert a cosine value to degrees using the standard library.
      */
     private fun acosToDeg(x: Float): Double {
-        return kotlin.math.acos(x.coerceIn(-1.0, 1.0)) * 180.0 / kotlin.math.PI
+        return kotlin.math.acos(x.toDouble().coerceIn(-1.0, 1.0)) * 180.0 / kotlin.math.PI
     }
 
     companion object {

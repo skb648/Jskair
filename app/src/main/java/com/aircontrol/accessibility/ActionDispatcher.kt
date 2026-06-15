@@ -10,6 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import androidx.core.content.ContextCompat
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
@@ -522,7 +523,8 @@ class ActionDispatcher @Inject constructor(
             Pose.VICTORY -> KEY_POSE_VICTORY
             Pose.THUMB_UP -> KEY_POSE_THUMB_UP
             Pose.THUMB_DOWN -> KEY_POSE_THUMB_DOWN
-            Pose.OPEN_PALM, Pose.FIST, Pose.NONE -> return false
+            Pose.OPEN_PALM, Pose.FIST, Pose.NONE,
+            Pose.THREE_FINGERS, Pose.FOUR_FINGERS -> return false
         }
 
         val action = gestureMap[key] ?: GestureAction.NONE
@@ -780,7 +782,7 @@ class ActionDispatcher @Inject constructor(
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
         }
-        appCtx.registerReceiver(receiver, filter)
+        ContextCompat.registerReceiver(appCtx, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         keyguardReceiver = receiver
         keyguardReceiverContext = appCtx
     }

@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.concurrent.Volatile
+import kotlin.jvm.Volatile
 
 /**
  * Wraps MediaPipe HandLandmarker for real-time hand tracking.
@@ -115,13 +115,13 @@ class HandTrackerImpl @Inject constructor(
         if (!_isInitialized) return
 
         var timestampQueued = false
-        try {
-            // Use monotonic clock (System.nanoTime) for MediaPipe timestamps
-            // to guarantee strictly increasing values required by LIVE_STREAM mode.
-            val nanoTimeNs = System.nanoTime()
-            val mediaPipeTimestampUs = nanoTimeNs / 1000L
-            val frameTimestampMs = nanoTimeNs / 1_000_000L
+        // Use monotonic clock (System.nanoTime) for MediaPipe timestamps
+        // to guarantee strictly increasing values required by LIVE_STREAM mode.
+        val nanoTimeNs = System.nanoTime()
+        val mediaPipeTimestampUs = nanoTimeNs / 1000L
+        val frameTimestampMs = nanoTimeNs / 1_000_000L
 
+        try {
             synchronized(timestampLock) {
                 pendingFrameTimestampsMs.addLast(frameTimestampMs)
                 timestampQueued = true

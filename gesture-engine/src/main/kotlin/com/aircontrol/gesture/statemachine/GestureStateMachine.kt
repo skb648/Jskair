@@ -3,7 +3,7 @@ package com.aircontrol.gesture.statemachine
 import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.Pose
-import kotlin.concurrent.Volatile
+import kotlin.jvm.Volatile
 
 /**
  * State machine governing the gesture engine's armed/disarmed lifecycle.

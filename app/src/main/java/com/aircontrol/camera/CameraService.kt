@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.IBinder
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -35,7 +36,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.Volatile
+import kotlin.jvm.Volatile
 
 /**
  * Foreground service that manages the camera and feeds frames to HandTracker.
@@ -211,7 +212,11 @@ class CameraService : LifecycleService() {
         }
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification(isPaused = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, buildNotification(isPaused = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification(isPaused = false))
+            }
         } catch (e: Exception) {
             Timber.e(e, "Failed to enter foreground; cannot start camera tracking")
             stopSelf()
@@ -318,7 +323,12 @@ class CameraService : LifecycleService() {
         userPaused = false
         postRecoveryFps = 0
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         stopSelf()
 
         Timber.i("Tracking stopped")

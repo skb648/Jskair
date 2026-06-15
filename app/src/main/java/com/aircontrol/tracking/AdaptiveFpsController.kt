@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.concurrent.Volatile
+import kotlin.jvm.Volatile
 
 /**
  * Controls analysis frame rate adaptively:

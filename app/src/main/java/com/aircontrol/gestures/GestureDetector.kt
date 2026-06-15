@@ -22,7 +22,7 @@ import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.concurrent.Volatile
+import kotlin.jvm.Volatile
 
 /**
  * Bridges the Android tracking layer (HandFrame from MediaPipe)
