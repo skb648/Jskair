@@ -1,14 +1,42 @@
 package com.aircontrol.ui.customgesture
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -18,6 +46,7 @@ import com.aircontrol.accessibility.GestureAction
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
+import com.aircontrol.data.model.CustomGestureTrigger
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,7 +171,7 @@ private fun CustomGestureItem(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "${gesture.triggerPose.displayName()} → ${gesture.action.displayName()}",
+                    text = formatTriggerDisplay(gesture.triggerPose) + " \u2192 " + gesture.action.displayName(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -153,7 +182,7 @@ private fun CustomGestureItem(
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
             IconButton(onClick = onEdit) {
-                Text("✏", style = MaterialTheme.typography.bodyMedium)
+                Text("\u270F", style = MaterialTheme.typography.bodyMedium)
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete")
@@ -162,6 +191,7 @@ private fun CustomGestureItem(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomGestureCreatorPanel(
     state: CustomGestureCreatorState,
@@ -241,7 +271,9 @@ private fun CustomGestureCreatorPanel(
                 value = state.selectedAction.displayName(),
                 onValueChange = {},
                 readOnly = true,
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                },
                 modifier = Modifier.menuAnchor(),
             )
             ExposedDropdownMenu(
@@ -279,17 +311,18 @@ private fun CustomGestureCreatorPanel(
     }
 }
 
-private fun CustomGestureTrigger.displayName(): String {
-    return when (this) {
+/** Formats the trigger for display in the gesture list. */
+private fun formatTriggerDisplay(trigger: CustomGestureTrigger): String {
+    return when (trigger) {
         is CustomGestureTrigger.PoseWithDirection -> {
-            if (direction == CustomGestureDirection.NONE) {
-                pose.displayName()
+            if (trigger.direction == CustomGestureDirection.NONE) {
+                trigger.pose.displayName()
             } else {
-                "${pose.displayName()} + ${direction.displayName()}"
+                trigger.pose.displayName() + " + " + trigger.direction.displayName()
             }
         }
         is CustomGestureTrigger.FingerCount -> {
-            "$extendedFingers fingers"
+            trigger.extendedFingers.toString() + " fingers"
         }
     }
 }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import android.os.Build
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import com.aircontrol.camera.CameraService
