@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.os.Build
 import android.view.WindowManager
+import androidx.core.content.ContextCompat
 import android.view.accessibility.AccessibilityEvent
 import com.aircontrol.camera.CameraService
 import com.aircontrol.control.CursorController
@@ -250,8 +251,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
             handTracker.handFrames.collect { frame ->
                 try {
                     lastFrameReceivedMs = System.currentTimeMillis()
-                    if (!isThermalPaused) {
+                    if (!isThermalPaused && frame.matchesHandPreference(currentPreferences.handPreference)) {
                         gestureDetector.processHandFrame(frame)
+                    } else if (!frame.matchesHandPreference(currentPreferences.handPreference)) {
+                        gestureDetector.processHandFrame(com.aircontrol.tracking.HandFrame.EMPTY.copy(timestampMs = frame.timestampMs))
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error processing hand frame — skipping")
@@ -378,8 +381,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     private fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
-        val cursorX = cursorController.cursorState.value.x
-        val cursorY = cursorController.cursorState.value.y
+        val cursorState = cursorController.cursorState.value
+        val cursorX = if (event is GestureEvent.Pinch) event.x else cursorState.x
+        val cursorY = if (event is GestureEvent.Pinch) event.y else cursorState.y
 
         // Show/hide cursor based on engine state
         when (engineState) {
@@ -513,10 +517,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
         }
-        registerReceiver(screenReceiver, filter)
+        ContextCompat.registerReceiver(
+            this,
+            screenReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     // ========== Utility ==========
+
+    private fun com.aircontrol.tracking.HandFrame.matchesHandPreference(
+        preference: com.aircontrol.data.model.HandPreference,
+    ): Boolean {
+        if (!isDetected || preference == com.aircontrol.data.model.HandPreference.ANY) return true
+        return when (preference) {
+            com.aircontrol.data.model.HandPreference.LEFT -> handedness == com.aircontrol.tracking.Handedness.LEFT
+            com.aircontrol.data.model.HandPreference.RIGHT -> handedness == com.aircontrol.tracking.Handedness.RIGHT
+            com.aircontrol.data.model.HandPreference.ANY -> true
+        }
+    }
 
     companion object {
         private const val CURSOR_FREEZE_MS_GESTURE = 300L  // Freeze for swipe/pose gestures

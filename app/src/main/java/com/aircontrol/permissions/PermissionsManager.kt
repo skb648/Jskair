@@ -24,6 +24,7 @@ data class PermissionStates(
     // Kept for UI/backward compatibility. AirControl uses TYPE_ACCESSIBILITY_OVERLAY
     // on minSdk 26+, so SYSTEM_ALERT_WINDOW is not required for runtime.
     val overlayGranted: Boolean = true,
+    val notificationsGranted: Boolean = true,
 ) {
     val allGranted: Boolean get() = cameraGranted && accessibilityGranted
 
@@ -55,15 +56,20 @@ class PermissionsManager constructor(
     private val _overlayGranted = MutableStateFlow(checkOverlayPermission())
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
+    private val _notificationsGranted = MutableStateFlow(checkNotificationPermission())
+    val notificationsGranted: StateFlow<Boolean> = _notificationsGranted
+
     val permissionStates: StateFlow<PermissionStates> = combine(
         _cameraGranted,
         _accessibilityGranted,
         _overlayGranted,
-    ) { camera, accessibility, overlay ->
+        _notificationsGranted,
+    ) { camera, accessibility, overlay, notifications ->
         PermissionStates(
             cameraGranted = camera,
             accessibilityGranted = accessibility,
             overlayGranted = overlay,
+            notificationsGranted = notifications,
         )
     }.stateIn(
         scope = scope,
@@ -72,6 +78,7 @@ class PermissionsManager constructor(
             cameraGranted = checkCameraPermission(),
             accessibilityGranted = checkAccessibilityPermission(),
             overlayGranted = checkOverlayPermission(),
+            notificationsGranted = checkNotificationPermission(),
         ),
     )
 
@@ -79,11 +86,13 @@ class PermissionsManager constructor(
         _cameraGranted.value = checkCameraPermission()
         _accessibilityGranted.value = checkAccessibilityPermission()
         _overlayGranted.value = checkOverlayPermission()
+        _notificationsGranted.value = checkNotificationPermission()
         Timber.d(
-            "Permissions refreshed: camera=%s, accessibility=%s, overlay=%s",
+            "Permissions refreshed: camera=%s, accessibility=%s, overlay=%s notifications=%s",
             _cameraGranted.value,
             _accessibilityGranted.value,
             _overlayGranted.value,
+            _notificationsGranted.value,
         )
     }
 
@@ -148,5 +157,13 @@ class PermissionsManager constructor(
         // permission is not needed.
         Timber.v("Overlay permission check: true (accessibility overlay)")
         return true
+    }
+
+    private fun checkNotificationPermission(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return true
+        val result = context.checkCallingOrSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+        val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
+        Timber.v("Notification permission check: %s", granted)
+        return granted
     }
 }

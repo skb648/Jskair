@@ -32,7 +32,6 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.inject.Inject
 
 /**
  * Foreground service that manages the camera and feeds frames to HandTracker.
@@ -217,8 +216,10 @@ class CameraService : LifecycleService() {
 
         trackingJobs.add(serviceScope.launch {
             try {
+                val provider = withContext(Dispatchers.Default) {
+                    ProcessCameraProvider.getInstance(this@CameraService).get()
+                }
                 withContext(Dispatchers.Main.immediate) {
-                    val provider = ProcessCameraProvider.getInstance(this@CameraService).get()
                     cameraProvider = provider
 
                     val cameraSelector = CameraSelector.Builder()
@@ -351,19 +352,21 @@ class CameraService : LifecycleService() {
      * mirrored view that users expect from a front-facing camera.
      */
     private fun imageProxyToMPImage(imageProxy: ImageProxy): MPImage? {
+        var rawBitmap: Bitmap? = null
         return try {
-            val rawBitmap = imageProxy.toBitmap()
+            val sourceBitmap = imageProxy.toBitmap()
+            rawBitmap = sourceBitmap
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
             // Calculate target dimensions after rotation
             val targetWidth: Int
             val targetHeight: Int
             if (rotationDegrees == 90 || rotationDegrees == 270) {
-                targetWidth = rawBitmap.height
-                targetHeight = rawBitmap.width
+                targetWidth = sourceBitmap.height
+                targetHeight = sourceBitmap.width
             } else {
-                targetWidth = rawBitmap.width
-                targetHeight = rawBitmap.height
+                targetWidth = sourceBitmap.width
+                targetHeight = sourceBitmap.height
             }
 
             // Reuse or allocate transform bitmap
@@ -388,15 +391,15 @@ class CameraService : LifecycleService() {
             when (rotationDegrees) {
                 90 -> {
                     matrix.postRotate(90f)
-                    matrix.postTranslate(rawBitmap.height.toFloat(), 0f)
+                    matrix.postTranslate(sourceBitmap.height.toFloat(), 0f)
                 }
                 180 -> {
                     matrix.postRotate(180f)
-                    matrix.postTranslate(rawBitmap.width.toFloat(), rawBitmap.height.toFloat())
+                    matrix.postTranslate(sourceBitmap.width.toFloat(), sourceBitmap.height.toFloat())
                 }
                 270 -> {
                     matrix.postRotate(270f)
-                    matrix.postTranslate(0f, rawBitmap.width.toFloat())
+                    matrix.postTranslate(0f, sourceBitmap.width.toFloat())
                 }
                 // 0 degrees: no rotation needed
             }
@@ -406,16 +409,15 @@ class CameraService : LifecycleService() {
             // Draw into reusable target bitmap
             val canvas = android.graphics.Canvas(targetBitmap)
             canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-            canvas.drawBitmap(rawBitmap, matrix, null)
-
-            // Recycle raw bitmap immediately - no longer needed
-            rawBitmap.recycle()
+            canvas.drawBitmap(sourceBitmap, matrix, null)
 
             // BitmapImageBuilder copies data internally, safe to reuse targetBitmap next frame
             BitmapImageBuilder(targetBitmap).build()
         } catch (e: Exception) {
             Timber.e(e, "Error converting ImageProxy to MPImage")
             null
+        } finally {
+            rawBitmap?.recycle()
         }
     }
 
@@ -518,7 +520,9 @@ class CameraService : LifecycleService() {
         serviceScope.launch {
             try {
                 withContext(Dispatchers.Main.immediate) {
-                    val provider = cameraProvider ?: ProcessCameraProvider.getInstance(this@CameraService).get()
+                    val provider = cameraProvider ?: withContext(Dispatchers.Default) {
+                        ProcessCameraProvider.getInstance(this@CameraService).get()
+                    }
                     cameraProvider = provider
 
                     val cameraSelector = CameraSelector.Builder()
@@ -585,8 +589,8 @@ class CameraService : LifecycleService() {
                 }
             }
             com.aircontrol.tracking.ThermalStatus.MODERATE -> {
-                Timber.i("Thermal MODERATE — reducing FPS to %d", minOf(15, configuredFps / 2))
-                val throttledFps = minOf(15, configuredFps / 2)
+                val throttledFps = (configuredFps / 2).coerceIn(5, 15)
+                Timber.i("Thermal MODERATE — reducing FPS to %d", throttledFps)
                 adaptiveFpsController.updateConfiguredFps(throttledFps)
             }
             com.aircontrol.tracking.ThermalStatus.SEVERE -> {
