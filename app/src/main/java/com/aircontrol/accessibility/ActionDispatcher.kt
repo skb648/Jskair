@@ -905,7 +905,8 @@ class ActionDispatcher @Inject constructor(
             // No mirror — camera already provides selfie-view coordinates
             // Apply power curve for expanded viewport (less hand movement needed)
             val centered = (normX * 2f - 1f).toDouble()  // Map to [-1, 1]
-            val expanded = kotlin.math.sign(centered) * kotlin.math.abs(centered).pow(VIEWPORT_EXPANSION_POWER.toDouble())
+            val absVal = kotlin.math.abs(centered)
+            val expanded = kotlin.math.sign(centered) * kotlin.math.pow(absVal, VIEWPORT_EXPANSION_POWER.toDouble())
             val mapped = ((expanded + 1.0) / 2.0).toFloat()  // Map back to [0, 1]
             return (mapped * screenWidth).coerceIn(0f, screenWidth.toFloat())
         }
@@ -917,7 +918,8 @@ class ActionDispatcher @Inject constructor(
          */
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
             val centered = (normY * 2f - 1f).toDouble()
-            val expanded = kotlin.math.sign(centered) * kotlin.math.abs(centered).pow(VIEWPORT_EXPANSION_POWER.toDouble())
+            val absVal = kotlin.math.abs(centered)
+            val expanded = kotlin.math.sign(centered) * kotlin.math.pow(absVal, VIEWPORT_EXPANSION_POWER.toDouble())
             val mapped = ((expanded + 1.0) / 2.0).toFloat()
             return (mapped * screenHeight).coerceIn(0f, screenHeight.toFloat())
         }
