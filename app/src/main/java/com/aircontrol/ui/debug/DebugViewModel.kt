@@ -202,7 +202,7 @@ class DebugViewModel @Inject constructor(
                         .build()
 
                     val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_NEAREST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
                         .build()
 
                     val preview = Preview.Builder()
@@ -211,7 +211,7 @@ class DebugViewModel @Inject constructor(
                     preview.surfaceProvider = previewView.surfaceProvider
 
                     val analysisResolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_NEAREST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
                         .build()
 
                     val imageAnalysis = ImageAnalysis.Builder()

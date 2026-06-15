@@ -260,7 +260,7 @@ class CameraService : LifecycleService() {
 
                     // ImageAnalysis for hand tracking
                     val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_NEAREST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
                         .build()
                     val analysis = ImageAnalysis.Builder()
                         .setResolutionSelector(resolutionSelector)
@@ -588,7 +588,7 @@ class CameraService : LifecycleService() {
                         .build()
 
                     val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_NEAREST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
                         .build()
                     val analysis = ImageAnalysis.Builder()
                         .setResolutionSelector(resolutionSelector)
