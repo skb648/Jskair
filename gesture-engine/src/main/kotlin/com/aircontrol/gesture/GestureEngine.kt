@@ -129,9 +129,11 @@ class GestureEngine(
             }
         }
 
-        // 6. Emit gesture events (only when ARMED or EXECUTING)
+        // 6. Emit gesture events (when ARMED, EXECUTING, or COOLDOWN)
+        // COOLDOWN is included so swipes can be detected even after a pose gesture
         if (transition.newState == GestureEngineState.ARMED ||
-            transition.newState == GestureEngineState.EXECUTING
+            transition.newState == GestureEngineState.EXECUTING ||
+            transition.newState == GestureEngineState.COOLDOWN
         ) {
             // Swipes
             if (swipeResult.detected && swipeResult.direction != null) {

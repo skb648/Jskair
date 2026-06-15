@@ -80,6 +80,7 @@ fun HomeScreen(
     onNavigateToCalibration: () -> Unit,
     onNavigateToOnboarding: () -> Unit,
     onNavigateToDebug: () -> Unit,
+    onNavigateToCustomGesture: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val preferences by viewModel.userPreferences.collectAsState()
@@ -362,6 +363,33 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.width(Dimens.spacing8))
                     Text(text = "Debug", style = MaterialTheme.typography.titleSmall)
                 }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            FilledTonalButton(
+                onClick = onNavigateToCustomGesture,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(Dimens.buttonHeight),
+                shape = RoundedCornerShape(Dimens.buttonCornerRadius),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Fingerprint,
+                    contentDescription = null,
+                    modifier = Modifier.size(Dimens.iconMedium),
+                )
+                Spacer(modifier = Modifier.width(Dimens.spacing8))
+                Text(
+                    text = "Custom Gestures",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(modifier = Modifier.height(Dimens.spacing32))

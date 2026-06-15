@@ -72,13 +72,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var pipelineJobs: MutableList<Job> = mutableListOf()
 
     // Thermal throttling
-    private lateinit var thermalMonitor: com.aircontrol.tracking.ThermalMonitor
+    private var thermalMonitor: com.aircontrol.tracking.ThermalMonitor? = null
     private var thermalMonitoringJob: Job? = null
     private var isThermalPaused = false
 
     // Runtime settings cache
     private var currentPreferences = UserPreferences()
     private var lastAppliedSensitivity: Int? = null
+
+    // Cursor freeze during gesture execution for better accuracy
+    private var isCursorFrozen = false
+    private var cursorFreezeJob: Job? = null
 
     // Broadcast receiver for screen state
     private val screenReceiver = object : BroadcastReceiver() {
@@ -139,6 +143,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Create overlays
         createOverlays()
+
+        // Initialize thermal monitoring (better here than lazy init in startThermalMonitoring)
+        thermalMonitor = com.aircontrol.tracking.ThermalMonitor(
+            context = this,
+            scope = serviceScope,
+        )
 
         // Start tracking pipeline
         startTrackingPipeline()
@@ -280,7 +290,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             gestureDetector.gestureEvents.collect { event ->
                 try {
-                    if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled) {
+                    // Freeze cursor during gesture execution for better accuracy
+                    if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled && !isCursorFrozen) {
                         cursorOverlay?.updatePosition(event.x, event.y, screenWidth, screenHeight)
                         cursorController.updatePosition(
                             com.aircontrol.tracking.HandFrame(
@@ -332,17 +343,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     private fun startThermalMonitoring() {
-        if (!::thermalMonitor.isInitialized) {
-            thermalMonitor = com.aircontrol.tracking.ThermalMonitor(
-                context = this,
-                scope = serviceScope,
-            )
-        }
-        thermalMonitor.startMonitoring()
+        val monitor = thermalMonitor ?: return
+        monitor.startMonitoring()
 
         // Collect thermal status and pause/resume gesture dispatch
         thermalMonitoringJob = serviceScope.launch {
-            thermalMonitor.thermalStatus.collect { status ->
+            monitor.thermalStatus.collect { status ->
                 when (status) {
                     com.aircontrol.tracking.ThermalStatus.SEVERE -> {
                         Timber.w("Thermal SEVERE — pausing gesture dispatch")
@@ -367,9 +373,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun stopThermalMonitoring() {
         thermalMonitoringJob?.cancel()
         thermalMonitoringJob = null
-        if (::thermalMonitor.isInitialized) {
-            thermalMonitor.stopMonitoring()
-        }
+        thermalMonitor?.stopMonitoring()
     }
 
     private fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
@@ -395,6 +399,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         }
 
+        // Freeze cursor during gesture execution for better accuracy
+        // When any gesture is recognized (swipe, pose, pinch start), freeze the cursor
+        // briefly so the action targets the correct position
+        when (event) {
+            is GestureEvent.Swipe -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
+            is GestureEvent.PoseTriggered -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
+            is GestureEvent.Pinch -> {
+                when (event.phase) {
+                    com.aircontrol.gesture.model.PinchPhase.START -> freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
+                    com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* Don't freeze during drag */ }
+                    com.aircontrol.gesture.model.PinchPhase.END -> {
+                        (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
+                    }
+                }
+            }
+            is GestureEvent.Armed,
+            is GestureEvent.Disarmed,
+            is GestureEvent.CursorMoved -> { /* No freeze */ }
+        }
+
         // Dispatch action
         actionDispatcher.dispatch(event, engineState, cursorX, cursorY, screenWidth, screenHeight)
 
@@ -405,6 +429,20 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* drag continues */ }
                 com.aircontrol.gesture.model.PinchPhase.END -> cursorController.show()
             }
+        }
+    }
+
+    /**
+     * Freezes the cursor for a brief duration to prevent position drift during
+     * gesture execution. This improves accuracy by ensuring the action targets
+     * the exact position where the gesture was recognized.
+     */
+    private fun freezeCursorBriefly(durationMs: Long) {
+        isCursorFrozen = true
+        cursorFreezeJob?.cancel()
+        cursorFreezeJob = serviceScope.launch {
+            delay(durationMs)
+            isCursorFrozen = false
         }
     }
 
@@ -452,11 +490,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     private fun updateScreenMetrics() {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val metrics = android.util.DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getMetrics(metrics)
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.currentWindowMetrics.bounds
+            screenWidth = bounds.width()
+            screenHeight = bounds.height()
+        } else {
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            screenWidth = metrics.widthPixels
+            screenHeight = metrics.heightPixels
+        }
         Timber.d("Screen metrics updated: %dx%d", screenWidth, screenHeight)
     }
 
@@ -473,4 +517,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     // ========== Utility ==========
 
+    companion object {
+        private const val CURSOR_FREEZE_MS_GESTURE = 300L  // Freeze for swipe/pose gestures
+        private const val CURSOR_FREEZE_MS_PINCH = 150L    // Shorter freeze for pinch (tap)
+    }
 }

@@ -20,18 +20,19 @@ data class GestureMapConfig(
     val entries: List<GestureMapEntry> = defaultEntries(),
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 2
+        const val CURRENT_SCHEMA_VERSION = 3
 
         fun defaultEntries(): List<GestureMapEntry> = listOf(
-            GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_RIGHT),
-            GestureMapEntry("swipe_right", "Swipe Right", GestureAction.SCROLL_LEFT),
-            GestureMapEntry("swipe_up", "Swipe Up", GestureAction.SCROLL_DOWN),
-            GestureMapEntry("swipe_down", "Swipe Down", GestureAction.SCROLL_UP),
+            GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_LEFT),
+            GestureMapEntry("swipe_right", "Swipe Right", GestureAction.SCROLL_RIGHT),
+            GestureMapEntry("swipe_up", "Swipe Up", GestureAction.SCROLL_UP),
+            GestureMapEntry("swipe_down", "Swipe Down", GestureAction.SCROLL_DOWN),
             GestureMapEntry("pose_pinch", "Pinch", GestureAction.TAP),
             GestureMapEntry("pose_pointing", "Pointing", GestureAction.NONE),
             GestureMapEntry("pose_victory", "Victory", GestureAction.MEDIA_PLAY_PAUSE),
             GestureMapEntry("pose_thumb_up", "Thumb Up", GestureAction.VOLUME_UP),
             GestureMapEntry("pose_thumb_down", "Thumb Down", GestureAction.VOLUME_DOWN),
+            GestureMapEntry("pose_pinch_hold", "Pinch Hold (Drag)", GestureAction.DRAG),
         )
 
         /**

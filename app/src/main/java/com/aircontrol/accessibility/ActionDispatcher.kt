@@ -7,6 +7,10 @@ import android.graphics.Path
 import android.media.AudioManager
 import android.os.Build
 import com.aircontrol.data.model.UserPreferences
+import com.aircontrol.data.model.CustomGesture
+import com.aircontrol.data.model.CustomGestureDirection
+import com.aircontrol.data.model.CustomGesturePose
+import com.aircontrol.data.model.CustomGestureTrigger
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
@@ -82,11 +86,15 @@ class ActionDispatcher @Inject constructor(
         KEY_POSE_VICTORY to GestureAction.MEDIA_PLAY_PAUSE,
         KEY_POSE_THUMB_UP to GestureAction.VOLUME_UP,
         KEY_POSE_THUMB_DOWN to GestureAction.VOLUME_DOWN,
+        KEY_POSE_PINCH_HOLD to GestureAction.DRAG,
     )
 
     // Gesture dispatch retry tracking
     private var lastDispatchRetryCount = 0
     private val MAX_RETRIES = 1
+
+    // Custom gestures from user configuration
+    private var customGesturesList: List<CustomGesture> = emptyList()
 
     init {
         scope.launch {
@@ -101,6 +109,12 @@ class ActionDispatcher @Inject constructor(
                     gestureMap[entry.key] = entry.action
                 }
                 Timber.d("Loaded %d gesture mappings from settings", gestureMap.size)
+            }
+        }
+        scope.launch {
+            settingsRepository.customGestures.collect { gestures ->
+                customGesturesList = gestures.filter { it.isEnabled }
+                Timber.d("Loaded %d custom gestures", customGesturesList.size)
             }
         }
     }
@@ -158,8 +172,10 @@ class ActionDispatcher @Inject constructor(
         screenWidth: Int,
         screenHeight: Int,
     ): Boolean {
-        // Only dispatch when armed or executing
-        if (engineState != GestureEngineState.ARMED && engineState != GestureEngineState.EXECUTING) {
+        // Only dispatch when armed, executing, or in cooldown
+        if (engineState != GestureEngineState.ARMED &&
+            engineState != GestureEngineState.EXECUTING &&
+            engineState != GestureEngineState.COOLDOWN) {
             return false
         }
 
@@ -188,6 +204,21 @@ class ActionDispatcher @Inject constructor(
     // ========== Swipe dispatching ==========
 
     private fun dispatchSwipe(event: GestureEvent.Swipe, screenWidth: Int, screenHeight: Int): Boolean {
+        // Check custom gestures with direction first
+        val customDirection = when (event.direction) {
+            SwipeDirection.LEFT -> CustomGestureDirection.LEFT
+            SwipeDirection.RIGHT -> CustomGestureDirection.RIGHT
+            SwipeDirection.UP -> CustomGestureDirection.UP
+            SwipeDirection.DOWN -> CustomGestureDirection.DOWN
+        }
+        val customAction = customGesturesList.find { gesture ->
+            val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
+            trigger != null && trigger.direction == customDirection
+        }?.action
+        if (customAction != null && customAction != GestureAction.NONE) {
+            return executeAction(customAction, 0.5f, 0.5f, screenWidth, screenHeight)
+        }
+
         val action = when (event.direction) {
             SwipeDirection.LEFT -> gestureMap[KEY_SWIPE_LEFT] ?: GestureAction.NONE
             SwipeDirection.RIGHT -> gestureMap[KEY_SWIPE_RIGHT] ?: GestureAction.NONE
@@ -404,6 +435,12 @@ class ActionDispatcher @Inject constructor(
         screenWidth: Int,
         screenHeight: Int,
     ): Boolean {
+        // Check custom gestures first (higher priority)
+        val customAction = matchCustomGesture(event.pose)
+        if (customAction != null) {
+            return executeAction(customAction, cursorX, cursorY, screenWidth, screenHeight)
+        }
+
         val key = when (event.pose) {
             Pose.PINCH -> KEY_POSE_PINCH
             Pose.POINTING -> KEY_POSE_POINTING
@@ -415,6 +452,42 @@ class ActionDispatcher @Inject constructor(
 
         val action = gestureMap[key] ?: GestureAction.NONE
 
+        return executeAction(action, cursorX, cursorY, screenWidth, screenHeight)
+    }
+
+    /**
+     * Matches a pose against custom gestures.
+     * Returns the GestureAction if a match is found, null otherwise.
+     */
+    private fun matchCustomGesture(pose: Pose): GestureAction? {
+        val customPose = when (pose) {
+            Pose.OPEN_PALM -> CustomGesturePose.OPEN_PALM
+            Pose.FIST -> CustomGesturePose.FIST
+            Pose.PINCH -> CustomGesturePose.PINCH
+            Pose.POINTING -> CustomGesturePose.POINTING
+            Pose.VICTORY -> CustomGesturePose.VICTORY
+            Pose.THUMB_UP -> CustomGesturePose.THUMB_UP
+            Pose.THUMB_DOWN -> CustomGesturePose.THUMB_DOWN
+            else -> return null
+        }
+
+        // Find a custom gesture that matches this pose with no direction requirement
+        return customGesturesList.find { gesture ->
+            val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
+            trigger != null && trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+        }?.action
+    }
+
+    /**
+     * Executes a GestureAction regardless of whether it came from standard or custom mapping.
+     */
+    private fun executeAction(
+        action: GestureAction,
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): Boolean {
         return when (action) {
             GestureAction.BACK -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
             GestureAction.HOME -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
@@ -434,7 +507,7 @@ class ActionDispatcher @Inject constructor(
             GestureAction.SCROLL_RIGHT -> dispatchHorizontalScroll(screenWidth, screenHeight, scrollLeft = false)
             GestureAction.DRAG -> false // Drag is pinch-only
             GestureAction.NONE -> {
-                Timber.v("No action mapped for pose %s", event.pose)
+                Timber.v("No action mapped for this gesture")
                 false
             }
         }
@@ -609,7 +682,7 @@ class ActionDispatcher @Inject constructor(
         private const val LONG_PRESS_THRESHOLD_MS = 600L
         private const val DRAG_STEP_DURATION_MS = 16L
         private const val HAPTIC_TICK_MS = 15L
-        private const val EDGE_MARGIN_FRACTION = 0.1f
+        private const val EDGE_MARGIN_FRACTION = 0.02f
 
         // Gesture map keys
         const val KEY_SWIPE_LEFT = "swipe_left"
@@ -621,24 +694,32 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_VICTORY = "pose_victory"
         const val KEY_POSE_THUMB_UP = "pose_thumb_up"
         const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
+        const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
 
         /**
-         * Maps normalized X coordinate [0,1] to screen pixel with edge margin expansion.
-         * The front camera mirror is applied (1 - x) for selfie-view mapping.
-         * 10% edge margin expansion ensures corners are reachable.
+         * Maps normalized X coordinate [0,1] to screen pixel with full screen coverage.
+         *
+         * Since the camera image is already mirrored in CameraService.imageProxyToMPImage
+         * (selfie-view), MediaPipe landmarks are in selfie coordinates where the user's
+         * right hand appears on the right side. No additional mirroring is needed here.
+         *
+         * Full screen coverage: coordinates are mapped to the entire screen area
+         * including cutout and edge-to-edge regions (Android 17+ compatible).
+         * A small 2% margin prevents the cursor from being partially clipped at edges.
          */
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
-            // Mirror for front camera (selfie view)
-            val mirrored = 1f - normX
-            // Expand 10% margins so corners are reachable
+            // No mirror — camera already provides selfie-view coordinates
+            // Small margin to prevent cursor clipping at screen edges
             val marginFraction = EDGE_MARGIN_FRACTION
-            val expanded = marginFraction + mirrored * (1f - 2f * marginFraction)
+            val expanded = marginFraction + normX * (1f - 2f * marginFraction)
             return (expanded * screenWidth).coerceIn(0f, screenWidth.toFloat())
         }
 
         /**
-         * Maps normalized Y coordinate [0,1] to screen pixel with edge margin expansion.
-         * 10% edge margin expansion ensures corners are reachable.
+         * Maps normalized Y coordinate [0,1] to screen pixel with full screen coverage.
+         *
+         * Full screen coverage for all device aspect ratios including Android 17
+         * edge-to-edge display, cutouts, and any screen ratio.
          */
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
             val marginFraction = EDGE_MARGIN_FRACTION

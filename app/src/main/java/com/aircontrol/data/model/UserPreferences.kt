@@ -13,4 +13,7 @@ data class UserPreferences(
     val batterySaver: Boolean = false,
     val startOnBoot: Boolean = false,
     val statusPillEnabled: Boolean = true,
+    val calibratedHandSizeMm: Float = 0f,
+    val calibratedPinchDistanceMm: Float = 0f,
+    val isCalibrated: Boolean = false,
 )

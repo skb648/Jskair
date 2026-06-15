@@ -39,102 +39,84 @@ class SettingsRepositoryImplTest {
         repository = SettingsRepositoryImpl(testDataStore)
     }
 
-    // ========== Serialization Tests ==========
+    // ========== Serialization Tests (JSON format) ==========
 
     @Test
-    fun `serializeGestureMap produces pipe-delimited format with semicolon separators`() {
+    fun `serializeGestureMap produces JSON array format`() {
         val config = GestureMapConfig(
             entries = listOf(
-                GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_RIGHT),
+                GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_LEFT),
                 GestureMapEntry("pose_pinch", "Pinch", GestureAction.TAP),
             ),
         )
         val serialized = repository.serializeGestureMap(config)
 
-        // Should be: key|label|action;key|label|action
-        assertEquals("swipe_left|Swipe Left|SCROLL_RIGHT;pose_pinch|Pinch|TAP", serialized)
+        // Should be valid JSON array
+        assertTrue("Should start with [", serialized.startsWith("["))
+        assertTrue("Should end with ]", serialized.endsWith("]"))
+        assertTrue("Should contain swipe_left", serialized.contains("swipe_left"))
+        assertTrue("Should contain SCROLL_LEFT", serialized.contains("SCROLL_LEFT"))
+        assertTrue("Should contain pose_pinch", serialized.contains("pose_pinch"))
+        assertTrue("Should contain TAP", serialized.contains("TAP"))
     }
 
     @Test
-    fun `serializeGestureMap with single entry has no semicolons`() {
+    fun `serializeGestureMap with single entry produces valid JSON`() {
         val config = GestureMapConfig(
             entries = listOf(
                 GestureMapEntry("swipe_left", "Swipe Left", GestureAction.BACK),
             ),
         )
         val serialized = repository.serializeGestureMap(config)
-        assertEquals("swipe_left|Swipe Left|BACK", serialized)
+        assertTrue("Should contain swipe_left", serialized.contains("swipe_left"))
+        assertTrue("Should contain BACK", serialized.contains("BACK"))
     }
 
     @Test
-    fun `serializeGestureMap with empty entries returns empty string`() {
+    fun `serializeGestureMap with empty entries returns empty JSON array`() {
         val config = GestureMapConfig(entries = emptyList())
         val serialized = repository.serializeGestureMap(config)
-        assertEquals("", serialized)
+        assertEquals("[]", serialized)
     }
 
     @Test
-    fun `serializeGestureMap with all default entries produces expected format`() {
+    fun `serializeGestureMap with all default entries produces valid JSON`() {
         val config = GestureMapConfig()
         val serialized = repository.serializeGestureMap(config)
 
-        // Verify format: each entry is key|label|action separated by ;
-        val segments = serialized.split(";")
-        assertEquals(GestureMapConfig.defaultEntries().size, segments.size)
-
-        segments.forEach { segment ->
-            val parts = segment.split("|")
-            assertEquals("Each segment should have exactly 3 pipe-delimited parts: $segment", 3, parts.size)
-        }
+        // Should be a valid JSON array with all entries
+        val jsonArray = org.json.JSONArray(serialized)
+        assertEquals(GestureMapConfig.defaultEntries().size, jsonArray.length())
     }
 
     // ========== Deserialization Tests ==========
 
     @Test
-    fun `deserializeGestureMap correctly parses valid format`() {
-        val json = "swipe_left|Swipe Left|SCROLL_RIGHT;pose_pinch|Pinch|TAP"
-        val config = repository.deserializeGestureMap(json, 2)
+    fun `deserializeGestureMap correctly parses JSON format`() {
+        val json = """[{"key":"swipe_left","label":"Swipe Left","action":"SCROLL_LEFT"},{"key":"pose_pinch","label":"Pinch","action":"TAP"}]"""
+        val config = repository.deserializeGestureMap(json, 3)
 
-        assertEquals(2, config.schemaVersion)
+        assertEquals(3, config.schemaVersion)
         assertEquals(2, config.entries.size)
         assertEquals("swipe_left", config.entries[0].key)
         assertEquals("Swipe Left", config.entries[0].label)
-        assertEquals(GestureAction.SCROLL_RIGHT, config.entries[0].action)
+        assertEquals(GestureAction.SCROLL_LEFT, config.entries[0].action)
         assertEquals("pose_pinch", config.entries[1].key)
         assertEquals("Pinch", config.entries[1].label)
         assertEquals(GestureAction.TAP, config.entries[1].action)
     }
 
     @Test
-    fun `deserializeGestureMap handles empty string`() {
-        val config = repository.deserializeGestureMap("", 1)
+    fun `deserializeGestureMap handles empty JSON array`() {
+        val json = "[]"
+        val config = repository.deserializeGestureMap(json, 1)
         assertEquals(1, config.schemaVersion)
-        assertTrue("Empty string should produce empty entries", config.entries.isEmpty())
+        assertTrue("Empty array should produce empty entries", config.entries.isEmpty())
     }
 
     @Test
-    fun `deserializeGestureMap handles malformed entry with too few parts`() {
-        val json = "swipe_left|Swipe Left;pose_pinch|Pinch|TAP"
-        val config = repository.deserializeGestureMap(json, 1)
-
-        // Only the valid 3-part entry should survive
-        assertEquals(1, config.entries.size)
-        assertEquals("pose_pinch", config.entries[0].key)
-    }
-
-    @Test
-    fun `deserializeGestureMap handles malformed entry with too many parts`() {
-        val json = "swipe_left|Swipe Left|SCROLL_RIGHT|extra;pose_pinch|Pinch|TAP"
-        val config = repository.deserializeGestureMap(json, 1)
-
-        // Only the valid 3-part entry should survive
-        assertEquals(1, config.entries.size)
-        assertEquals("pose_pinch", config.entries[0].key)
-    }
-
-    @Test
-    fun `deserializeGestureMap handles invalid action name gracefully`() {
-        val json = "swipe_left|Swipe Left|INVALID_ACTION;pose_pinch|Pinch|TAP"
+    fun `deserializeGestureMap handles invalid entry gracefully`() {
+        val json = """[{"key":"swipe_left","label":"Swipe Left","action":"INVALID_ACTION"},{"key":"pose_pinch","label":"Pinch","action":"TAP"}]"""
         val config = repository.deserializeGestureMap(json, 1)
 
         // Invalid action should be skipped, valid one kept
@@ -143,24 +125,25 @@ class SettingsRepositoryImplTest {
     }
 
     @Test
-    fun `deserializeGestureMap handles completely malformed segments`() {
-        val json = "garbage;also_garbage;pose_pinch|Pinch|TAP"
-        val config = repository.deserializeGestureMap(json, 1)
+    fun `deserializeGestureMap falls back to legacy pipe format`() {
+        val json = "swipe_left|Swipe Left|SCROLL_LEFT;pose_pinch|Pinch|TAP"
+        val config = repository.deserializeGestureMap(json, 2)
 
-        assertEquals(1, config.entries.size)
-        assertEquals("pose_pinch", config.entries[0].key)
+        assertEquals(2, config.entries.size)
+        assertEquals("swipe_left", config.entries[0].key)
+        assertEquals(GestureAction.SCROLL_LEFT, config.entries[0].action)
     }
 
     @Test
     fun `deserializeGestureMap preserves version`() {
-        val json = "swipe_left|Swipe Left|SCROLL_RIGHT"
+        val json = """[{"key":"swipe_left","label":"Swipe Left","action":"SCROLL_LEFT"}]"""
         val config = repository.deserializeGestureMap(json, 1)
         assertEquals(1, config.schemaVersion)
     }
 
     @Test
-    fun `deserializeGestureMap with single entry`() {
-        val json = "pose_pinch|Pinch|TAP"
+    fun `deserializeGestureMap with single JSON entry`() {
+        val json = """[{"key":"pose_pinch","label":"Pinch","action":"TAP"}]"""
         val config = repository.deserializeGestureMap(json, 2)
         assertEquals(1, config.entries.size)
         assertEquals("pose_pinch", config.entries[0].key)
@@ -200,7 +183,7 @@ class SettingsRepositoryImplTest {
     @Test
     fun `round-trip serialization with custom actions preserves actions`() {
         val customConfig = GestureMapConfig(
-            schemaVersion = 2,
+            schemaVersion = 3,
             entries = listOf(
                 GestureMapEntry("swipe_left", "Swipe Left", GestureAction.HOME),
                 GestureMapEntry("pose_pinch", "Pinch", GestureAction.BACK),
@@ -271,10 +254,10 @@ class SettingsRepositoryImplTest {
         // Reset
         repository.resetGestureMapToDefaults()
 
-        // Verify defaults restored
+        // Verify defaults restored (now SCROLL_LEFT, not SCROLL_RIGHT)
         val reset = repository.gestureMapConfig.first()
         assertEquals(
-            GestureAction.SCROLL_RIGHT,
+            GestureAction.SCROLL_LEFT,
             reset.entries.find { it.key == "swipe_left" }?.action,
         )
     }
@@ -309,7 +292,6 @@ class SettingsRepositoryImplTest {
 
     @Test
     fun `updateAnalysisFps falls back to default for invalid values`() = testScope.runTest {
-        // Valid values: 15, 24, 30
         repository.updateAnalysisFps(15)
         assertEquals(15, repository.userPreferences.first().analysisFps)
 
@@ -367,9 +349,9 @@ class SettingsRepositoryImplTest {
     @Test
     fun `gesture map config flow emits updates when action changes`() = testScope.runTest {
         repository.gestureMapConfig.test {
-            // Initial emission should be defaults
+            // Initial emission should be defaults (SCROLL_LEFT for swipe_left)
             val initial = awaitItem()
-            assertEquals(GestureAction.SCROLL_RIGHT, initial.entries.find { it.key == "swipe_left" }?.action)
+            assertEquals(GestureAction.SCROLL_LEFT, initial.entries.find { it.key == "swipe_left" }?.action)
 
             // Update should trigger new emission
             repository.updateGestureAction("swipe_left", GestureAction.HOME.name)

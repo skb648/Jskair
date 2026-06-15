@@ -6,9 +6,12 @@ import com.aircontrol.gesture.model.LandmarkIndex
 import com.aircontrol.gesture.model.SwipeDirection
 
 /**
- * Detects dynamic swipe gestures from a sliding window of wrist positions.
+ * Detects dynamic swipe gestures from a sliding window of hand positions.
  *
- * Tracks wrist positions over a configurable time window (default 350ms).
+ * Tracks BOTH wrist and index fingertip positions over a configurable time window
+ * (default 350ms). The index fingertip provides more dramatic displacement during
+ * swipes, making detection more reliable.
+ *
  * When the window is full, computes the displacement vector and peak velocity.
  * A swipe is recognized when:
  *   - Displacement > 15% of frame dimension (sensitivity-scaled)
@@ -20,9 +23,9 @@ import com.aircontrol.gesture.model.SwipeDirection
 class DynamicGestureDetector(private val config: GestureEngineConfig) {
 
     /**
-     * A single tracked wrist position sample.
+     * A single tracked position sample.
      */
-    data class WristSample(
+    data class PositionSample(
         val x: Float,
         val y: Float,
         val timestampMs: Long,
@@ -39,7 +42,9 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         val peakVelocity: Float = 0f,
     )
 
-    private val window = ArrayDeque<WristSample>()
+    // Track both wrist and index fingertip for more reliable swipe detection
+    private val wristWindow = ArrayDeque<PositionSample>()
+    private val indexTipWindow = ArrayDeque<PositionSample>()
 
     /** Timestamp of the last detected swipe, used for cooldown. */
     private var lastSwipeTimestampMs: Long = 0L
@@ -51,37 +56,51 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
      * Processes a hand input frame and returns a [SwipeResult] indicating
      * whether a swipe was detected and in which direction.
      *
-     * Returns [SwipeResult.detected]=false if:
-     * - The hand is not detected
-     * - The window is not yet full
-     * - Displacement/velocity/dominance thresholds are not met
-     * - A swipe was recently detected (cooldown)
+     * Uses index fingertip as primary tracker (more dramatic movement),
+     * with wrist as fallback.
      */
     fun process(input: HandInput): SwipeResult {
         if (!input.isDetected) {
-            window.clear()
+            wristWindow.clear()
+            indexTipWindow.clear()
             return SwipeResult(detected = false)
         }
 
         val wrist = input.landmarks[LandmarkIndex.WRIST]
-        val sample = WristSample(
+        val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
+
+        val wristSample = PositionSample(
             x = wrist.x,
             y = wrist.y,
             timestampMs = input.timestampMs,
         )
+        val indexSample = PositionSample(
+            x = indexTip.x,
+            y = indexTip.y,
+            timestampMs = input.timestampMs,
+        )
 
-        // Add sample and prune window to configured duration
-        window.addLast(sample)
-        pruneWindow(input.timestampMs)
+        // Add samples and prune window to configured duration
+        wristWindow.addLast(wristSample)
+        indexTipWindow.addLast(indexSample)
+        pruneWindow(wristWindow, input.timestampMs)
+        pruneWindow(indexTipWindow, input.timestampMs)
 
         // Need at least 3 samples to compute velocity
-        if (window.size < 3) return SwipeResult(detected = false)
+        if (indexTipWindow.size < 3) return SwipeResult(detected = false)
 
-        // Analyze the window
-        val result = analyzeWindow(input.timestampMs)
+        // Analyze using index fingertip first (more dramatic movement)
+        var result = analyzeWindow(indexTipWindow, input.timestampMs)
+
+        // If index tip didn't detect, try wrist (some users swipe with whole hand)
+        if (!result.detected && wristWindow.size >= 3) {
+            result = analyzeWindow(wristWindow, input.timestampMs)
+        }
+
         if (result.detected) {
             lastSwipeTimestampMs = input.timestampMs
-            window.clear() // Reset window after swipe to prevent re-detection
+            wristWindow.clear()
+            indexTipWindow.clear()
         }
 
         return result
@@ -90,7 +109,7 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
     /**
      * Removes samples older than [config.swipeWindowMs] from the window.
      */
-    internal fun pruneWindow(currentTimeMs: Long) {
+    internal fun pruneWindow(window: ArrayDeque<PositionSample>, currentTimeMs: Long) {
         val cutoffTime = currentTimeMs - config.swipeWindowMs
         while (window.isNotEmpty() && window.first().timestampMs < cutoffTime) {
             window.removeFirst()
@@ -98,9 +117,9 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
     }
 
     /**
-     * Analyzes the current window of wrist samples for a swipe gesture.
+     * Analyzes the current window of position samples for a swipe gesture.
      */
-    internal fun analyzeWindow(currentTimeMs: Long): SwipeResult {
+    internal fun analyzeWindow(window: ArrayDeque<PositionSample>, currentTimeMs: Long): SwipeResult {
         if (window.size < 2) return SwipeResult(detected = false)
 
         // Check cooldown
@@ -144,7 +163,7 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         }
 
         // Compute peak velocity
-        val peakVelocity = computePeakVelocity()
+        val peakVelocity = computePeakVelocity(window)
         val velocityThreshold = config.scaledSwipeVelocity()
 
         if (peakVelocity < velocityThreshold) {
@@ -157,6 +176,8 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         }
 
         // Determine direction based on dominant axis
+        // Note: Since camera image is already mirrored in CameraService, the coordinates
+        // are in selfie-view. So positive X displacement in camera = right on screen.
         val direction = if (isHorizontalDominant) {
             if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
         } else {
@@ -176,7 +197,7 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
      * Computes the peak velocity across consecutive sample pairs in the window.
      * Velocity is measured in normalized units per second.
      */
-    internal fun computePeakVelocity(): Float {
+    internal fun computePeakVelocity(window: ArrayDeque<PositionSample>): Float {
         if (window.size < 2) return 0f
 
         var peakVelocity = 0f
@@ -199,7 +220,8 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
 
     /** Resets the detector state. */
     fun reset() {
-        window.clear()
+        wristWindow.clear()
+        indexTipWindow.clear()
         lastSwipeTimestampMs = 0L
     }
 

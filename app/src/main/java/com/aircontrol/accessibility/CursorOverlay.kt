@@ -20,9 +20,10 @@ import timber.log.Timber
  * - Subtle idle pulse animation when not moving
  * - Small ring around cursor when state machine is ARMED
  * - 200ms fade-out when hand is lost
- * - Dead-zone to prevent drift at small movements
- * - Exponential smoothing on top of One Euro output
- * - 10% edge margin expansion for corner reachability
+ * - Minimal dead-zone to prevent drift at tiny movements
+ * - Low-latency direct position update (no exponential smoothing on top of One Euro)
+ * - Full screen coverage with proper coordinate mapping for all aspect ratios
+ *   including Android 17 edge-to-edge and cutout handling
  * - Front camera mirroring applied via ActionDispatcher coordinate mapping
  */
 class CursorOverlay(
@@ -41,17 +42,11 @@ class CursorOverlay(
     private var currentScreenX = 0f
     private var currentScreenY = 0f
 
-    // Smoothed position (exponential smoothing)
-    private var smoothedX = 0f
-    private var smoothedY = 0f
+    // Whether we've received the first position update
     private var hasInitialized = false
 
-    // Dead-zone radius in pixels
+    // Very small dead-zone in pixels (1dp) — just enough to prevent sub-pixel jitter
     private val deadZonePx = dpToPx(DEAD_ZONE_DP)
-
-    // Smoothing factor (lower = smoother, higher = more responsive)
-    // 0.3 = fairly smooth, still responsive
-    private val smoothingAlpha = 0.3f
 
     // Cursor size in pixels
     private val cursorSizePx = dpToPx(CURSOR_SIZE_DP)
@@ -66,8 +61,11 @@ class CursorOverlay(
 
     /**
      * Updates the cursor position from normalized hand coordinates.
-     * Applies front camera mirroring, edge margin expansion,
-     * exponential smoothing, and dead-zone filtering.
+     * Applies front camera mirroring, full screen mapping,
+     * and minimal dead-zone filtering.
+     *
+     * The One Euro Filter in HandTracker already provides smooth output,
+     * so we do NOT apply additional exponential smoothing here to minimize latency.
      */
     fun updatePosition(normX: Float, normY: Float, screenW: Int, screenHeight: Int) {
         if (!isAdded) return
@@ -75,14 +73,14 @@ class CursorOverlay(
         // Cancel pending hide
         cancelPendingHide()
 
-        // Map normalized coords to screen pixels (with mirroring and margin expansion)
+        // Map normalized coords to screen pixels (with mirroring and full coverage)
         val targetX = ActionDispatcher.normalizeToScreenX(normX, screenW)
         val targetY = ActionDispatcher.normalizeToScreenY(normY, screenHeight)
 
-        // Apply dead-zone: skip update if movement is too small
+        // Apply minimal dead-zone: skip update if movement is too small
         if (hasInitialized) {
-            val dx = targetX - smoothedX
-            val dy = targetY - smoothedY
+            val dx = targetX - currentScreenX
+            val dy = targetY - currentScreenY
             val distance = kotlin.math.sqrt(dx * dx + dy * dy)
             if (distance < deadZonePx) {
                 // Within dead-zone — don't update
@@ -91,20 +89,12 @@ class CursorOverlay(
             }
         }
 
-        // Apply exponential smoothing
-        if (!hasInitialized) {
-            smoothedX = targetX
-            smoothedY = targetY
-            hasInitialized = true
-        } else {
-            smoothedX = smoothedX + smoothingAlpha * (targetX - smoothedX)
-            smoothedY = smoothedY + smoothingAlpha * (targetY - smoothedY)
-        }
+        // Direct position update — One Euro Filter in HandTracker handles smoothing
+        currentScreenX = targetX
+        currentScreenY = targetY
+        hasInitialized = true
 
-        currentScreenX = smoothedX
-        currentScreenY = smoothedY
-
-        // Update layout
+        // Update layout immediately for minimal latency
         updateViewLayout()
 
         if (!isVisible) show()
@@ -170,7 +160,6 @@ class CursorOverlay(
     private fun addView() {
         if (isAdded) return
 
-        // Create a simple colored circle view for the cursor
         cursorView = createCursorView()
 
         val params = createLayoutParams()
@@ -184,9 +173,6 @@ class CursorOverlay(
     }
 
     private fun createCursorView(): View {
-        // Use a ComposeView for the cursor rendering
-        // For simplicity and minimal dependency, we use a native View
-        // with custom drawing
         val view = CursorDotView(context, cursorSizePx, ringSizePx)
 
         val size = ringSizePx * 2 + dpToPx(4) // Extra padding for ring
@@ -215,7 +201,6 @@ class CursorOverlay(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // Center cursor on the initial position
             x = currentScreenX.toInt() - size / 2
             y = currentScreenY.toInt() - size / 2
         }
@@ -251,6 +236,6 @@ class CursorOverlay(
     companion object {
         private const val CURSOR_SIZE_DP = 24
         private const val RING_SIZE_DP = 18
-        private const val DEAD_ZONE_DP = 3
+        private const val DEAD_ZONE_DP = 1 // Minimal dead zone for sub-pixel jitter only
     }
 }

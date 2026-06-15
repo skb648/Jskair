@@ -81,6 +81,11 @@ class DebugViewModel @Inject constructor(
     private var frameCount = 0
     private var lastFpsMeasureTimeMs = 0L
 
+    // Reusable transform bitmap for debug camera — avoids per-frame allocation
+    private var reusableDebugBitmap: Bitmap? = null
+    private var debugBitmapWidth: Int = 0
+    private var debugBitmapHeight: Int = 0
+
     // Camera management
     private val analysisExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "debug-analysis").apply { isDaemon = true }
@@ -245,6 +250,31 @@ class DebugViewModel @Inject constructor(
             val rawBitmap = imageProxy.toBitmap()
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
+            // Calculate target dimensions after rotation
+            val targetWidth: Int
+            val targetHeight: Int
+            if (rotationDegrees == 90 || rotationDegrees == 270) {
+                targetWidth = rawBitmap.height
+                targetHeight = rawBitmap.width
+            } else {
+                targetWidth = rawBitmap.width
+                targetHeight = rawBitmap.height
+            }
+
+            // Reuse or allocate transform bitmap
+            if (reusableDebugBitmap == null ||
+                debugBitmapWidth != targetWidth ||
+                debugBitmapHeight != targetHeight ||
+                reusableDebugBitmap!!.isRecycled
+            ) {
+                reusableDebugBitmap?.recycle()
+                reusableDebugBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                debugBitmapWidth = targetWidth
+                debugBitmapHeight = targetHeight
+            }
+
+            val targetBitmap = reusableDebugBitmap!!
+
             val matrix = Matrix()
             when (rotationDegrees) {
                 90 -> {
@@ -260,37 +290,22 @@ class DebugViewModel @Inject constructor(
                     matrix.postTranslate(0f, rawBitmap.width.toFloat())
                 }
             }
-            val targetWidth = if (rotationDegrees == 90 || rotationDegrees == 270) {
-                rawBitmap.height
-            } else {
-                rawBitmap.width
-            }
-            matrix.postScale(
-                -1f,
-                1f,
-                targetWidth / 2f,
-                targetHeight(rawBitmap, rotationDegrees) / 2f,
-            )
+            // Mirror horizontally for front camera (selfie view)
+            matrix.postScale(-1f, 1f, targetWidth / 2f, targetHeight / 2f)
 
-            val transformedBitmap = Bitmap.createBitmap(
-                rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true,
-            )
+            // Draw into reusable target bitmap
+            val canvas = android.graphics.Canvas(targetBitmap)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            canvas.drawBitmap(rawBitmap, matrix, null)
+
+            // Recycle raw bitmap immediately — no longer needed
             rawBitmap.recycle()
 
-            val mpImage = BitmapImageBuilder(transformedBitmap).build()
-            transformedBitmap.recycle()
-            mpImage
+            // BitmapImageBuilder copies data internally, safe to reuse targetBitmap next frame
+            BitmapImageBuilder(targetBitmap).build()
         } catch (e: Exception) {
             Timber.e(e, "Error converting debug ImageProxy to MPImage")
             null
-        }
-    }
-
-    private fun targetHeight(rawBitmap: Bitmap, rotationDegrees: Int): Int {
-        return if (rotationDegrees == 90 || rotationDegrees == 270) {
-            rawBitmap.width
-        } else {
-            rawBitmap.height
         }
     }
 
@@ -321,5 +336,7 @@ class DebugViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         analysisExecutor.shutdownNow()
+        reusableDebugBitmap?.recycle()
+        reusableDebugBitmap = null
     }
 }

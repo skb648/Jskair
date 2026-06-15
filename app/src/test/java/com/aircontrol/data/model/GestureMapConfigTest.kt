@@ -11,9 +11,9 @@ class GestureMapConfigTest {
     // ========== defaultEntries() ==========
 
     @Test
-    fun `defaultEntries returns all 9 expected gesture entries`() {
+    fun `defaultEntries returns all 10 expected gesture entries`() {
         val entries = GestureMapConfig.defaultEntries()
-        assertEquals(9, entries.size)
+        assertEquals(10, entries.size)
     }
 
     @Test
@@ -30,6 +30,7 @@ class GestureMapConfigTest {
             "pose_victory",
             "pose_thumb_up",
             "pose_thumb_down",
+            "pose_pinch_hold",
         )
         assertEquals(expectedKeys, keys)
     }
@@ -47,10 +48,10 @@ class GestureMapConfigTest {
         val entries = GestureMapConfig.defaultEntries()
         val byKey = entries.associateBy { it.key }
 
-        assertEquals(GestureAction.SCROLL_RIGHT, byKey["swipe_left"]?.action)
-        assertEquals(GestureAction.SCROLL_LEFT, byKey["swipe_right"]?.action)
-        assertEquals(GestureAction.SCROLL_DOWN, byKey["swipe_up"]?.action)
-        assertEquals(GestureAction.SCROLL_UP, byKey["swipe_down"]?.action)
+        assertEquals(GestureAction.SCROLL_LEFT, byKey["swipe_left"]?.action)
+        assertEquals(GestureAction.SCROLL_RIGHT, byKey["swipe_right"]?.action)
+        assertEquals(GestureAction.SCROLL_UP, byKey["swipe_up"]?.action)
+        assertEquals(GestureAction.SCROLL_DOWN, byKey["swipe_down"]?.action)
         assertEquals(GestureAction.TAP, byKey["pose_pinch"]?.action)
         assertEquals(GestureAction.NONE, byKey["pose_pointing"]?.action)
         assertEquals(GestureAction.MEDIA_PLAY_PAUSE, byKey["pose_victory"]?.action)
@@ -61,8 +62,8 @@ class GestureMapConfigTest {
     // ========== CURRENT_SCHEMA_VERSION ==========
 
     @Test
-    fun `current schema version is 2`() {
-        assertEquals(2, GestureMapConfig.CURRENT_SCHEMA_VERSION)
+    fun `current schema version is 3`() {
+        assertEquals(3, GestureMapConfig.CURRENT_SCHEMA_VERSION)
     }
 
     // ========== Default constructor ==========

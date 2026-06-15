@@ -8,6 +8,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -16,6 +17,9 @@ import javax.inject.Inject
 /**
  * Receiver for BOOT_COMPLETED that auto-starts the camera tracking service
  * ONLY if the user had it active before reboot and all required permissions are intact.
+ *
+ * The CoroutineScope is created per-invocation inside onReceive() and cancelled
+ * after the work completes, ensuring it does not outlive the BroadcastReceiver.
  */
 @AndroidEntryPoint
 class BootCompletedReceiver : BroadcastReceiver() {
@@ -26,13 +30,14 @@ class BootCompletedReceiver : BroadcastReceiver() {
     @Inject
     lateinit var permissionsManager: com.aircontrol.permissions.PermissionsManager
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
         val pendingResult = goAsync()
         Timber.i("Boot completed received, checking if auto-start is required")
+
+        // Create scope per invocation — will be cancelled after work completes
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
         scope.launch {
             try {
@@ -69,6 +74,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
                 context.startForegroundService(serviceIntent)
             } finally {
                 pendingResult.finish()
+                scope.cancel()
             }
         }
     }

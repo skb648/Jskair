@@ -6,6 +6,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.aircontrol.ui.calibration.CalibrationScreen
+import com.aircontrol.ui.customgesture.CustomGestureScreen
 import com.aircontrol.ui.debug.DebugScreen
 import com.aircontrol.ui.gesturemap.GestureMapScreen
 import com.aircontrol.ui.home.HomeScreen
@@ -49,6 +50,9 @@ fun AirControlNavHost(
                 onNavigateToDebug = {
                     navController.navigate(AirControlRoute.Debug.route)
                 },
+                onNavigateToCustomGesture = {
+                    navController.navigate(AirControlRoute.CustomGesture.route)
+                },
             )
         }
         composable(AirControlRoute.GestureMap.route) {
@@ -68,6 +72,11 @@ fun AirControlNavHost(
         }
         composable(AirControlRoute.Debug.route) {
             DebugScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+        composable(AirControlRoute.CustomGesture.route) {
+            CustomGestureScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

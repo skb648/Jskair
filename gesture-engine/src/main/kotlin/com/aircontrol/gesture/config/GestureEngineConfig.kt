@@ -88,17 +88,14 @@ data class GestureEngineConfig(
         get() = 50f / sensitivity.coerceAtLeast(1)
 
     /**
- * Scales a threshold by sensitivity. Higher sensitivity lowers the threshold.
- * Formula: threshold * (0.5 + sensitivity / 100)
- * At sensitivity=50: threshold * 1.0
- * At sensitivity=100: threshold * 1.5 (harder to trigger... wait, that's wrong)
- *
- * Actually: we want higher sensitivity = easier to trigger = lower thresholds.
- * So: scaledThreshold = baseThreshold / (0.5 + sensitivity / 100)
- * At 50: base / 1.0 = base
- * At 100: base / 1.5 = 0.67 * base (easier)
- * At 0: base / 0.5 = 2.0 * base (harder)
- */
+     * Scales a threshold by sensitivity. Higher sensitivity lowers the threshold,
+     * making gestures easier to trigger.
+     *
+     * Formula: baseThreshold / (0.5 + sensitivity / 100)
+     * - At sensitivity=50: baseThreshold / 1.0 = baseThreshold
+     * - At sensitivity=100: baseThreshold / 1.5 = 0.67 × base (easier to trigger)
+     * - At sensitivity=0: baseThreshold / 0.5 = 2.0 × base (harder to trigger)
+     */
     fun scaledSwipeDisplacement(): Float =
         swipeDisplacementRatio / (0.5f + sensitivity / 100f)
 
