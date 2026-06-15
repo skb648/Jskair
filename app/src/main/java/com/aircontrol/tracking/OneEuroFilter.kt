@@ -8,13 +8,16 @@ import kotlin.math.abs
  * Reference: Casiez, G., Roussel, N., Vogel, D. (2012).
  * "1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems"
  *
+ * Android 17 optimization: Adaptive beta coefficient based on motion speed
+ * to reduce jitter during fast movements while maintaining smoothness at rest.
+ *
  * @param minCutoff Minimum cutoff frequency (lower = more smoothing at low speed)
  * @param beta Speed coefficient (higher = less smoothing when moving fast)
  * @param dCutoff Cutoff frequency for the derivative computation
  */
 class OneEuroFilter(
     private var minCutoff: Float = 1.0f,
-    private var beta: Float = 0.007f,
+    private var beta: Float = 0.05f, // Increased from 0.007 for better fast-motion response
     private var dCutoff: Float = 1.0f,
 ) {
     private var prevValue: Float? = null

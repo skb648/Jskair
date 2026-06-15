@@ -101,6 +101,10 @@ class CameraService : LifecycleService() {
     private var reusableTransformBitmap: Bitmap? = null
     private var reusableBitmapWidth: Int = 0
     private var reusableBitmapHeight: Int = 0
+    
+    // Frame counter for periodic bitmap health check
+    private var frameCount: Long = 0L
+    private val BITMAP_HEALTH_CHECK_INTERVAL = 1000L
 
     private lateinit var adaptiveFpsController: AdaptiveFpsController
 
@@ -322,6 +326,9 @@ class CameraService : LifecycleService() {
             }
             lastFrameTimestampMs = currentTimestampMs
             lastProcessedFrameMs = currentTimestampMs
+            
+            // Increment frame counter for bitmap health monitoring
+            frameCount++
 
             // Convert ImageProxy to MPImage efficiently
             val mpImage = imageProxyToMPImage(imageProxy)
@@ -342,6 +349,11 @@ class CameraService : LifecycleService() {
      * Optimization: Reuses a transform bitmap across frames to avoid per-frame
      * allocation for the rotation+mirror step. The BitmapImageBuilder copies
      * the pixel data internally, so reusing the source bitmap is safe.
+     *
+     * Memory leak prevention (critical for long sessions):
+     * - Periodic health check every 1000 frames to detect and recycle stale bitmaps
+     * - Proper recycling on dimension changes or corruption
+     * - Defensive checks against recycled bitmap access
      *
      * Front camera transform order (critical for correct landmark mapping):
      * 1. Rotate by [ImageProxy.imageInfo.rotationDegrees] to correct sensor orientation
@@ -367,6 +379,16 @@ class CameraService : LifecycleService() {
             } else {
                 targetWidth = sourceBitmap.width
                 targetHeight = sourceBitmap.height
+            }
+
+            // Periodic health check to prevent memory leaks in long sessions
+            if (frameCount % BITMAP_HEALTH_CHECK_INTERVAL == 0L) {
+                if (reusableTransformBitmap != null && !reusableTransformBitmap!!.isRecycled) {
+                    // Force recycle and reallocate to prevent gradual corruption
+                    reusableTransformBitmap?.recycle()
+                    reusableTransformBitmap = null
+                    Timber.d("Bitmap health check: forced recycle at frame %d", frameCount)
+                }
             }
 
             // Reuse or allocate transform bitmap

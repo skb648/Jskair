@@ -11,14 +11,17 @@ import timber.log.Timber
 /**
  * Controls analysis frame rate adaptively:
  * - Full configured FPS when hand is detected
- * - Drops to scan mode (5 fps) after [noHandTimeoutMs] with no detection (battery saver)
+ * - Drops to scan mode (10 fps) after [noHandTimeoutMs] with no detection (battery saver)
  * - Instantly restores full FPS on detection
+ * 
+ * Android 17 optimization: Increased scan FPS from 5 to 10 for better UX,
+ * reduced timeout from 3s to 2s for faster response.
  */
 class AdaptiveFpsController(
     private val scope: CoroutineScope,
     configuredFps: Int = DEFAULT_FPS,
     private val scanFps: Int = SCAN_FPS,
-    private val noHandTimeoutMs: Long = 3000L,
+    private val noHandTimeoutMs: Long = 2000L, // Reduced from 3000ms for faster response
 ) {
     private var configuredFps: Int = configuredFps.coerceToSupportedFps()
 
@@ -98,6 +101,6 @@ class AdaptiveFpsController(
 
     companion object {
         private const val DEFAULT_FPS = 24
-        private const val SCAN_FPS = 5
+        private const val SCAN_FPS = 10 // Increased from 5 for better UX on Android 17+
     }
 }
