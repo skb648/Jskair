@@ -83,6 +83,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var lastAppliedSensitivity: Int? = null
 
     // Cursor freeze during gesture execution for better accuracy
+    // Uses atomic-like pattern to prevent race conditions
+    private val cursorFreezeLock = Any()
+    @Volatile
     private var isCursorFrozen = false
     private var cursorFreezeJob: Job? = null
 
@@ -441,13 +444,20 @@ class GestureControlAccessibilityService : AccessibilityService() {
      * Freezes the cursor for a brief duration to prevent position drift during
      * gesture execution. This improves accuracy by ensuring the action targets
      * the exact position where the gesture was recognized.
+     * 
+     * Thread-safe: uses synchronized block to prevent race conditions between
+     * concurrent gesture events.
      */
     private fun freezeCursorBriefly(durationMs: Long) {
-        isCursorFrozen = true
-        cursorFreezeJob?.cancel()
-        cursorFreezeJob = serviceScope.launch {
-            delay(durationMs)
-            isCursorFrozen = false
+        synchronized(cursorFreezeLock) {
+            isCursorFrozen = true
+            cursorFreezeJob?.cancel()
+            cursorFreezeJob = serviceScope.launch {
+                delay(durationMs)
+                synchronized(cursorFreezeLock) {
+                    isCursorFrozen = false
+                }
+            }
         }
     }
 

@@ -66,7 +66,7 @@ class HandTrackerImpl @Inject constructor(
     // asynchronous, so using only the last submitted timestamp can attach the
     // wrong time to older results. Keep a small FIFO queue instead.
     private val timestampLock = Any()
-    private val pendingFrameTimestampsMs = ArrayDeque<Long>()
+    private val pendingFrameTimestampsMs = ArrayDeque<Long>(MAX_PENDING_TIMESTAMPS)
 
     override fun initialize() {
         if (_isInitialized) {
@@ -111,17 +111,19 @@ class HandTrackerImpl @Inject constructor(
             val mediaPipeTimestampUs = systemMsToMediaPipeUs(timestampMs)
 
             synchronized(timestampLock) {
-                pendingFrameTimestampsMs.addLast(timestampMs)
-                timestampQueued = true
-                while (pendingFrameTimestampsMs.size > MAX_PENDING_TIMESTAMPS) {
+                // Prevent overflow by dropping oldest if queue is full before adding
+                while (pendingFrameTimestampsMs.size >= MAX_PENDING_TIMESTAMPS) {
                     pendingFrameTimestampsMs.removeFirst()
                 }
+                pendingFrameTimestampsMs.addLast(timestampMs)
+                timestampQueued = true
             }
 
             landmarker.detectAsync(mpImage, mediaPipeTimestampUs)
         } catch (e: Exception) {
             if (timestampQueued) {
                 synchronized(timestampLock) {
+                    // Remove the timestamp we just added if processing failed
                     if (pendingFrameTimestampsMs.isNotEmpty() && pendingFrameTimestampsMs.last() == timestampMs) {
                         pendingFrameTimestampsMs.removeLast()
                     }
