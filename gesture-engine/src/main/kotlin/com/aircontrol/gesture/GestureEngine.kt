@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 
 /**
  * Core gesture recognition engine.
@@ -47,7 +48,8 @@ class GestureEngine(
     private val config: GestureEngineConfig = GestureEngineConfig(),
 ) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var scopeJob = SupervisorJob()
+    private var scope = CoroutineScope(scopeJob + Dispatchers.Default)
 
     private val poseClassifier = StaticPoseClassifier(config)
     private val dynamicDetector = DynamicGestureDetector(config)
@@ -69,15 +71,31 @@ class GestureEngine(
     val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
 
     // Pinch tracking state
+    @Volatile
     private var wasPinching: Boolean = false
+    @Volatile
     private var pinchStartX: Float = 0f
+    @Volatile
     private var pinchStartY: Float = 0f
+
+    /**
+     * Stops the engine, cancelling any ongoing coroutine collection.
+     */
+    fun stop() {
+        scopeJob.cancel()
+    }
 
     /**
      * Starts processing hand input frames.
      * Collects from the provided flow and emits gesture events.
+     * Cancels any previous collection before starting a new one.
      */
     fun start(inputFlow: Flow<HandInput>) {
+        stop() // Cancel any previous collection
+        scopeJob = SupervisorJob()
+        scope = CoroutineScope(scopeJob + Dispatchers.Default)
+        _engineState.value = GestureEngineState.DISARMED
+        wasPinching = false
         scope.launch {
             inputFlow.collect { input ->
                 processFrame(input)
@@ -141,6 +159,9 @@ class GestureEngine(
             }
 
             // Pose-triggered gestures (when transitioning to EXECUTING)
+            // Note: PINCH, OPEN_PALM, and FIST are excluded because pinch
+            // has its own lifecycle (START/MOVE/END) and OPEN_PALM/FIST are
+            // used for arming/disarming rather than gesture execution.
             if (transition.shouldExecute) {
                 val actionablePose = pose.takeIf {
                     it != Pose.NONE && it != Pose.OPEN_PALM && it != Pose.FIST
@@ -171,6 +192,19 @@ class GestureEngine(
      * - END: When fingers separate after a pinch
      */
     private fun processPinch(input: HandInput, pose: Pose, timestampMs: Long) {
+        // Gate pinch events on engine state — only emit when armed or active
+        val currentState = _engineState.value
+        if (currentState != GestureEngineState.ARMED &&
+            currentState != GestureEngineState.EXECUTING &&
+            currentState != GestureEngineState.COOLDOWN
+        ) {
+            if (wasPinching) {
+                wasPinching = false
+                // Emit pinch END event even when disarmed to clean up state
+            }
+            return
+        }
+
         if (!input.isDetected) {
             if (wasPinching) {
                 _gestureEvents.tryEmit(

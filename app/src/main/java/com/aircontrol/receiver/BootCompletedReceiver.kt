@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -51,11 +52,12 @@ class BootCompletedReceiver : BroadcastReceiver() {
 
         scope.launch {
             try {
-                val prefs = settingsRepository.userPreferences.first()
+                withTimeout(8_000) {
+                    val prefs = settingsRepository.userPreferences.first()
 
                 if (!prefs.startOnBoot || !prefs.gesturesEnabled) {
                     Timber.d("Boot resume skipped: startOnBoot=%s gesturesEnabled=%s", prefs.startOnBoot, prefs.gesturesEnabled)
-                    return@launch
+                    return@withTimeout
                 }
 
                 permissionsManager.refreshAllPermissions()
@@ -68,10 +70,11 @@ class BootCompletedReceiver : BroadcastReceiver() {
                         permStates.accessibilityGranted,
                         permStates.overlayGranted,
                     )
-                    return@launch
+                    return@withTimeout
                 }
 
                 postResumeNotification(context)
+                }
             } finally {
                 pendingResult.finish()
                 scope.cancel()
@@ -89,16 +92,18 @@ class BootCompletedReceiver : BroadcastReceiver() {
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CameraService.CHANNEL_ID,
-                context.getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = context.getString(R.string.notification_channel_description)
-                setShowBadge(false)
-            },
-        )
+        if (manager.getNotificationChannel(CameraService.CHANNEL_ID) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CameraService.CHANNEL_ID,
+                    context.getString(R.string.notification_channel_name),
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    description = context.getString(R.string.notification_channel_description)
+                    setShowBadge(false)
+                },
+            )
+        }
 
         val contentIntent = PendingIntent.getActivity(
             context,

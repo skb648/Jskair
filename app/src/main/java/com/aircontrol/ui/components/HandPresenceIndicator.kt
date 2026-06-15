@@ -9,6 +9,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -31,25 +33,33 @@ fun HandPresenceIndicator(
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "hand_pulse")
 
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.8f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulse_alpha",
-    )
+    val pulseAlpha by if (handDetected) {
+        infiniteTransition.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 0.8f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 800),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "pulse_alpha",
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
 
-    val pulseRadius by infiniteTransition.animateFloat(
-        initialValue = 0.8f,
-        targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulse_radius",
-    )
+    val pulseRadius by if (handDetected) {
+        infiniteTransition.animateFloat(
+            initialValue = 0.8f,
+            targetValue = 1.3f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 800),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "pulse_radius",
+        )
+    } else {
+        remember { mutableStateOf(1f) }
+    }
 
     Canvas(
         modifier = modifier.size(size * 2),

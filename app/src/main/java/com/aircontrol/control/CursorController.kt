@@ -3,6 +3,7 @@ package com.aircontrol.control
 import com.aircontrol.tracking.HandFrame
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,6 +19,7 @@ interface CursorController {
     val cursorState: StateFlow<CursorState>
     fun updatePosition(handFrame: HandFrame)
     fun performClick()
+    fun releaseClick()
     fun show()
     fun hide()
 }
@@ -42,33 +44,32 @@ class CursorControllerImpl @Inject constructor() : CursorController {
         }
         val indexTip = handFrame.landmarks.getOrNull(8)
         if (indexTip != null) {
-            _cursorState.value = _cursorState.value.copy(
+            _cursorState.update { it.copy(
                 x = indexTip.x,
                 y = indexTip.y,
                 isVisible = true,
-            )
+            ) }
         }
-        Timber.v("Cursor position updated")
     }
 
     override fun performClick() {
-        _cursorState.value = _cursorState.value.copy(isPressed = true)
+        _cursorState.update { it.copy(isPressed = true) }
         Timber.d("Cursor click performed")
         // Haptic feedback is performed centrally by ActionDispatcher after actions.
     }
 
-    fun releaseClick() {
-        _cursorState.value = _cursorState.value.copy(isPressed = false)
+    override fun releaseClick() {
+        _cursorState.update { it.copy(isPressed = false) }
         Timber.d("Cursor click released")
     }
 
     override fun show() {
-        _cursorState.value = _cursorState.value.copy(isVisible = true, isPressed = false)
+        _cursorState.update { it.copy(isVisible = true, isPressed = false) }
         Timber.d("Cursor shown")
     }
 
     override fun hide() {
-        _cursorState.value = _cursorState.value.copy(isVisible = false)
+        _cursorState.update { it.copy(isVisible = false) }
         Timber.d("Cursor hidden")
     }
 }

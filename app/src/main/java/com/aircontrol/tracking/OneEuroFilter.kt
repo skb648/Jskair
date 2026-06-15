@@ -18,7 +18,6 @@ class OneEuroFilter(
     private var dCutoff: Float = 1.0f,
 ) {
     private var prevValue: Float? = null
-    private var prevDValue: Float? = null
     private var prevTimestampMs: Long? = null
 
     // Low-pass filters for value and derivative
@@ -31,12 +30,13 @@ class OneEuroFilter(
             // First sample: initialize
             prevTimestampMs = timestampMs
             prevValue = value
-            prevDValue = 0f
             valueFilter.initialize(value)
             dValueFilter.initialize(0f)
             return value
         }
 
+        // Keep Double precision during computation; only convert to Float at the final step
+        // to avoid premature loss of precision in dt calculation.
         val dt = ((timestampMs - prevTs) / 1000.0).toFloat().coerceAtLeast(MIN_DT)
         prevTimestampMs = timestampMs
 
@@ -62,7 +62,6 @@ class OneEuroFilter(
 
     fun reset() {
         prevValue = null
-        prevDValue = null
         prevTimestampMs = null
         valueFilter.reset()
         dValueFilter.reset()

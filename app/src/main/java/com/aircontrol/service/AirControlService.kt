@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,22 +34,28 @@ class AirControlServiceImpl @Inject constructor(
 ) : AirControlService {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val jobs = mutableListOf<Job>()
+    private val jobs = Collections.synchronizedList(mutableListOf<Job>())
 
-    private var _isRunning = false
-    override val isRunning: Boolean get() = _isRunning
+    private val _isRunning = AtomicBoolean(false)
+    override val isRunning: Boolean get() = _isRunning.get()
 
     private val _currentGestureLabel = MutableStateFlow("")
     override val currentGestureLabel: StateFlow<String> = _currentGestureLabel
 
     override suspend fun start() {
-        if (_isRunning) {
+        if (_isRunning.get()) {
             Timber.w("AirControl service already running")
             return
         }
         Timber.i("Starting AirControl service")
-        handTracker.initialize()
-        _isRunning = true
+        try {
+            handTracker.initialize()
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to initialize hand tracker")
+            _isRunning.set(false)
+            return
+        }
+        _isRunning.set(true)
 
         // Collect hand frames and feed to gesture detector
         jobs.add(scope.launch {
@@ -91,7 +99,7 @@ class AirControlServiceImpl @Inject constructor(
     }
 
     override suspend fun stop() {
-        if (!_isRunning) {
+        if (!_isRunning.get()) {
             Timber.w("AirControl service not running")
             return
         }
@@ -100,8 +108,20 @@ class AirControlServiceImpl @Inject constructor(
         jobs.clear()
         handTracker.close()
         gestureDetector.reset()
-        _isRunning = false
+        _isRunning.set(false)
         _currentGestureLabel.value = ""
         Timber.i("AirControl service stopped")
+    }
+
+    /**
+     * Resets internal state without cancelling the scope.
+     * Useful when the singleton is reused after a stop.
+     */
+    fun reset() {
+        jobs.forEach { it.cancel() }
+        jobs.clear()
+        _isRunning.set(false)
+        _currentGestureLabel.value = ""
+        Timber.i("AirControl service reset")
     }
 }

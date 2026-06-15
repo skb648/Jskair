@@ -13,4 +13,6 @@ enum class Pose {
     VICTORY,
     THUMB_UP,
     THUMB_DOWN,
+    THREE_FINGERS,
+    FOUR_FINGERS,
 }

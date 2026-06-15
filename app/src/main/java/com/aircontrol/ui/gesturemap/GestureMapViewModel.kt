@@ -110,6 +110,10 @@ class GestureMapViewModel @Inject constructor(
 
     fun undoReset() {
         val config = _undoConfig ?: return
+        // TODO(D-63): This undo is O(n²) — each updateGestureAction call reads, maps,
+        //  and writes the entire gesture map JSON. Consider adding a batch update method
+        //  to SettingsRepository (e.g. updateGestureMapBatch) that applies all entries in
+        //  a single DataStore edit transaction.
         viewModelScope.launch {
             // Re-apply each entry from the saved config
             config.entries.forEach { entry ->

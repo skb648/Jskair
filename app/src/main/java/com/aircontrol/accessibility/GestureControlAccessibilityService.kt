@@ -26,6 +26,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 /**
@@ -48,13 +49,13 @@ import timber.log.Timber
  */
 class GestureControlAccessibilityService : AccessibilityService() {
 
-    private lateinit var handTracker: HandTracker
-    private lateinit var gestureDetector: GestureDetector
-    private lateinit var actionDispatcher: ActionDispatcher
-    private lateinit var settingsRepository: SettingsRepository
-    private lateinit var cursorController: CursorController
+    private var handTracker: HandTracker? = null
+    private var gestureDetector: GestureDetector? = null
+    private var actionDispatcher: ActionDispatcher? = null
+    private var settingsRepository: SettingsRepository? = null
+    private var cursorController: CursorController? = null
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var isRunning = false
 
     // Overlay managers
@@ -67,6 +68,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     // Keyguard state
     private var isKeyguardLocked = false
+    private var isReceiverRegistered = false
 
     // Frame watchdog — detects pipeline stalls
     private var lastFrameReceivedMs: Long = 0L
@@ -92,17 +94,22 @@ class GestureControlAccessibilityService : AccessibilityService() {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     Timber.i("Screen off — suspending gesture injection and camera")
+                    isKeyguardLocked = true
                     stopTrackingPipeline()
                     stopCameraService()
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    Timber.i("Screen on — resuming gesture injection and camera")
+                    Timber.i("Screen on — resuming gesture injection")
                     startTrackingPipeline()
-                    startCameraService()
+                    // Don't start camera service immediately — wait for user to unlock
+                    // Camera will be started when user actually unlocks (ACTION_USER_PRESENT)
+                    // or when the app comes to foreground
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     Timber.i("User unlocked — fully active")
                     isKeyguardLocked = false
+                    // Now safe to start camera service (user is in foreground)
+                    startCameraService()
                 }
             }
         }
@@ -138,13 +145,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
         Timber.i("GestureControlAccessibilityService connected")
 
         // Attach to action dispatcher
-        actionDispatcher.attachService(this)
+        actionDispatcher?.attachService(this)
 
         // Update screen metrics
         updateScreenMetrics()
 
         // Create overlays
         createOverlays()
+
+        // Stop any existing thermal monitor before creating a new one
+        thermalMonitor?.stopMonitoring()
 
         // Initialize thermal monitoring (better here than lazy init in startThermalMonitoring)
         thermalMonitor = com.aircontrol.tracking.ThermalMonitor(
@@ -185,16 +195,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         stopTrackingPipeline()
         removeOverlays()
-        actionDispatcher.detachService()
-        gestureDetector.reset()
-        cursorController.hide()
+        actionDispatcher?.detachService()
+        gestureDetector?.close()
+        gestureDetector = null
+        cursorController?.hide()
         stopCameraService()
 
-        try {
-            unregisterReceiver(screenReceiver)
-        } catch (_: Exception) {
-            // Receiver not registered
-        }
+        unregisterScreenStateReceiver()
 
         isRunning = false
         frameWatchdogJob?.cancel()
@@ -221,40 +228,42 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Collect settings → gesture detector and overlays
         pipelineJobs.add(serviceScope.launch {
-            settingsRepository.userPreferences.collect { prefs ->
+            settingsRepository?.userPreferences?.collect { prefs ->
                 currentPreferences = prefs
 
                 if (lastAppliedSensitivity != prefs.sensitivity) {
-                    gestureDetector.updateSensitivity(prefs.sensitivity)
+                    gestureDetector?.updateSensitivity(prefs.sensitivity)
                     lastAppliedSensitivity = prefs.sensitivity
                 }
 
-                if (prefs.statusPillEnabled && statusOverlay == null) {
-                    statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
-                } else if (!prefs.statusPillEnabled && statusOverlay != null) {
-                    statusOverlay?.remove()
-                    statusOverlay = null
-                }
+                withContext(Dispatchers.Main) {
+                    if (prefs.statusPillEnabled && statusOverlay == null) {
+                        statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
+                    } else if (!prefs.statusPillEnabled && statusOverlay != null) {
+                        statusOverlay?.remove()
+                        statusOverlay = null
+                    }
 
-                if (prefs.cursorEnabled && cursorOverlay == null) {
-                    cursorOverlay = CursorOverlay(this@GestureControlAccessibilityService, screenWidth, screenHeight)
-                } else if (!prefs.cursorEnabled && cursorOverlay != null) {
-                    cursorOverlay?.remove()
-                    cursorOverlay = null
-                    cursorController.hide()
+                    if (prefs.cursorEnabled && cursorOverlay == null) {
+                        cursorOverlay = CursorOverlay(this@GestureControlAccessibilityService, screenWidth, screenHeight)
+                    } else if (!prefs.cursorEnabled && cursorOverlay != null) {
+                        cursorOverlay?.remove()
+                        cursorOverlay = null
+                        cursorController?.hide()
+                    }
                 }
             }
         })
 
         // Collect hand frames → gesture detector
         pipelineJobs.add(serviceScope.launch {
-            handTracker.handFrames.collect { frame ->
+            handTracker?.handFrames?.collect { frame ->
                 try {
                     lastFrameReceivedMs = System.currentTimeMillis()
                     if (!isThermalPaused && frame.matchesHandPreference(currentPreferences.handPreference)) {
-                        gestureDetector.processHandFrame(frame)
+                        gestureDetector?.processHandFrame(frame)
                     } else if (!frame.matchesHandPreference(currentPreferences.handPreference)) {
-                        gestureDetector.processHandFrame(com.aircontrol.tracking.HandFrame.EMPTY.copy(timestampMs = frame.timestampMs))
+                        gestureDetector?.processHandFrame(com.aircontrol.tracking.HandFrame.EMPTY.copy(timestampMs = frame.timestampMs))
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error processing hand frame — skipping")
@@ -266,10 +275,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // event time instead of combine(), which can replay the previous event
         // whenever only the state changes.
         pipelineJobs.add(serviceScope.launch {
-            gestureDetector.gestureEvents.collect { event ->
+            gestureDetector?.gestureEvents?.collect { event ->
                 try {
                     if (!isThermalPaused) {
-                        handleGestureEvent(event, gestureDetector.engineState.value)
+                        gestureDetector?.let { detector ->
+                            handleGestureEvent(event, detector.engineState.value)
+                        }
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error handling gesture event — skipping")
@@ -279,10 +290,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Collect cursor state → overlay
         pipelineJobs.add(serviceScope.launch {
-            gestureDetector.engineState.collect { state ->
+            gestureDetector?.engineState?.collect { state ->
                 try {
                     if (currentPreferences.statusPillEnabled) {
-                        statusOverlay?.updateState(state)
+                        withContext(Dispatchers.Main) {
+                            statusOverlay?.updateState(state)
+                        }
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating status overlay — skipping")
@@ -292,12 +305,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Collect cursor position → overlay
         pipelineJobs.add(serviceScope.launch {
-            gestureDetector.gestureEvents.collect { event ->
+            gestureDetector?.gestureEvents?.collect { event ->
                 try {
                     // Freeze cursor during gesture execution for better accuracy
                     if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled && !isCursorFrozen) {
-                        cursorOverlay?.updatePosition(event.x, event.y, screenWidth, screenHeight)
-                        cursorController.updatePosition(
+                        withContext(Dispatchers.Main) {
+                            cursorOverlay?.updatePosition(event.x, event.y, screenWidth, screenHeight)
+                        }
+                        cursorController?.updatePosition(
                             com.aircontrol.tracking.HandFrame(
                                 landmarks = listOf(
                                     com.aircontrol.tracking.Landmark3D(event.x, event.y, 0f)
@@ -333,6 +348,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun restartTrackingPipeline() {
         Timber.i("Restarting tracking pipeline and camera service")
         stopTrackingPipeline()
+        handTracker?.close()
+        handTracker?.initialize()
         startTrackingPipeline()
         startCameraService()
     }
@@ -343,7 +360,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.forEach { it.cancel() }
         pipelineJobs.clear()
         stopThermalMonitoring()
-        gestureDetector.reset()
+        gestureDetector?.reset()
     }
 
     private fun startThermalMonitoring() {
@@ -380,59 +397,61 @@ class GestureControlAccessibilityService : AccessibilityService() {
         thermalMonitor?.stopMonitoring()
     }
 
-    private fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
-        val cursorState = cursorController.cursorState.value
-        val cursorX = if (event is GestureEvent.Pinch) event.x else cursorState.x
-        val cursorY = if (event is GestureEvent.Pinch) event.y else cursorState.y
+    private suspend fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
+        withContext(Dispatchers.Main) {
+            val cursorState = cursorController?.cursorState?.value
+            val cursorX = if (event is GestureEvent.Pinch) event.x else cursorState?.x ?: 0f
+            val cursorY = if (event is GestureEvent.Pinch) event.y else cursorState?.y ?: 0f
 
-        // Show/hide cursor based on engine state
-        when (engineState) {
-            GestureEngineState.ARMED,
-            GestureEngineState.EXECUTING,
-            GestureEngineState.COOLDOWN -> {
-                if (currentPreferences.cursorEnabled) {
-                    cursorOverlay?.show()
-                    cursorController.show()
-                }
-            }
-            GestureEngineState.DISARMED -> {
-                cursorOverlay?.hide()
-                cursorController.hide()
-            }
-            GestureEngineState.ARMING -> {
-                // Keep cursor visible during arming
-            }
-        }
-
-        // Freeze cursor during gesture execution for better accuracy
-        // When any gesture is recognized (swipe, pose, pinch start), freeze the cursor
-        // briefly so the action targets the correct position
-        when (event) {
-            is GestureEvent.Swipe -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
-            is GestureEvent.PoseTriggered -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
-            is GestureEvent.Pinch -> {
-                when (event.phase) {
-                    com.aircontrol.gesture.model.PinchPhase.START -> freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
-                    com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* Don't freeze during drag */ }
-                    com.aircontrol.gesture.model.PinchPhase.END -> {
-                        (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
+            // Show/hide cursor based on engine state
+            when (engineState) {
+                GestureEngineState.ARMED,
+                GestureEngineState.EXECUTING,
+                GestureEngineState.COOLDOWN -> {
+                    if (currentPreferences.cursorEnabled) {
+                        cursorOverlay?.show()
+                        cursorController?.show()
                     }
                 }
+                GestureEngineState.DISARMED -> {
+                    cursorOverlay?.hide()
+                    cursorController?.hide()
+                }
+                GestureEngineState.ARMING -> {
+                    // Keep cursor visible during arming
+                }
             }
-            is GestureEvent.Armed,
-            is GestureEvent.Disarmed,
-            is GestureEvent.CursorMoved -> { /* No freeze */ }
-        }
 
-        // Dispatch action
-        actionDispatcher.dispatch(event, engineState, cursorX, cursorY, screenWidth, screenHeight)
+            // Freeze cursor during gesture execution for better accuracy
+            // When any gesture is recognized (swipe, pose, pinch start), freeze the cursor
+            // briefly so the action targets the correct position
+            when (event) {
+                is GestureEvent.Swipe -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
+                is GestureEvent.PoseTriggered -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
+                is GestureEvent.Pinch -> {
+                    when (event.phase) {
+                        com.aircontrol.gesture.model.PinchPhase.START -> freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
+                        com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* Don't freeze during drag */ }
+                        com.aircontrol.gesture.model.PinchPhase.END -> {
+                            (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
+                        }
+                    }
+                }
+                is GestureEvent.Armed,
+                is GestureEvent.Disarmed,
+                is GestureEvent.CursorMoved -> { /* No freeze */ }
+            }
 
-        // Update cursor pressed state for pinch
-        if (event is GestureEvent.Pinch) {
-            when (event.phase) {
-                com.aircontrol.gesture.model.PinchPhase.START -> cursorController.performClick()
-                com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* drag continues */ }
-                com.aircontrol.gesture.model.PinchPhase.END -> cursorController.show()
+            // Dispatch action
+            actionDispatcher?.dispatch(event, engineState, cursorX, cursorY, screenWidth, screenHeight)
+
+            // Update cursor pressed state for pinch
+            if (event is GestureEvent.Pinch) {
+                when (event.phase) {
+                    com.aircontrol.gesture.model.PinchPhase.START -> cursorController?.performClick()
+                    com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* drag continues */ }
+                    com.aircontrol.gesture.model.PinchPhase.END -> cursorController?.show()
+                }
             }
         }
     }
@@ -480,8 +499,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // ========== Overlays ==========
 
     private fun createOverlays() {
-        cursorOverlay = CursorOverlay(this, screenWidth, screenHeight)
-        statusOverlay = StatusOverlay(this)
+        // Only create overlays that are enabled in current preferences
+        val prefs = currentPreferences
+        if (prefs.cursorEnabled) {
+            cursorOverlay = CursorOverlay(this, screenWidth, screenHeight)
+        }
+        if (prefs.statusPillEnabled) {
+            statusOverlay = StatusOverlay(this)
+        }
     }
 
     private fun removeOverlays() {
@@ -496,9 +521,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun updateScreenMetrics() {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = windowManager.currentWindowMetrics.bounds
-            screenWidth = bounds.width()
-            screenHeight = bounds.height()
+            val metrics = windowManager.currentWindowMetrics
+            val insets = metrics.windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars())
+            screenWidth = metrics.bounds.width() - insets.left - insets.right
+            screenHeight = metrics.bounds.height() - insets.top - insets.bottom
         } else {
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
@@ -512,6 +538,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // ========== Screen state ==========
 
     private fun registerScreenStateReceiver() {
+        if (isReceiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
@@ -523,6 +550,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
             filter,
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        isReceiverRegistered = true
+    }
+
+    private fun unregisterScreenStateReceiver() {
+        if (!isReceiverRegistered) return
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: Exception) {
+            // Receiver not registered
+        }
+        isReceiverRegistered = false
     }
 
     // ========== Utility ==========

@@ -9,7 +9,7 @@ package com.aircontrol.gesture.config
  *   lowers thresholds (easier to trigger), lower sensitivity raises them.
  *
  * @param poseDebounceFrames Number of consecutive frames a pose must
- *   hold before being confirmed. Prevents flicker. Default: 5.
+ *   hold before being confirmed. Prevents flicker. Default: 3.
  *
  * @param fingerExtensionThreshold Distance ratio threshold for detecting
  *   finger extension. For non-thumb fingers: a finger is extended when
@@ -37,10 +37,10 @@ package com.aircontrol.gesture.config
  *   ambiguity. Default: 2.0 (2:1 ratio required).
  *
  * @param armingDurationMs Duration the open palm must be held to
- *   transition from ARMING to ARMED. Default: 600ms.
+ *   transition from ARMING to ARMED. Default: 400ms.
  *
  * @param cooldownDurationMs Duration of the COOLDOWN state after
- *   a gesture is executed. Default: 700ms.
+ *   a gesture is executed. Default: 350ms.
  *
  * @param autoDisarmTimeoutMs Duration of no hand detection before
  *   auto-disarming. Default: 10_000ms (10 seconds).
@@ -50,7 +50,7 @@ package com.aircontrol.gesture.config
  */
 data class GestureEngineConfig(
     val sensitivity: Int = 50,
-    val poseDebounceFrames: Int = 5,
+    val poseDebounceFrames: Int = 3,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 150f,
     val pinchDistanceRatio: Float = 0.35f,
@@ -58,10 +58,11 @@ data class GestureEngineConfig(
     val swipeDisplacementRatio: Float = 0.15f,
     val swipeVelocityThreshold: Float = 1.5f,
     val swipeAxisDominanceRatio: Float = 2.0f,
-    val armingDurationMs: Long = 600L,
-    val cooldownDurationMs: Long = 700L,
+    val armingDurationMs: Long = 400L,
+    val cooldownDurationMs: Long = 350L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
+    val swipeCooldownMs: Long = 500L,
 ) {
     init {
         require(sensitivity in 0..100) { "Sensitivity must be 0-100, got $sensitivity" }
@@ -77,15 +78,8 @@ data class GestureEngineConfig(
         require(cooldownDurationMs > 0) { "Cooldown duration must be positive" }
         require(autoDisarmTimeoutMs > 0) { "Auto-disarm timeout must be positive" }
         require(fistDisarmDurationMs > 0) { "Fist disarm duration must be positive" }
+        require(swipeCooldownMs > 0) { "Swipe cooldown must be positive" }
     }
-
-    /**
-     * Sensitivity scaling factor. At sensitivity=50, factor=1.0.
-     * Higher sensitivity → lower factor → easier to trigger.
-     * Lower sensitivity → higher factor → harder to trigger.
-     */
-    val sensitivityFactor: Float
-        get() = 50f / sensitivity.coerceAtLeast(1)
 
     /**
      * Scales a threshold by sensitivity. Higher sensitivity lowers the threshold,
@@ -107,4 +101,7 @@ data class GestureEngineConfig(
 
     fun scaledFingerExtensionThreshold(): Float =
         fingerExtensionThreshold / (0.5f + sensitivity / 100f)
+
+    fun scaledThumbExtensionAngleDeg(): Float =
+        thumbExtensionAngleDeg / (0.5f + sensitivity / 100f)
 }

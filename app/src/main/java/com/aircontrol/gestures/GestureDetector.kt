@@ -19,8 +19,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.concurrent.Volatile
 
 /**
  * Bridges the Android tracking layer (HandFrame from MediaPipe)
@@ -29,7 +31,7 @@ import javax.inject.Singleton
  * Converts [HandFrame] → [HandInput] and exposes the engine's
  * [GestureEvent] flow and [GestureEngineState] for UI consumption.
  */
-interface GestureDetector {
+interface GestureDetector : AutoCloseable {
     val gestureEvents: SharedFlow<GestureEvent>
     val engineState: StateFlow<GestureEngineState>
     val currentPose: StateFlow<Pose>
@@ -37,6 +39,10 @@ interface GestureDetector {
     fun processHandFrame(frame: HandFrame)
     fun updateSensitivity(sensitivity: Int)
     fun reset()
+
+    override fun close() {
+        // Default no-op; implementations should cancel their coroutine scope
+    }
 }
 
 @Singleton
@@ -44,8 +50,10 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private var engine: GestureEngine = GestureEngine(GestureEngineConfig())
+    private val engineRef = AtomicReference(GestureEngine(GestureEngineConfig()))
+    private val engine: GestureEngine get() = engineRef.get()
     private var engineEventsJob: Job? = null
+    @Volatile
     private var currentSensitivity: Int = 50
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
@@ -83,9 +91,11 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
 
         Timber.d("Updating gesture engine sensitivity to %d", clamped)
         currentSensitivity = clamped
+        val oldEngine = engineRef.get()
+        val newEngine = GestureEngine(GestureEngineConfig(sensitivity = clamped))
+        engineRef.set(newEngine)
+        oldEngine.stop()
         engineEventsJob?.cancel()
-        engine.reset()
-        engine = GestureEngine(GestureEngineConfig(sensitivity = clamped))
         collectEngineEvents()
         resetStateFlows()
     }
@@ -108,6 +118,12 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
         _armingProgress.value = 0f
+    }
+
+    override fun close() {
+        engine.stop()
+        scope.cancel()
+        Timber.d("GestureDetector closed and scope cancelled")
     }
 
     /**

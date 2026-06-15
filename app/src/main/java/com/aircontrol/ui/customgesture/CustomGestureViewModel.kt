@@ -28,6 +28,7 @@ data class CustomGestureCreatorState(
     val selectedAction: GestureAction = GestureAction.TAP,
     val isEditing: Boolean = false,
     val editingGestureId: String? = null,
+    val isEditingFingerCount: Boolean = false,
     val isValid: Boolean = false,
     val isSaved: Boolean = false,
 )
@@ -71,17 +72,37 @@ class CustomGestureViewModel @Inject constructor(
     }
 
     fun startEditing(gesture: CustomGesture) {
-        val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
-        _creatorState.value = CustomGestureCreatorState(
-            name = gesture.name,
-            description = gesture.description,
-            selectedPose = trigger?.pose ?: CustomGesturePose.PINCH,
-            selectedDirection = trigger?.direction ?: CustomGestureDirection.NONE,
-            selectedAction = gesture.action,
-            isEditing = true,
-            editingGestureId = gesture.id,
-            isValid = true,
-        )
+        when (gesture.triggerPose) {
+            is CustomGestureTrigger.FingerCount -> {
+                // Keep FingerCount trigger, don't default to PoseWithDirection
+                _creatorState.value = CustomGestureCreatorState(
+                    name = gesture.name,
+                    description = gesture.description,
+                    selectedPose = CustomGesturePose.PINCH,
+                    selectedDirection = CustomGestureDirection.NONE,
+                    selectedAction = gesture.action,
+                    isEditing = true,
+                    editingGestureId = gesture.id,
+                    isEditingFingerCount = true,
+                    isValid = true,
+                )
+                return // Don't continue with PoseWithDirection flow
+            }
+            else -> {
+                val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
+                _creatorState.value = CustomGestureCreatorState(
+                    name = gesture.name,
+                    description = gesture.description,
+                    selectedPose = trigger?.pose ?: CustomGesturePose.PINCH,
+                    selectedDirection = trigger?.direction ?: CustomGestureDirection.NONE,
+                    selectedAction = gesture.action,
+                    isEditing = true,
+                    editingGestureId = gesture.id,
+                    isEditingFingerCount = false,
+                    isValid = true,
+                )
+            }
+        }
     }
 
     fun resetCreator() {
@@ -92,16 +113,30 @@ class CustomGestureViewModel @Inject constructor(
         val state = _creatorState.value
         if (!state.isValid) return
 
+        // When editing, preserve the original isEnabled state and FingerCount trigger
+        val originalGesture = if (state.isEditing && state.editingGestureId != null) {
+            customGestures.value.find { it.id == state.editingGestureId }
+        } else {
+            null
+        }
+
+        // Preserve FingerCount trigger if editing an existing FingerCount gesture
+        val triggerPose = if (state.isEditingFingerCount && originalGesture?.triggerPose is CustomGestureTrigger.FingerCount) {
+            originalGesture.triggerPose // Keep the original FingerCount trigger
+        } else {
+            CustomGestureTrigger.PoseWithDirection(
+                pose = state.selectedPose,
+                direction = state.selectedDirection,
+            )
+        }
+
         val gesture = CustomGesture(
             id = state.editingGestureId ?: UUID.randomUUID().toString(),
             name = state.name.trim(),
             description = state.description.trim(),
-            triggerPose = CustomGestureTrigger.PoseWithDirection(
-                pose = state.selectedPose,
-                direction = state.selectedDirection,
-            ),
+            triggerPose = triggerPose,
             action = state.selectedAction,
-            isEnabled = true,
+            isEnabled = originalGesture?.isEnabled ?: true,
         )
 
         viewModelScope.launch {

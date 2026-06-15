@@ -3,6 +3,7 @@ package com.aircontrol.permissions
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
+import androidx.core.content.ContextCompat
 import android.net.Uri
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -75,10 +76,10 @@ class PermissionsManager constructor(
         scope = scope,
         started = SharingStarted.Lazily,
         initialValue = PermissionStates(
-            cameraGranted = checkCameraPermission(),
-            accessibilityGranted = checkAccessibilityPermission(),
-            overlayGranted = checkOverlayPermission(),
-            notificationsGranted = checkNotificationPermission(),
+            cameraGranted = _cameraGranted.value,
+            accessibilityGranted = _accessibilityGranted.value,
+            overlayGranted = _overlayGranted.value,
+            notificationsGranted = _notificationsGranted.value,
         ),
     )
 
@@ -133,7 +134,7 @@ class PermissionsManager constructor(
     }
 
     private fun checkCameraPermission(): Boolean {
-        val result = context.checkCallingOrSelfPermission(android.Manifest.permission.CAMERA)
+        val result = ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
         val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
         Timber.v("Camera permission check: %s", granted)
         return granted
@@ -161,7 +162,7 @@ class PermissionsManager constructor(
 
     private fun checkNotificationPermission(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return true
-        val result = context.checkCallingOrSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+        val result = ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
         val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
         Timber.v("Notification permission check: %s", granted)
         return granted

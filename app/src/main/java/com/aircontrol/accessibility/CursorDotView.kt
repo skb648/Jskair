@@ -52,6 +52,13 @@ class CursorDotView(
     private var pulseRadius = 0f
     private var pulseAlpha = 30
 
+    // M-12: Only animate pulse when cursor is idle
+    private var isMoving = false
+    private val moveResetRunnable = Runnable {
+        isMoving = false
+        if (isAttachedToWindow) pulseAnimator.resume()
+    }
+
     private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = PULSE_DURATION_MS
         repeatMode = ValueAnimator.RESTART
@@ -70,6 +77,19 @@ class CursorDotView(
             invalidate()
         }
 
+    /**
+     * Notifies the view that the cursor is moving.
+     * Pauses the idle pulse animation and schedules a resume after 1 second of no movement.
+     */
+    fun notifyMoving() {
+        if (!isMoving) {
+            isMoving = true
+            pulseAnimator.pause()
+        }
+        removeCallbacks(moveResetRunnable)
+        postDelayed(moveResetRunnable, IDLE_TIMEOUT_MS)
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         pulseAnimator.start()
@@ -77,8 +97,14 @@ class CursorDotView(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        removeCallbacks(moveResetRunnable)
         pulseAnimator.cancel()
     }
+
+    // M-13: Cached RadialGradient — only recreate when view size changes
+    private var cachedGradient: RadialGradient? = null
+    private var lastGradientWidth = 0
+    private var lastGradientHeight = 0
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -86,20 +112,25 @@ class CursorDotView(
         val centerX = width / 2f
         val centerY = height / 2f
 
-        // Draw idle pulse
-        if (pulseAlpha > 0) {
+        // Draw idle pulse (only when not moving — M-12)
+        if (!isMoving && pulseAlpha > 0) {
             pulsePaint.alpha = pulseAlpha
             canvas.drawCircle(centerX, centerY, pulseRadius, pulsePaint)
         }
 
-        // Draw soft shadow
+        // Draw soft shadow — M-13: cache gradient, only recreate when size changes
         val shadowRadius = dotSizePx * 0.7f
-        shadowPaint.shader = RadialGradient(
-            centerX, centerY, shadowRadius,
-            accentColor,
-            android.graphics.Color.TRANSPARENT,
-            Shader.TileMode.CLAMP,
-        )
+        if (width != lastGradientWidth || height != lastGradientHeight) {
+            cachedGradient = RadialGradient(
+                centerX, centerY, shadowRadius,
+                accentColor,
+                android.graphics.Color.TRANSPARENT,
+                Shader.TileMode.CLAMP,
+            )
+            lastGradientWidth = width
+            lastGradientHeight = height
+        }
+        shadowPaint.shader = cachedGradient
         shadowPaint.alpha = 40
         canvas.drawCircle(centerX, centerY, shadowRadius, shadowPaint)
 
@@ -115,5 +146,6 @@ class CursorDotView(
 
     companion object {
         private const val PULSE_DURATION_MS = 2000L
+        private const val IDLE_TIMEOUT_MS = 1000L
     }
 }

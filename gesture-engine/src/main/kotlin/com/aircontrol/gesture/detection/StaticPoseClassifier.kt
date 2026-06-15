@@ -18,11 +18,13 @@ import kotlin.math.sqrt
  * Poses are classified in priority order:
  * 1. PINCH — thumb and index tips close together (distance-based, hand-size scaled)
  * 2. FIST — no fingers extended
- * 3. OPEN_PALM — all five digits extended
+ * 3. OPEN_PALM — at least 4 of 5 digits extended (tolerates curled pinky)
  * 4. POINTING — only index extended (and no thumb)
  * 5. VICTORY — index and middle extended (peace/V sign)
- * 6. THUMB_UP — only thumb extended, thumb tip above thumb MCP
- * 7. THUMB_DOWN — only thumb extended, thumb tip below thumb MCP
+ * 6. THREE_FINGERS — index + middle + ring extended, pinky not
+ * 7. FOUR_FINGERS — all four fingers extended (index, middle, ring, pinky)
+ * 8. THUMB_UP — only thumb extended, thumb tip above thumb MCP
+ * 9. THUMB_DOWN — only thumb extended, thumb tip below thumb MCP
  */
 class StaticPoseClassifier(private val config: GestureEngineConfig) {
 
@@ -73,8 +75,8 @@ class StaticPoseClassifier(private val config: GestureEngineConfig) {
         // 2. FIST — no digits extended at all
         if (fingerState.totalExtendedCount == 0) return Pose.FIST
 
-        // 3. OPEN_PALM — all five digits extended
-        if (fingerState.totalExtendedCount == 5) return Pose.OPEN_PALM
+        // 3. OPEN_PALM — at least 4 of 5 digits extended (tolerates curled pinky)
+        if (fingerState.totalExtendedCount >= 4) return Pose.OPEN_PALM
 
         // 4. POINTING — index only extended (thumb may or may not be, but
         //    only index among the four fingers)
@@ -87,7 +89,17 @@ class StaticPoseClassifier(private val config: GestureEngineConfig) {
             return Pose.VICTORY
         }
 
-        // 6. THUMB_UP — only thumb extended, thumb tip is above MCP (lower y = higher)
+        // 6. THREE_FINGERS — index + middle + ring extended, pinky not
+        if (fingerState.index && fingerState.middle && fingerState.ring && !fingerState.pinky) {
+            return Pose.THREE_FINGERS
+        }
+
+        // 7. FOUR_FINGERS — all four fingers extended (index, middle, ring, pinky)
+        if (fingerState.index && fingerState.middle && fingerState.ring && fingerState.pinky) {
+            return Pose.FOUR_FINGERS
+        }
+
+        // 8. THUMB_UP — only thumb extended, thumb tip is above MCP (lower y = higher)
         if (fingerState.thumb && fingerState.extendedFingerCount == 0) {
             val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
             val thumbMcp = landmarks[LandmarkIndex.THUMB_MCP]

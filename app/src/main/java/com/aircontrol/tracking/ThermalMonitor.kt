@@ -3,6 +3,7 @@ package com.aircontrol.tracking
 import android.content.Context
 import android.os.Build
 import android.os.PowerManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +33,7 @@ enum class ThermalStatus {
 }
 
 class ThermalMonitor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val scope: CoroutineScope,
     private val pollingIntervalMs: Long = 5000L,
 ) {

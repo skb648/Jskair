@@ -3,6 +3,7 @@ package com.aircontrol.gesture.statemachine
 import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.Pose
+import kotlin.concurrent.Volatile
 
 /**
  * State machine governing the gesture engine's armed/disarmed lifecycle.
@@ -22,23 +23,29 @@ import com.aircontrol.gesture.model.Pose
 class GestureStateMachine(private val config: GestureEngineConfig) {
 
     /** Current state of the machine. */
+    @Volatile
     var currentState: GestureEngineState = GestureEngineState.DISARMED
         private set
 
     /** Timestamp when the current state was entered. */
+    @Volatile
     private var stateEntryTimeMs: Long = 0L
 
     /** Timestamp of the last hand detection. */
+    @Volatile
     private var lastHandDetectedTimeMs: Long = 0L
 
     /** Whether a hand was detected in the current frame. */
     private var handCurrentlyDetected: Boolean = false
 
     /** How long the FIST pose has been held continuously. */
+    @Volatile
     private var fistHoldStartMs: Long = 0L
+    @Volatile
     private var fistWasHeld: Boolean = false
 
     /** Arming progress: 0.0 to 1.0, where 1.0 means fully armed. */
+    @Volatile
     var armingProgress: Float = 0f
         private set
 
@@ -154,8 +161,10 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
             resetFistTracking()
         }
 
-        // Execute gesture on any actionable pose (not NONE, OPEN_PALM, or FIST)
-        if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST) {
+        // Execute gesture on any actionable pose (not NONE, OPEN_PALM, FIST, PINCH, or POINTING)
+        // PINCH has its own lifecycle (START/MOVE/END) managed by GestureEngine.processPinch()
+        // POINTING is a neutral preparatory pose that maps to NONE action
+        if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST && pose != Pose.PINCH && pose != Pose.POINTING) {
             resetFistTracking()
             transitionTo(GestureEngineState.EXECUTING)
         }

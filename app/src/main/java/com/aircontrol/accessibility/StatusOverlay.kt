@@ -8,6 +8,7 @@ import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -37,8 +38,8 @@ class StatusOverlay(
     private var isAdded = false
 
     // Position (persisted)
-    private var posX: Int = prefs.getInt(KEY_POS_X, DEFAULT_POS_X)
-    private var posY: Int = prefs.getInt(KEY_POS_Y, DEFAULT_POS_Y)
+    private var posX: Int = try { prefs.getInt(KEY_POS_X, DEFAULT_POS_X) } catch (_: Exception) { DEFAULT_POS_X }
+    private var posY: Int = try { prefs.getInt(KEY_POS_Y, DEFAULT_POS_Y) } catch (_: Exception) { DEFAULT_POS_Y }
 
     // Drag state
     private var isDragging = false
@@ -46,6 +47,16 @@ class StatusOverlay(
     private var dragStartY = 0f
     private var dragViewStartX = 0
     private var dragViewStartY = 0
+
+    // Touch slop from system (m-10)
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+
+    // Cached drawable (M-14)
+    private val cachedDrawable = android.graphics.drawable.GradientDrawable()
+
+    // Screen dimensions for bounds clamping (M-15)
+    private val screenWidth = context.resources.displayMetrics.widthPixels
+    private val screenHeight = context.resources.displayMetrics.heightPixels
 
     // Current state
     private var currentState = GestureEngineState.DISARMED
@@ -157,11 +168,10 @@ class StatusOverlay(
             }
         }
 
-        view.setBackgroundColor(bgColor)
-        view.background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(bgColor)
-            cornerRadius = dpToPx(12).toFloat()
-        }
+        // M-14: Reuse cached drawable instead of creating a new one each time
+        cachedDrawable.setColor(bgColor)
+        cachedDrawable.cornerRadius = dpToPx(12).toFloat()
+        view.background = cachedDrawable
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -181,13 +191,16 @@ class StatusOverlay(
                 val dx = event.rawX - dragStartX
                 val dy = event.rawY - dragStartY
 
-                if (!isDragging && (kotlin.math.abs(dx) > TOUCH_SLOP || kotlin.math.abs(dy) > TOUCH_SLOP)) {
+                if (!isDragging && (kotlin.math.abs(dx) > touchSlop || kotlin.math.abs(dy) > touchSlop)) {
                     isDragging = true
                 }
 
                 if (isDragging) {
-                    params.x = dragViewStartX + dx.toInt()
-                    params.y = dragViewStartY + dy.toInt()
+                    // M-15: Clamp position to screen bounds
+                    val viewWidth = statusView?.width ?: 0
+                    val viewHeight = statusView?.height ?: 0
+                    params.x = (dragViewStartX + dx.toInt()).coerceIn(0, (screenWidth - viewWidth).coerceAtLeast(0))
+                    params.y = (dragViewStartY + dy.toInt()).coerceIn(0, (screenHeight - viewHeight).coerceAtLeast(0))
                     try {
                         windowManager.updateViewLayout(statusView, params)
                     } catch (_: Exception) {
@@ -198,7 +211,7 @@ class StatusOverlay(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (isDragging) {
-                    // Persist position
+                    // Persist position (already clamped during move)
                     posX = params.x
                     posY = params.y
                     persistPosition()
@@ -217,6 +230,25 @@ class StatusOverlay(
             .apply()
     }
 
+    /**
+     * Resets the overlay position to the default location.
+     */
+    fun resetToDefaultPosition() {
+        posX = DEFAULT_POS_X
+        posY = DEFAULT_POS_Y
+        val params = statusView?.layoutParams as? WindowManager.LayoutParams
+        if (params != null) {
+            params.x = posX
+            params.y = posY
+            try {
+                windowManager.updateViewLayout(statusView, params)
+            } catch (_: Exception) {
+                // View not attached
+            }
+        }
+        persistPosition()
+    }
+
     private fun dpToPx(dp: Int): Int {
         return (dp * context.resources.displayMetrics.density).toInt()
     }
@@ -227,6 +259,6 @@ class StatusOverlay(
         private const val KEY_POS_Y = "overlay_pos_y"
         private const val DEFAULT_POS_X = 50
         private const val DEFAULT_POS_Y = 100
-        private const val TOUCH_SLOP = 10
+        // TOUCH_SLOP moved to instance field (m-10) — uses ViewConfiguration.get(context).scaledTouchSlop
     }
 }

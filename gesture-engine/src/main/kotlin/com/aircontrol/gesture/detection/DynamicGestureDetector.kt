@@ -50,7 +50,7 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
     private var lastSwipeTimestampMs: Long = 0L
 
     /** Minimum time between consecutive swipe detections. */
-    private var swipeCooldownMs: Long = 500L
+    private var swipeCooldownMs: Long = config.swipeCooldownMs
 
     /**
      * Processes a hand input frame and returns a [SwipeResult] indicating

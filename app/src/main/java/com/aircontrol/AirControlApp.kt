@@ -33,7 +33,7 @@ class AirControlApp : Application() {
     private fun initTimber() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
+            Timber.d("AirControl application initialized")
         }
-        Timber.d("AirControl application initialized")
     }
 }

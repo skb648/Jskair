@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.Collections
 import javax.inject.Inject
 
 /** Steps in the calibration flow. */
@@ -55,13 +56,14 @@ class CalibrationViewModel @Inject constructor(
     val uiState: StateFlow<CalibrationUiState> = _uiState.asStateFlow()
 
     // Collected hand size samples for averaging
-    private val handSizeSamples = mutableListOf<Float>()
-    private val pinchDistanceSamples = mutableListOf<Float>()
+    private val handSizeSamples = Collections.synchronizedList(mutableListOf<Float>())
+    private val pinchDistanceSamples = Collections.synchronizedList(mutableListOf<Float>())
     private var measurementCount = 0
     private val REQUIRED_MEASUREMENTS = 20
 
     // Tracking job for hand frames
     private var handFrameJob: kotlinx.coroutines.Job? = null
+    private var measuringJob: kotlinx.coroutines.Job? = null
 
     fun startCalibration() {
         _uiState.value = _uiState.value.copy(step = CalibrationStep.PALM_DETECT)
@@ -99,7 +101,8 @@ class CalibrationViewModel @Inject constructor(
         pinchDistanceSamples.clear()
         measurementCount = 0
 
-        viewModelScope.launch {
+        measuringJob?.cancel()
+        measuringJob = viewModelScope.launch {
             handTracker.handFrames.collect { frame ->
                 if (!frame.isDetected || frame.landmarks.size < 21) return@collect
                 if (_uiState.value.step != CalibrationStep.MEASURING) return@collect
@@ -157,6 +160,7 @@ class CalibrationViewModel @Inject constructor(
                             step = CalibrationStep.TEST_GESTURES,
                         )
                         Timber.i("Calibration measured: handSize=%.1fmm, pinchDist=%.1fmm", handSizeMm, pinchDistanceMm)
+                        measuringJob?.cancel() // Cancel self when done
                         return@collect // Done measuring
                     }
                 }
@@ -198,5 +202,6 @@ class CalibrationViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         handFrameJob?.cancel()
+        measuringJob?.cancel()
     }
 }

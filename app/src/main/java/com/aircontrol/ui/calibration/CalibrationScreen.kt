@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.theme.ElectricBlue
@@ -489,7 +490,7 @@ private fun TestGesturesStep(
         Spacer(modifier = Modifier.height(Dimens.spacing16))
 
         // Simulate gesture recognition (in production, this comes from HandTracker)
-        if (completed < total) {
+        if (BuildConfig.DEBUG && completed < total) {
             FilledTonalButton(
                 onClick = {
                     val gestureNames = listOf("Open Palm", "Fist", "Pinch")

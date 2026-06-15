@@ -27,7 +27,7 @@ import timber.log.Timber
  * - Front camera mirroring applied via ActionDispatcher coordinate mapping
  */
 class CursorOverlay(
-    private val context: Context,
+    private val context: Context = context.applicationContext,
     private var screenWidth: Int,
     private var screenHeight: Int,
 ) {
@@ -41,6 +41,10 @@ class CursorOverlay(
     // Cursor position in screen pixels
     private var currentScreenX = 0f
     private var currentScreenY = 0f
+
+    // Throttle overlay updates to ~30fps to reduce IPC overhead
+    private var lastUpdateTimeMs = 0L
+    private val updateThrottleMs = 33L
 
     // Whether we've received the first position update
     private var hasInitialized = false
@@ -56,8 +60,15 @@ class CursorOverlay(
     private var isArmed = false
 
     // Hide animation tracking
-    private var hideRunnable: Runnable? = null
     private val hideDelayMs = 200L
+
+    /**
+     * Sets the armed state on the cursor view (m-12).
+     */
+    fun setArmed(armed: Boolean) {
+        isArmed = armed
+        (cursorView as? CursorDotView)?.isArmed = armed
+    }
 
     /**
      * Updates the cursor position from normalized hand coordinates.
@@ -96,6 +107,9 @@ class CursorOverlay(
 
         // Update layout immediately for minimal latency
         updateViewLayout()
+
+        // M-12: Notify the cursor dot view that movement is happening
+        (cursorView as? CursorDotView)?.notifyMoving()
 
         if (!isVisible) show()
     }
@@ -210,6 +224,12 @@ class CursorOverlay(
         val view = cursorView ?: return
         val params = view.layoutParams as? WindowManager.LayoutParams ?: return
 
+        val now = System.currentTimeMillis()
+        if (now - lastUpdateTimeMs < updateThrottleMs) {
+            return // Throttle overlay updates to ~30fps
+        }
+        lastUpdateTimeMs = now
+
         val size = ringSizePx * 2 + dpToPx(4)
         params.x = currentScreenX.toInt() - size / 2
         params.y = currentScreenY.toInt() - size / 2
@@ -222,11 +242,8 @@ class CursorOverlay(
     }
 
     private fun cancelPendingHide() {
-        hideRunnable?.let {
-            cursorView?.removeCallbacks(it)
-            hideRunnable = null
-        }
         cursorView?.animate()?.cancel()
+        cursorView?.alpha = 1f
     }
 
     private fun dpToPx(dp: Int): Int {

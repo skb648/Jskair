@@ -173,6 +173,25 @@ fun GestureMapScreen(
                 }
             }
 
+            // Scrim overlay - dismiss action sheet on tap outside
+            AnimatedVisibility(
+                visible = showActionSheet,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        role = Role.Button,
+                        onClick = { viewModel.dismissActionSheet() },
+                    ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f)),
+                )
+            }
+
             // Bottom Sheet for Action Selection
             AnimatedVisibility(
                 visible = showActionSheet,

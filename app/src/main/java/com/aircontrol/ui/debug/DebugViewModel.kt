@@ -1,5 +1,6 @@
 package com.aircontrol.ui.debug
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -8,6 +9,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -82,6 +85,7 @@ class DebugViewModel @Inject constructor(
     private var lastFpsMeasureTimeMs = 0L
 
     // Reusable transform bitmap for debug camera — avoids per-frame allocation
+    @Volatile
     private var reusableDebugBitmap: Bitmap? = null
     private var debugBitmapWidth: Int = 0
     private var debugBitmapHeight: Int = 0
@@ -93,8 +97,7 @@ class DebugViewModel @Inject constructor(
     private var cameraProvider: ProcessCameraProvider? = null
     private var wasServiceRunning = false
     private val trackingJobs: MutableList<Job> = mutableListOf()
-    @Volatile
-    private var isPreviewBound = false
+    private val isPreviewBound = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Starts tracking: stops CameraService if running, then initializes HandTracker
@@ -183,7 +186,7 @@ class DebugViewModel @Inject constructor(
      * using the provided LifecycleOwner (the Activity).
      */
     fun bindPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
-        if (isPreviewBound) return
+        if (!isPreviewBound.compareAndSet(false, true)) return
 
         val context = previewView.context
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -198,15 +201,21 @@ class DebugViewModel @Inject constructor(
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
                         .build()
 
-                    @Suppress("DEPRECATION")
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.STRATEGY_NEAREST_HIGHER))
+                        .build()
+
                     val preview = Preview.Builder()
-                        .setTargetResolution(android.util.Size(640, 480))
+                        .setResolutionSelector(resolutionSelector)
                         .build()
                     preview.surfaceProvider = previewView.surfaceProvider
 
-                    @Suppress("DEPRECATION")
+                    val analysisResolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.STRATEGY_NEAREST_HIGHER))
+                        .build()
+
                     val imageAnalysis = ImageAnalysis.Builder()
-                        .setTargetResolution(android.util.Size(640, 480))
+                        .setResolutionSelector(analysisResolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                     imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
@@ -221,9 +230,10 @@ class DebugViewModel @Inject constructor(
                         imageAnalysis,
                     )
 
-                    isPreviewBound = true
+                    isPreviewBound.set(true)
                     Timber.i("Debug camera bound successfully")
                 } catch (e: Exception) {
+                    isPreviewBound.set(false)
                     Timber.e(e, "Failed to bind debug camera")
                 }
             },
@@ -233,7 +243,9 @@ class DebugViewModel @Inject constructor(
 
     private fun processDebugFrame(imageProxy: ImageProxy) {
         try {
-            val mpImage = imageProxyToMPImage(imageProxy)
+            val mpImage = synchronized(this) {
+                imageProxyToMPImage(imageProxy)
+            }
             if (mpImage != null) {
                 val timestampMs = System.currentTimeMillis()
                 handTracker.processFrame(mpImage, timestampMs)
@@ -316,7 +328,7 @@ class DebugViewModel @Inject constructor(
             Timber.e(e, "Error unbinding debug camera")
         }
         cameraProvider = null
-        isPreviewBound = false
+        isPreviewBound.set(false)
 
         trackingJobs.forEach { it.cancel() }
         trackingJobs.clear()
@@ -325,18 +337,38 @@ class DebugViewModel @Inject constructor(
         _isServiceRunning.value = false
 
         if (wasServiceRunning) {
-            val startIntent = Intent(context, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val isForeground = activityManager?.runningAppProcesses?.any {
+                it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            } ?: false
+
+            if (isForeground) {
+                val startIntent = Intent(context, CameraService::class.java).apply {
+                    action = CameraService.ACTION_START
+                }
+                try {
+                    context.startForegroundService(startIntent)
+                    Timber.d("Restarted CameraService after debug screen")
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to start camera service")
+                }
             }
-            context.startForegroundService(startIntent)
-            Timber.d("Restarted CameraService after debug screen")
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        analysisExecutor.shutdownNow()
-        reusableDebugBitmap?.recycle()
-        reusableDebugBitmap = null
+        synchronized(this) {
+            reusableDebugBitmap?.recycle()
+            reusableDebugBitmap = null
+        }
+        analysisExecutor.shutdown()
+        try {
+            if (!analysisExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                analysisExecutor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            analysisExecutor.shutdownNow()
+        }
     }
 }

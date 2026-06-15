@@ -2,10 +2,9 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.ksp)
 }
-
-apply(plugin = "com.google.dagger.hilt.android")
-apply(plugin = "com.google.devtools.ksp")
 
 // Auto versionCode from git commit count
 val gitCommitCount = providers.exec {
@@ -14,12 +13,12 @@ val gitCommitCount = providers.exec {
 
 android {
     namespace = "com.aircontrol"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.aircontrol"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = gitCommitCount
         versionName = "1.0.0"
 
@@ -45,16 +44,15 @@ android {
         }
     }
 
-    // Add release signing config placeholder
-    signingConfigs {
-        create("release") {
-            // These should be set via environment variables or keystore.properties
-            // storeFile = file(System.getenv("KEYSTORE_PATH") ?: "release.keystore")
-            // storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-            // keyAlias = System.getenv("KEY_ALIAS") ?: ""
-            // keyPassword = System.getenv("KEY_PASSWORD") ?: ""
-        }
-    }
+    // TODO: Configure release signing before production release
+    // signingConfigs {
+    //     create("release") {
+    //         storeFile = file("release.keystore")
+    //         storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+    //         keyAlias = "release"
+    //         keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+    //     }
+    // }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

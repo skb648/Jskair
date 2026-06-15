@@ -21,3 +21,14 @@ val ErrorRed = Color(0xFFF85149)
 // Outlines & dividers
 val OutlineDark = Color(0xFF30363D)
 val OutlineVariantDark = Color(0xFF21262D)
+
+// Light theme palette
+val LightBackground = Color(0xFFFAFBFC)
+val LightSurface = Color(0xFFFFFFFF)
+val LightSurfaceVariant = Color(0xFFF0F2F5)
+val LightOnBackground = Color(0xFF1C2128)
+val LightOnSurface = Color(0xFF1C2128)
+val LightOnSurfaceVariant = Color(0xFF57606A)
+val LightOutline = Color(0xFFD0D7DE)
+val LightOutlineVariant = Color(0xFFE8ECF0)
+val LightOnPrimary = Color(0xFFFFFFFF)

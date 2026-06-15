@@ -15,6 +15,8 @@
     <string name="home_status_active">Active</string>
     <string name="home_status_inactive">Inactive</string>
     <string name="home_status_paused">Paused</string>
+    <string name="home_service_active">Service active</string>
+    <string name="home_service_inactive">Service inactive</string>
     <string name="home_enable_gestures">Enable Gestures</string>
     <string name="home_disable_gestures">Disable Gestures</string>
     <string name="home_open_settings">Settings</string>
@@ -27,6 +29,8 @@
     <string name="home_cursor_mode">Cursor</string>
     <string name="home_haptics">Haptics</string>
     <string name="home_battery_saver">Saver</string>
+    <string name="home_debug">Debug</string>
+    <string name="home_custom_gestures">Custom Gestures</string>
 
     <!-- Home - Permission Warnings -->
     <string name="home_warning_camera_title">Camera permission required</string>

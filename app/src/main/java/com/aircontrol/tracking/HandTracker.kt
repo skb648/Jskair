@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.concurrent.Volatile
 
 /**
  * Wraps MediaPipe HandLandmarker for real-time hand tracking.
@@ -45,9 +46,12 @@ class HandTrackerImpl @Inject constructor(
     private var handLandmarker: HandLandmarker? = null
     @Volatile
     private var _isInitialized = false
+    @Volatile
+    private var isClosing = false
+    private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
-        extraBufferCapacity = 2,
+        extraBufferCapacity = 8,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
@@ -59,7 +63,9 @@ class HandTrackerImpl @Inject constructor(
 
     // Timestamp mapping: MediaPipe uses monotonic timestamps in microseconds.
     // We track the offset between our system time (ms) and MediaPipe time (us).
+    @Volatile
     private var mediaPipeTimestampBaseUs: Long = 0L
+    @Volatile
     private var systemTimestampBaseMs: Long = 0L
 
     // Timestamps for result callbacks. MediaPipe LIVE_STREAM callbacks are
@@ -82,8 +88,9 @@ class HandTrackerImpl @Inject constructor(
             return
         }
 
-        // Initialize timestamps
-        systemTimestampBaseMs = System.currentTimeMillis()
+        // Initialize timestamps using monotonic clock (System.nanoTime)
+        // to avoid issues with wall-clock adjustments (e.g., NTP sync).
+        systemTimestampBaseMs = System.nanoTime() / 1_000_000L
         mediaPipeTimestampBaseUs = System.nanoTime() / 1000L
 
         handLandmarker = tryInitializeWithDelegate(Delegate.GPU)
@@ -98,6 +105,8 @@ class HandTrackerImpl @Inject constructor(
     }
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
+        if (isClosing) return
+
         val landmarker = handLandmarker ?: run {
             Timber.v("HandLandmarker not initialized, skipping frame")
             return
@@ -107,11 +116,14 @@ class HandTrackerImpl @Inject constructor(
 
         var timestampQueued = false
         try {
-            // Convert system timestamp to MediaPipe's monotonic microseconds
-            val mediaPipeTimestampUs = systemMsToMediaPipeUs(timestampMs)
+            // Use monotonic clock (System.nanoTime) for MediaPipe timestamps
+            // to guarantee strictly increasing values required by LIVE_STREAM mode.
+            val nanoTimeNs = System.nanoTime()
+            val mediaPipeTimestampUs = nanoTimeNs / 1000L
+            val frameTimestampMs = nanoTimeNs / 1_000_000L
 
             synchronized(timestampLock) {
-                pendingFrameTimestampsMs.addLast(timestampMs)
+                pendingFrameTimestampsMs.addLast(frameTimestampMs)
                 timestampQueued = true
                 while (pendingFrameTimestampsMs.size > MAX_PENDING_TIMESTAMPS) {
                     pendingFrameTimestampsMs.removeFirst()
@@ -122,23 +134,29 @@ class HandTrackerImpl @Inject constructor(
         } catch (e: Exception) {
             if (timestampQueued) {
                 synchronized(timestampLock) {
-                    if (pendingFrameTimestampsMs.isNotEmpty() && pendingFrameTimestampsMs.last() == timestampMs) {
+                    if (pendingFrameTimestampsMs.isNotEmpty() && pendingFrameTimestampsMs.last() == frameTimestampMs) {
                         pendingFrameTimestampsMs.removeLast()
                     }
                 }
             }
-            Timber.e(e, "Error processing frame at timestamp %d", timestampMs)
+            Timber.e(e, "Error processing frame at timestamp %d", frameTimestampMs)
         }
     }
 
     override fun close() {
+        isClosing = true
+        val latch = java.util.concurrent.CountDownLatch(1)
+        pendingCloseLatch = latch
         try {
+            // Wait for pending async callbacks to complete (max 200ms)
+            latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)
             handLandmarker?.close()
         } catch (e: Exception) {
             Timber.e(e, "Error closing HandLandmarker")
         }
         handLandmarker = null
         _isInitialized = false
+        isClosing = false
         handFrameFilter.reset()
         synchronized(timestampLock) { pendingFrameTimestampsMs.clear() }
         Timber.i("HandTracker closed")
@@ -148,11 +166,16 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult) {
+        // Signal pending close latch if we're closing
+        if (isClosing) {
+            pendingCloseLatch?.countDown()
+        }
+
         val systemTimestampMs = synchronized(timestampLock) {
             if (pendingFrameTimestampsMs.isNotEmpty()) {
                 pendingFrameTimestampsMs.removeFirst()
             } else {
-                System.currentTimeMillis()
+                System.nanoTime() / 1_000_000L
             }
         }
 
@@ -184,8 +207,9 @@ class HandTrackerImpl @Inject constructor(
             val category = handedness[0][0]
             val label = category.categoryName()
             when (label.uppercase()) {
-                "LEFT" -> Handedness.LEFT
-                "RIGHT" -> Handedness.RIGHT
+                // Front camera image is mirrored, so swap handedness
+                "LEFT" -> Handedness.RIGHT
+                "RIGHT" -> Handedness.LEFT
                 else -> Handedness.UNKNOWN
             }
         } else {
@@ -209,15 +233,6 @@ class HandTrackerImpl @Inject constructor(
         val filteredFrame = handFrameFilter.filter(rawFrame)
 
         _handFrames.tryEmit(filteredFrame)
-    }
-
-    /**
-     * Converts system time in milliseconds to MediaPipe monotonic time in microseconds.
-     * MediaPipe requires strictly increasing timestamps in LIVE_STREAM mode.
-     */
-    private fun systemMsToMediaPipeUs(systemMs: Long): Long {
-        val deltaMs = systemMs - systemTimestampBaseMs
-        return mediaPipeTimestampBaseUs + deltaMs * 1000L
     }
 
     /**

@@ -38,6 +38,7 @@ fun HandPoseIcon(
             "swipe_up" -> drawSwipeUp(s, cx, cy, color)
             "swipe_down" -> drawSwipeDown(s, cx, cy, color)
             "pose_pinch" -> drawPinch(s, cx, cy, color)
+            "pose_pinch_hold" -> drawPinchHold(s, cx, cy, color)
             "pose_pointing" -> drawPointing(s, cx, cy, color)
             "pose_victory" -> drawVictory(s, cx, cy, color)
             "pose_thumb_up" -> drawThumbUp(s, cx, cy, color)
@@ -264,6 +265,52 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPinch(
         radius = s * 0.05f,
         center = Offset(cx, cy - s * 0.02f),
     )
+
+    // Other fingers (curled, small arcs at bottom)
+    drawArc(
+        color = color.copy(alpha = 0.5f),
+        startAngle = 10f,
+        sweepAngle = 160f,
+        useCenter = false,
+        topLeft = Offset(cx - s * 0.12f, cy + s * 0.08f),
+        size = androidx.compose.ui.geometry.Size(s * 0.24f, s * 0.1f),
+        style = Stroke(width = strokeW * 0.8f, cap = StrokeCap.Round),
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPinchHold(
+    s: Float, cx: Float, cy: Float, color: Color,
+) {
+    val strokeW = s * 0.05f
+
+    // Thumb (curved from bottom-left)
+    val thumbStart = Offset(cx - s * 0.25f, cy + s * 0.1f)
+    val thumbEnd = Offset(cx - s * 0.06f, cy - s * 0.02f)
+    drawLine(color, thumbStart, thumbEnd, strokeWidth = strokeW * 1.3f, cap = StrokeCap.Round)
+
+    // Index finger (curved from bottom-right)
+    val indexStart = Offset(cx + s * 0.25f, cy + s * 0.1f)
+    val indexEnd = Offset(cx + s * 0.06f, cy - s * 0.02f)
+    drawLine(color, indexStart, indexEnd, strokeWidth = strokeW * 1.3f, cap = StrokeCap.Round)
+
+    // Pinch point — filled circle to indicate hold/grip
+    drawCircle(
+        color = color,
+        radius = s * 0.05f,
+        center = Offset(cx, cy - s * 0.02f),
+    )
+
+    // Hold indicator — small horizontal lines radiating outward (grip/hold)
+    val holdY = cy - s * 0.02f
+    for (i in -1..1 step 2) {
+        drawLine(
+            color = color.copy(alpha = 0.7f),
+            start = Offset(cx + i * s * 0.08f, holdY - s * 0.03f),
+            end = Offset(cx + i * s * 0.08f, holdY + s * 0.03f),
+            strokeWidth = strokeW * 0.6f,
+            cap = StrokeCap.Round,
+        )
+    }
 
     // Other fingers (curled, small arcs at bottom)
     drawArc(

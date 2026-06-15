@@ -46,13 +46,19 @@ data class GestureMapConfig(
             val defaults = defaultEntries()
             val existingByKey = oldConfig.entries.associateBy { it.key }
 
-            val migrated = defaults.map { default ->
+            val result = defaults.map { default ->
                 existingByKey[default.key]?.copy(label = default.label) ?: default
+            }.toMutableList()
+            // Preserve user-added entries not in defaults
+            existingByKey.forEach { (key, entry) ->
+                if (key !in result.map { it.key }) {
+                    result.add(entry)
+                }
             }
 
             return GestureMapConfig(
                 schemaVersion = CURRENT_SCHEMA_VERSION,
-                entries = migrated,
+                entries = result,
             )
         }
     }

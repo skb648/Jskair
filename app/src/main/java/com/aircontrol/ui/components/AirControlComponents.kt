@@ -56,8 +56,7 @@ fun SettingSwitchRow(
 ) {
     Card(
         modifier = modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+            .fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface,
         ),
@@ -123,6 +122,7 @@ fun SettingSliderCard(
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier,
     steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -158,6 +158,7 @@ fun SettingSliderCard(
             androidx.compose.material3.Slider(
                 value = value,
                 onValueChange = onValueChange,
+                onValueChangeFinished = onValueChangeFinished,
                 valueRange = valueRange,
                 steps = steps,
                 modifier = Modifier.fillMaxWidth(),

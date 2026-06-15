@@ -12,8 +12,9 @@
 -dontwarn autovalue.shaded.**
 
 # ---------- MediaPipe Tasks Vision ----------
-# MediaPipe uses heavy reflection + JNI. Keep everything.
--keep class com.google.mediapipe.** { *; }
+# MediaPipe - keep only the classes we actually use
+-keep class com.google.mediapipe.tasks.vision.handlandmarker.** { *; }
+-keep class com.google.mediapipe.framework.** { *; }
 -keep interface com.google.mediapipe.** { *; }
 -keepclassmembers class com.google.mediapipe.** { *; }
 -dontwarn com.google.mediapipe.**
@@ -38,10 +39,8 @@
 -dontwarn dagger.hilt.**
 
 # ---------- Jetpack Compose ----------
--keep class androidx.compose.** { *; }
+# Compose compiler adds its own ProGuard rules; no manual keeps needed.
 -dontwarn androidx.compose.**
-# Compose compiler generates classes that R8 may strip
--keepclassmembers class androidx.compose.runtime.** { *; }
 
 # ---------- Kotlin ----------
 -keepattributes *Annotation*
@@ -59,9 +58,6 @@
 # ---------- CameraX ----------
 -keep class androidx.camera.** { *; }
 -dontwarn androidx.camera.**
--keep class androidx.camera.core.** { *; }
--keep class androidx.camera.camera2.** { *; }
--keep class androidx.camera.lifecycle.** { *; }
 
 # ---------- DataStore ----------
 -keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
@@ -77,7 +73,7 @@
 -keep class com.aircontrol.accessibility.GestureAction { *; }
 
 # ---------- Android Components ----------
--keep class * extends android.app.Service { *; }
+-keep class com.aircontrol.** extends android.app.Service { *; }
 -keep class * extends android.content.BroadcastReceiver { *; }
 -keep class * extends android.app.Application { *; }
 
@@ -112,6 +108,26 @@
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
+
+# Keep enum classes used in JSON serialization/deserialization
+-keepclassmembers enum com.aircontrol.data.model.CustomGesturePose {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+-keepclassmembers enum com.aircontrol.data.model.CustomGestureDirection {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+-keepclassmembers enum com.aircontrol.data.model.FingerType {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+# Custom gesture models — used in JSON serialization
+-keep class com.aircontrol.data.model.CustomGesture { *; }
+-keep class com.aircontrol.data.model.CustomGestureTrigger { *; }
+-keep class com.aircontrol.data.model.CustomGestureTrigger$PoseWithDirection { *; }
+-keep class com.aircontrol.data.model.CustomGestureTrigger$FingerCount { *; }
 
 # ---------- Reflection Safety ----------
 # Keep any class with @Inject annotation

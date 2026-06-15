@@ -18,9 +18,11 @@ import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.model.GestureMapEntry
 import com.aircontrol.data.model.HandPreference
 import com.aircontrol.data.model.UserPreferences
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import androidx.annotation.VisibleForTesting
 import org.json.JSONArray
 import org.json.JSONObject
@@ -58,7 +60,8 @@ class SettingsRepositoryImpl @Inject constructor(
     override val userPreferences: Flow<UserPreferences> = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
-                Timber.e(exception, "Error reading preferences")
+                Timber.e(exception, "DataStore corruption detected - resetting to defaults")
+                // TODO: Emit a corruption event to notify UI
                 emit(emptyPreferences())
             } else {
                 throw exception
@@ -71,7 +74,8 @@ class SettingsRepositoryImpl @Inject constructor(
     override val gestureMapConfig: Flow<GestureMapConfig> = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
-                Timber.e(exception, "Error reading gesture map config")
+                Timber.e(exception, "DataStore corruption detected - resetting gesture map to defaults")
+                // TODO: Emit a corruption event to notify UI
                 emit(emptyPreferences())
             } else {
                 throw exception
@@ -215,7 +219,8 @@ class SettingsRepositoryImpl @Inject constructor(
     override val customGestures: Flow<List<CustomGesture>> = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
-                Timber.e(exception, "Error reading custom gestures")
+                Timber.e(exception, "DataStore corruption detected - resetting custom gestures to defaults")
+                // TODO: Emit a corruption event to notify UI
                 emit(emptyPreferences())
             } else {
                 throw exception
@@ -230,7 +235,13 @@ class SettingsRepositoryImpl @Inject constructor(
         dataStore.edit { preferences ->
             val current = (preferences[PreferencesKeys.CUSTOM_GESTURES_JSON]
                 ?.let { deserializeCustomGestures(it) } ?: emptyList()).toMutableList()
-            current.add(gesture)
+            if (current.none { it.id == gesture.id }) {
+                current.add(gesture)
+            } else {
+                Timber.w("Duplicate gesture ID, replacing: %s", gesture.id)
+                val index = current.indexOfFirst { it.id == gesture.id }
+                if (index >= 0) current[index] = gesture else current.add(gesture)
+            }
             preferences[PreferencesKeys.CUSTOM_GESTURES_JSON] = serializeCustomGestures(current)
         }
         Timber.d("Added custom gesture: %s", gesture.name)
@@ -244,6 +255,8 @@ class SettingsRepositoryImpl @Inject constructor(
             if (index >= 0) {
                 current[index] = gesture
                 preferences[PreferencesKeys.CUSTOM_GESTURES_JSON] = serializeCustomGestures(current)
+            } else {
+                Timber.w("Custom gesture not found for update: %s", gesture.id)
             }
         }
         Timber.d("Updated custom gesture: %s", gesture.name)
@@ -267,6 +280,8 @@ class SettingsRepositoryImpl @Inject constructor(
             if (index >= 0) {
                 current[index] = current[index].copy(isEnabled = enabled)
                 preferences[PreferencesKeys.CUSTOM_GESTURES_JSON] = serializeCustomGestures(current)
+            } else {
+                Timber.w("Custom gesture not found for enable/disable: %s", gestureId)
             }
         }
         Timber.d("Custom gesture %s: enabled=%s", gestureId, enabled)
@@ -275,7 +290,7 @@ class SettingsRepositoryImpl @Inject constructor(
     private fun mapPreferences(preferences: Preferences): UserPreferences = UserPreferences(
         gesturesEnabled = preferences[PreferencesKeys.GESTURES_ENABLED] ?: true,
         sensitivity = preferences[PreferencesKeys.SENSITIVITY] ?: 50,
-        handPreference = (preferences[PreferencesKeys.HAND_PREFERENCE] as? String)
+        handPreference = preferences[PreferencesKeys.HAND_PREFERENCE]
             ?.let { stored -> runCatching { HandPreference.valueOf(stored) }.getOrNull() }
             ?: HandPreference.ANY,
         analysisFps = preferences[PreferencesKeys.ANALYSIS_FPS] ?: DEFAULT_FPS,
@@ -293,12 +308,26 @@ class SettingsRepositoryImpl @Inject constructor(
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {
-        val json = preferences[PreferencesKeys.GESTURE_MAP_JSON] as? String
+        val json = preferences[PreferencesKeys.GESTURE_MAP_JSON]
         val version = preferences[PreferencesKeys.GESTURE_MAP_VERSION] ?: 1
 
         return if (json != null) {
             val config = deserializeGestureMap(json, version)
-            GestureMapConfig.migrate(config)
+            val migrated = GestureMapConfig.migrate(config)
+            // Persist the migration result if it differs from the input
+            if (migrated != config) {
+                // Schedule a write-back — we can't call dataStore.edit here (not a suspend
+                // function and we're inside a Flow map), so we launch it asynchronously.
+                // Using a detached coroutine scope to avoid relying on viewModelScope.
+                GlobalScope.launch {
+                    dataStore.edit { prefs ->
+                        prefs[PreferencesKeys.GESTURE_MAP_JSON] = serializeGestureMap(migrated)
+                        prefs[PreferencesKeys.GESTURE_MAP_VERSION] = migrated.schemaVersion
+                    }
+                    Timber.i("Persisted gesture map migration to schema version %d", migrated.schemaVersion)
+                }
+            }
+            migrated
         } else {
             GestureMapConfig()
         }

@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.Volatile
 
 /**
  * Controls analysis frame rate adaptively:
@@ -20,6 +22,7 @@ class AdaptiveFpsController(
     private val scanFps: Int = SCAN_FPS,
     private val noHandTimeoutMs: Long = 3000L,
 ) {
+    @Volatile
     private var configuredFps: Int = configuredFps.coerceToSupportedFps()
 
     private val _currentFps = MutableStateFlow(this.configuredFps)
@@ -28,7 +31,7 @@ class AdaptiveFpsController(
     private val _isHandDetected = MutableStateFlow(false)
     val isHandDetected: StateFlow<Boolean> = _isHandDetected
 
-    private var downgradeJob: Job? = null
+    private val downgradeJob = AtomicReference<Job?>(null)
 
     val analysisIntervalMs: Long
         get() = 1000L / _currentFps.value.coerceAtLeast(1)
@@ -38,8 +41,8 @@ class AdaptiveFpsController(
         _isHandDetected.value = true
 
         // Cancel any pending downgrade
-        downgradeJob?.cancel()
-        downgradeJob = null
+        downgradeJob.get()?.cancel()
+        downgradeJob.set(null)
 
         // Restore full FPS if we were in scan/thermal/battery saver mode
         if (wasInScanMode) {
@@ -52,8 +55,8 @@ class AdaptiveFpsController(
         _isHandDetected.value = false
 
         // Schedule downgrade after timeout
-        downgradeJob?.cancel()
-        downgradeJob = scope.launch {
+        downgradeJob.get()?.cancel()
+        downgradeJob.set(scope.launch {
             delay(noHandTimeoutMs)
             _currentFps.value = scanFps
             Timber.d(
@@ -62,12 +65,12 @@ class AdaptiveFpsController(
                 noHandTimeoutMs,
                 scanFps,
             )
-        }
+        })
     }
 
     fun reset() {
-        downgradeJob?.cancel()
-        downgradeJob = null
+        downgradeJob.get()?.cancel()
+        downgradeJob.set(null)
         _currentFps.value = configuredFps
         _isHandDetected.value = false
     }
@@ -88,12 +91,9 @@ class AdaptiveFpsController(
         Timber.d("Configured FPS updated to: %d", validFps)
     }
 
-    private fun Int.coerceToSupportedFps(): Int = when {
-        this <= 5 -> 5
-        this <= 10 -> 10
-        this <= 15 -> 15
-        this <= 24 -> 24
-        else -> 30
+    private fun Int.coerceToSupportedFps(): Int {
+        val supported = listOf(5, 10, 15, 24, 30)
+        return supported.minByOrNull { kotlin.math.abs(it - this) } ?: 30
     }
 
     companion object {

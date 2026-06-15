@@ -103,9 +103,7 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
         val tip = landmarks[LandmarkIndex.THUMB_TIP]
 
         val angleDeg = angleAtVertex(ip, mcp, tip)
-        // Scale the angle threshold inversely with sensitivity
-        val scaledAngle = config.thumbExtensionAngleDeg / (0.5f + config.sensitivity / 100f)
-        return angleDeg > scaledAngle
+        return angleDeg > config.scaledThumbExtensionAngleDeg()
     }
 
     /**
@@ -143,15 +141,14 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
         if (magBA < EPSILON || magBC < EPSILON) return 0f
 
         val cosAngle = (dot / (magBA * magBC)).coerceIn(-1f, 1f)
-        return Math.toDegrees(acosApprox(cosAngle)).toFloat()
+        return acosToDeg(cosAngle).toFloat()
     }
 
     /**
-     * Approximate arc cosine using a polynomial approximation.
-     * Avoids the need for kotlin.math.acos which may have platform differences.
+     * Convert a cosine value to degrees using the standard library.
      */
-    private fun acosApprox(x: Float): Double {
-        return kotlin.math.acos(x.toDouble())
+    private fun acosToDeg(x: Float): Double {
+        return kotlin.math.acos(x.coerceIn(-1.0, 1.0)) * 180.0 / kotlin.math.PI
     }
 
     companion object {

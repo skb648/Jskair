@@ -214,7 +214,7 @@ fun HomeScreen(
                     Text(
                         text = when (serviceState) {
                             ServiceState.ACTIVE -> stringResource(R.string.home_status_active)
-                            ServiceState.PAUSED -> "Paused"
+                            ServiceState.PAUSED -> stringResource(R.string.home_status_paused)
                             ServiceState.OFF -> stringResource(R.string.home_status_inactive)
                         },
                         style = MaterialTheme.typography.headlineSmall,
@@ -233,11 +233,16 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(Dimens.spacing8),
                     ) {
+                        // TODO(D-48): Use actual hand detection state from HandTracker instead of service state
                         HandPresenceIndicator(
                             handDetected = serviceState == ServiceState.ACTIVE,
                         )
                         Text(
-                            text = if (serviceState == ServiceState.ACTIVE) "Hand detected" else "No hand detected",
+                            text = when (serviceState) {
+                                ServiceState.ACTIVE -> stringResource(R.string.home_service_active)
+                                ServiceState.PAUSED -> stringResource(R.string.home_status_paused)
+                                ServiceState.OFF -> stringResource(R.string.home_service_inactive)
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                         )
@@ -245,16 +250,17 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(Dimens.spacing16))
 
+                    // TODO: Connect session stats to actual tracking data
                     // Session stats
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(Dimens.spacing32),
                     ) {
                         StatChip(
-                            label = "Gestures",
+                            label = stringResource(R.string.home_gestures_executed),
                             value = sessionStats.gesturesExecuted.toString(),
                         )
                         StatChip(
-                            label = "Uptime",
+                            label = stringResource(R.string.home_uptime),
                             value = formatUptime(sessionStats.uptimeSeconds),
                         )
                     }
@@ -270,21 +276,21 @@ fun HomeScreen(
             ) {
                 QuickToggleCard(
                     icon = Icons.Default.TouchApp,
-                    label = "Cursor",
+                    label = stringResource(R.string.home_cursor_mode),
                     enabled = preferences.cursorEnabled,
                     onToggle = { viewModel.toggleCursorMode(it) },
                     modifier = Modifier.weight(1f),
                 )
                 QuickToggleCard(
                     icon = Icons.Outlined.Vibration,
-                    label = "Haptics",
+                    label = stringResource(R.string.home_haptics),
                     enabled = preferences.hapticFeedback,
                     onToggle = { viewModel.toggleHapticFeedback(it) },
                     modifier = Modifier.weight(1f),
                 )
                 QuickToggleCard(
                     icon = Icons.Default.Fingerprint,
-                    label = "Saver",
+                    label = stringResource(R.string.home_battery_saver),
                     enabled = preferences.batterySaver,
                     onToggle = { viewModel.toggleBatterySaver(it) },
                     modifier = Modifier.weight(1f),
@@ -361,7 +367,7 @@ fun HomeScreen(
                         modifier = Modifier.size(Dimens.iconMedium),
                     )
                     Spacer(modifier = Modifier.width(Dimens.spacing8))
-                    Text(text = "Debug", style = MaterialTheme.typography.titleSmall)
+                    Text(text = stringResource(R.string.home_debug), style = MaterialTheme.typography.titleSmall)
                 }
             }
 
@@ -381,7 +387,7 @@ fun HomeScreen(
                 )
                 Spacer(modifier = Modifier.width(Dimens.spacing8))
                 Text(
-                    text = "Custom Gestures",
+                    text = stringResource(R.string.home_custom_gestures),
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Spacer(modifier = Modifier.weight(1f))

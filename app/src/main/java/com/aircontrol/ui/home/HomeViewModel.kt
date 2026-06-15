@@ -12,6 +12,9 @@ import com.aircontrol.permissions.PermissionsManager
 import com.aircontrol.permissions.PermissionStates
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -74,13 +77,49 @@ class HomeViewModel @Inject constructor(
         initialValue = ServiceState.OFF,
     )
 
-    private var _sessionStats = kotlinx.coroutines.flow.MutableStateFlow(SessionStats())
+    private var _sessionStats = MutableStateFlow(SessionStats())
     val sessionStats: StateFlow<SessionStats> = _sessionStats
+
+    private var uptimeJob: Job? = null
+
+    init {
+        // Start uptime timer when service is running
+        viewModelScope.launch {
+            CameraService.isRunning.collect { running ->
+                if (running) {
+                    startUptimeTimer()
+                } else {
+                    stopUptimeTimer()
+                    _sessionStats.value = SessionStats()
+                }
+            }
+        }
+    }
+
+    private fun startUptimeTimer() {
+        stopUptimeTimer()
+        uptimeJob = viewModelScope.launch {
+            while (true) {
+                delay(1000L)
+                _sessionStats.value = _sessionStats.value.copy(
+                    uptimeSeconds = _sessionStats.value.uptimeSeconds + 1,
+                )
+            }
+        }
+    }
+
+    private fun stopUptimeTimer() {
+        uptimeJob?.cancel()
+        uptimeJob = null
+    }
 
     fun toggleGestures(enabled: Boolean) {
         Timber.d("Toggling gestures: %s", enabled)
         viewModelScope.launch {
+            // Refresh permissions and wait for the combine flow to propagate
             permissionsManager.refreshAllPermissions()
+            // Give the combine flow a chance to propagate the updated values
+            kotlinx.coroutines.delay(100)
             val perms = permissionStates.value
 
             if (enabled && !perms.allGranted) {
@@ -133,6 +172,11 @@ class HomeViewModel @Inject constructor(
         )
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        stopUptimeTimer()
+    }
+
     /**
      * If the user had gestures enabled but Android killed the service, restart
      * it when Home opens. If permissions were revoked, stop it and mark disabled.
@@ -152,6 +196,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    // TODO: Extract duplicated service start/stop logic into a shared ServiceManager
     private fun startTrackingService() {
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
@@ -164,6 +209,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    // TODO: Extract duplicated service start/stop logic into a shared ServiceManager
     private fun stopTrackingService() {
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {

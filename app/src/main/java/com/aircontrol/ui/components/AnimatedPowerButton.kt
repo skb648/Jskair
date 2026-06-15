@@ -58,17 +58,23 @@ fun AnimatedPowerButton(
     size: Dp = 120.dp,
     contentDescription: String = "Power toggle",
 ) {
+    val shouldRotate = isActive && !isPaused
+
     val infiniteTransition = rememberInfiniteTransition(label = "power_rotation")
 
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "power_ring_rotation",
-    )
+    val rotation by if (shouldRotate) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "power_ring_rotation",
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
 
     val ringColor = when {
         isActive && !isPaused -> SuccessGreen
@@ -81,8 +87,6 @@ fun AnimatedPowerButton(
         isPaused -> WarningOrange.copy(alpha = 0.5f)
         else -> ErrorRed.copy(alpha = 0.3f)
     }
-
-    val shouldRotate = isActive && !isPaused
 
     Box(
         modifier = modifier

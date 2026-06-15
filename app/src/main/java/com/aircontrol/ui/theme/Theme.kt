@@ -45,32 +45,32 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = ElectricBlueVariant,
-    onPrimary = TextPrimary,
+    primary = ElectricBlue,
+    onPrimary = LightOnPrimary,
     primaryContainer = ElectricBlue.copy(alpha = 0.15f),
     onPrimaryContainer = ElectricBlueVariant,
     secondary = SuccessGreen,
-    onSecondary = TextPrimary,
+    onSecondary = LightOnPrimary,
     secondaryContainer = SuccessGreen.copy(alpha = 0.15f),
     onSecondaryContainer = SuccessGreen,
     tertiary = WarningOrange,
-    onTertiary = TextPrimary,
+    onTertiary = LightOnPrimary,
     tertiaryContainer = WarningOrange.copy(alpha = 0.15f),
     onTertiaryContainer = WarningOrange,
     error = ErrorRed,
-    onError = TextPrimary,
+    onError = LightOnPrimary,
     errorContainer = ErrorRed.copy(alpha = 0.15f),
     onErrorContainer = ErrorRed,
-    background = NavyBackground,
-    onBackground = TextPrimary,
-    surface = DarkSurface,
-    onSurface = TextPrimary,
-    surfaceVariant = SurfaceVariantDark,
-    onSurfaceVariant = TextSecondary,
-    outline = OutlineDark,
-    outlineVariant = OutlineVariantDark,
-    inverseSurface = TextPrimary,
-    inverseOnSurface = NavyBackground,
+    background = LightBackground,
+    onBackground = LightOnBackground,
+    surface = LightSurface,
+    onSurface = LightOnSurface,
+    surfaceVariant = LightSurfaceVariant,
+    onSurfaceVariant = LightOnSurfaceVariant,
+    outline = LightOutline,
+    outlineVariant = LightOutlineVariant,
+    inverseSurface = NavyBackground,
+    inverseOnSurface = TextPrimary,
 )
 
 @Composable
@@ -92,12 +92,9 @@ fun AirControlTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            @Suppress("DEPRECATION")
-            window.statusBarColor = NavyBackground.toArgb()
-            @Suppress("DEPRECATION")
-            window.navigationBarColor = NavyBackground.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
-            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = false
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 

@@ -57,9 +57,9 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val preferences by viewModel.userPreferences.collectAsState()
-    var sensitivity by remember { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
-    var cursorSpeed by remember { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
-    var holdDuration by remember { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
+    var sensitivity by remember(preferences.sensitivity) { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
+    var cursorSpeed by remember(preferences.cursorSpeed) { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
+    var holdDuration by remember(preferences.holdDuration) { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
 
     Scaffold(
         topBar = {
@@ -102,10 +102,8 @@ fun SettingsScreen(
                 title = "Sensitivity",
                 valueLabel = "${sensitivity.toInt()}%",
                 value = sensitivity,
-                onValueChange = {
-                    sensitivity = it
-                    viewModel.updateSensitivity(it.toInt())
-                },
+                onValueChange = { sensitivity = it },
+                onValueChangeFinished = { viewModel.updateSensitivity(sensitivity.toInt()) },
                 valueRange = 1f..100f,
             )
 
@@ -164,10 +162,8 @@ fun SettingsScreen(
                 title = "Cursor Speed",
                 valueLabel = "${cursorSpeed.toInt()}%",
                 value = cursorSpeed,
-                onValueChange = {
-                    cursorSpeed = it
-                    viewModel.updateCursorSpeed(it.toInt())
-                },
+                onValueChange = { cursorSpeed = it },
+                onValueChangeFinished = { viewModel.updateCursorSpeed(cursorSpeed.toInt()) },
                 valueRange = 1f..100f,
             )
 
@@ -177,10 +173,8 @@ fun SettingsScreen(
                 title = "Hold Duration",
                 valueLabel = "${holdDuration.toInt()}ms",
                 value = holdDuration,
-                onValueChange = {
-                    holdDuration = it
-                    viewModel.updateHoldDuration(it.toInt())
-                },
+                onValueChange = { holdDuration = it },
+                onValueChangeFinished = { viewModel.updateHoldDuration(holdDuration.toInt()) },
                 valueRange = 200f..2000f,
                 steps = 8,
             )

@@ -5,6 +5,10 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.graphics.Path
 import android.media.AudioManager
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.model.CustomGesture
@@ -23,6 +27,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
+import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
 
 /**
@@ -71,30 +77,43 @@ class ActionDispatcher @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private var accessibilityService: AccessibilityService? = null
+    private var accessibilityServiceRef = WeakReference<AccessibilityService>(null)
     private var audioManager: AudioManager? = null
     private var currentPreferences = UserPreferences()
 
     /** Current gesture-to-action mapping. Defaults are sensible. */
-    private val gestureMap = mutableMapOf<String, GestureAction>(
-        KEY_SWIPE_LEFT to GestureAction.SCROLL_LEFT,
-        KEY_SWIPE_RIGHT to GestureAction.SCROLL_RIGHT,
-        KEY_SWIPE_UP to GestureAction.SCROLL_UP,
-        KEY_SWIPE_DOWN to GestureAction.SCROLL_DOWN,
-        KEY_POSE_PINCH to GestureAction.TAP,
-        KEY_POSE_POINTING to GestureAction.NONE,
-        KEY_POSE_VICTORY to GestureAction.MEDIA_PLAY_PAUSE,
-        KEY_POSE_THUMB_UP to GestureAction.VOLUME_UP,
-        KEY_POSE_THUMB_DOWN to GestureAction.VOLUME_DOWN,
-        KEY_POSE_PINCH_HOLD to GestureAction.DRAG,
-    )
+    private val gestureMap = ConcurrentHashMap<String, GestureAction>()
 
     private val MAX_RETRIES = 1
 
     // Custom gestures from user configuration
     private var customGesturesList: List<CustomGesture> = emptyList()
 
+    // Current detected pose, updated from gesture event pipeline for custom gesture matching
+    @Volatile
+    private var currentPose: Pose = Pose.NONE
+
+    // Drag stroke continuation tracking (M-04: use continueStroke for drag gestures)
+    private var lastDragStroke: GestureDescription.StrokeDescription? = null
+
+    // Keyguard state caching to avoid IPC on every check (m-04)
+    private var cachedKeyguardLocked = false
+    private var keyguardReceiver: BroadcastReceiver? = null
+    private var keyguardReceiverContext: android.content.Context? = null
+
     init {
+        // Populate default gesture mappings
+        gestureMap[KEY_SWIPE_LEFT] = GestureAction.SCROLL_LEFT
+        gestureMap[KEY_SWIPE_RIGHT] = GestureAction.SCROLL_RIGHT
+        gestureMap[KEY_SWIPE_UP] = GestureAction.SCROLL_UP
+        gestureMap[KEY_SWIPE_DOWN] = GestureAction.SCROLL_DOWN
+        gestureMap[KEY_POSE_PINCH] = GestureAction.TAP
+        gestureMap[KEY_POSE_POINTING] = GestureAction.NONE
+        gestureMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
+        gestureMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
+        gestureMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
+        gestureMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
+
         scope.launch {
             settingsRepository.userPreferences.collect { prefs ->
                 currentPreferences = prefs
@@ -102,10 +121,12 @@ class ActionDispatcher @Inject constructor(
         }
         scope.launch {
             settingsRepository.gestureMapConfig.collect { config ->
-                gestureMap.clear()
+                val newMap = ConcurrentHashMap<String, GestureAction>()
                 config.entries.forEach { entry ->
-                    gestureMap[entry.key] = entry.action
+                    newMap[entry.key] = entry.action
                 }
+                gestureMap.clear()
+                gestureMap.putAll(newMap)
                 Timber.d("Loaded %d gesture mappings from settings", gestureMap.size)
             }
         }
@@ -122,8 +143,13 @@ class ActionDispatcher @Inject constructor(
      * Called when the service connects.
      */
     fun attachService(service: AccessibilityService) {
-        accessibilityService = service
+        accessibilityServiceRef = WeakReference(service)
         audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        // Initialize keyguard cache
+        val km = service.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        cachedKeyguardLocked = km?.isDeviceLocked ?: true
+        // Register keyguard state receiver
+        registerKeyguardReceiver(service)
         Timber.i("ActionDispatcher attached to accessibility service")
     }
 
@@ -132,8 +158,10 @@ class ActionDispatcher @Inject constructor(
      * Called when the service is destroyed.
      */
     fun detachService() {
-        accessibilityService = null
+        unregisterKeyguardReceiver()
+        accessibilityServiceRef.clear()
         audioManager = null
+        lastDragStroke = null
         Timber.i("ActionDispatcher detached from accessibility service")
     }
 
@@ -183,6 +211,11 @@ class ActionDispatcher @Inject constructor(
             return false
         }
 
+        // Track current pose for custom gesture matching in swipe dispatch
+        if (event is GestureEvent.PoseTriggered) {
+            currentPose = event.pose
+        }
+
         val dispatched = when (event) {
             is GestureEvent.Swipe -> dispatchSwipe(event, screenWidth, screenHeight)
             is GestureEvent.Pinch -> dispatchPinch(event, cursorX, cursorY, screenWidth, screenHeight)
@@ -209,9 +242,25 @@ class ActionDispatcher @Inject constructor(
             SwipeDirection.UP -> CustomGestureDirection.UP
             SwipeDirection.DOWN -> CustomGestureDirection.DOWN
         }
+        val customPose = when (currentPose) {
+            Pose.OPEN_PALM -> CustomGesturePose.OPEN_PALM
+            Pose.FIST -> CustomGesturePose.FIST
+            Pose.PINCH -> CustomGesturePose.PINCH
+            Pose.POINTING -> CustomGesturePose.POINTING
+            Pose.VICTORY -> CustomGesturePose.VICTORY
+            Pose.THUMB_UP -> CustomGesturePose.THUMB_UP
+            Pose.THUMB_DOWN -> CustomGesturePose.THUMB_DOWN
+            Pose.THREE_FINGERS -> CustomGesturePose.THREE_FINGERS
+            Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
+            else -> null
+        }
+        // TODO: D-24 — Full pose+direction matching requires passing current pose from GestureDetector.
+        //  Currently we check trigger.pose against the last detected pose. If no pose was detected
+        //  (customPose == null), we only match on direction for backward compatibility.
         val customAction = customGesturesList.find { gesture ->
             val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
-            trigger != null && trigger.direction == customDirection
+            trigger != null && trigger.direction == customDirection &&
+                (customPose == null || trigger.pose == customPose)
         }?.action
         if (customAction != null && customAction != GestureAction.NONE) {
             return executeAction(customAction, 0.5f, 0.5f, screenWidth, screenHeight)
@@ -304,29 +353,28 @@ class ActionDispatcher @Inject constructor(
         screenWidth: Int,
         screenHeight: Int,
     ): Boolean {
-        val action = gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
-
         return when (event.phase) {
             PinchPhase.START -> {
-                // Record pinch start — we'll decide tap/long-press/drag on END
                 pinchStartTimeMs = System.currentTimeMillis()
                 pinchStartX = cursorX
                 pinchStartY = cursorY
-
-                // Initialize drag state in screen coordinates. If the mapped action
-                // is not DRAG this state is harmless and will be ignored.
                 dragStartX = normalizeToScreenX(cursorX, screenWidth)
                 dragStartY = normalizeToScreenY(cursorY, screenHeight)
                 dragCurrentX = dragStartX
                 dragCurrentY = dragStartY
                 isDragging = false
-
                 Timber.v("Pinch START at (%.2f, %.2f)", cursorX, cursorY)
-                true // Acknowledge start
+                true
             }
             PinchPhase.MOVE -> {
-                // If action is DRAG, dispatch continuous stroke
-                if (action == GestureAction.DRAG) {
+                // Determine action based on hold duration
+                val holdDurationMs = System.currentTimeMillis() - pinchStartTimeMs
+                val effectiveAction = if (holdDurationMs >= LONG_PRESS_THRESHOLD_MS) {
+                    gestureMap[KEY_POSE_PINCH_HOLD] ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                } else {
+                    gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                }
+                if (effectiveAction == GestureAction.DRAG) {
                     dispatchDragStroke(cursorX, cursorY, screenWidth, screenHeight)
                 } else {
                     false
@@ -334,9 +382,23 @@ class ActionDispatcher @Inject constructor(
             }
             PinchPhase.END -> {
                 val holdDurationMs = System.currentTimeMillis() - pinchStartTimeMs
+
+                // Check custom PINCH gestures (PINCH + NONE direction) first
+                val customPinchAction = matchCustomGesture(Pose.PINCH)
+
+                val effectiveAction = if (holdDurationMs >= LONG_PRESS_THRESHOLD_MS) {
+                    gestureMap[KEY_POSE_PINCH_HOLD] ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                } else {
+                    gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                }
+
+                // Custom gesture action takes priority if present
+                val finalAction = customPinchAction ?: effectiveAction
+
                 when {
-                    action == GestureAction.DRAG -> dispatchDragEnd(cursorX, cursorY, screenWidth, screenHeight)
-                    holdDurationMs >= LONG_PRESS_THRESHOLD_MS -> dispatchLongPress(pinchStartX, pinchStartY, screenWidth, screenHeight)
+                    finalAction == GestureAction.DRAG -> dispatchDragEnd(cursorX, cursorY, screenWidth, screenHeight)
+                    holdDurationMs >= LONG_PRESS_THRESHOLD_MS && finalAction == effectiveAction -> dispatchLongPress(pinchStartX, pinchStartY, screenWidth, screenHeight)
+                    finalAction != GestureAction.DRAG && finalAction != GestureAction.NONE -> executeAction(finalAction, pinchStartX, pinchStartY, screenWidth, screenHeight)
                     else -> dispatchTap(pinchStartX, pinchStartY, screenWidth, screenHeight)
                 }
             }
@@ -370,7 +432,7 @@ class ActionDispatcher @Inject constructor(
         val x = normalizeToScreenX(normX, screenWidth)
         val y = normalizeToScreenY(normY, screenHeight)
 
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply { moveTo(x, y); lineTo(x + 1f, y) }
 
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, LONG_PRESS_DURATION_MS))
@@ -398,9 +460,17 @@ class ActionDispatcher @Inject constructor(
         dragCurrentX = x
         dragCurrentY = y
 
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, DRAG_STEP_DURATION_MS))
-            .build()
+        // M-04: Use continueStroke for continuous drag gesture
+        val stroke = if (lastDragStroke == null) {
+            // First drag step — start a new continuous gesture
+            GestureDescription.StrokeDescription(path, 0L, DRAG_STEP_DURATION_MS, true)
+        } else {
+            // Subsequent steps — continue the previous stroke
+            lastDragStroke!!.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
+        }
+        lastDragStroke = stroke
+
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
         return dispatchGestureWithRetry(gesture, label)
     }
 
@@ -417,10 +487,17 @@ class ActionDispatcher @Inject constructor(
             lineTo(x, y)
         }
 
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 32L))
-            .build()
+        // M-04: Use continueStroke to finalize the drag gesture
+        val stroke = if (lastDragStroke != null) {
+            // Continue and finalize the drag stroke
+            lastDragStroke!!.continueStroke(path, 0L, 32L, false)
+        } else {
+            // No prior stroke — just dispatch a single stroke
+            GestureDescription.StrokeDescription(path, 0L, 32L)
+        }
+        lastDragStroke = null
 
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
         return dispatchGestureWithRetry(gesture, "drag_end")
     }
 
@@ -466,13 +543,36 @@ class ActionDispatcher @Inject constructor(
             Pose.VICTORY -> CustomGesturePose.VICTORY
             Pose.THUMB_UP -> CustomGesturePose.THUMB_UP
             Pose.THUMB_DOWN -> CustomGesturePose.THUMB_DOWN
+            Pose.THREE_FINGERS -> CustomGesturePose.THREE_FINGERS
+            Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
             else -> return null
         }
 
         // Find a custom gesture that matches this pose with no direction requirement
+        // TODO: D-23 — OPEN_PALM and FIST custom gestures can never fire because
+        //  GestureEngine excludes them from PoseTriggered events (used for arm/disarm).
+        //  This requires changes in GestureEngine to allow these poses through when
+        //  custom gestures are configured for them.
         return customGesturesList.find { gesture ->
-            val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
-            trigger != null && trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+            when (val trigger = gesture.triggerPose) {
+                is CustomGestureTrigger.PoseWithDirection ->
+                    trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+                is CustomGestureTrigger.FingerCount -> {
+                    // FingerCount matching: match if the current pose's extended finger count
+                    // matches the trigger's expected count. This is a simplified matching
+                    // that checks total extended finger count.
+                    val expectedCount = trigger.extendedFingers
+                    val actualCount = when (pose) {
+                        Pose.POINTING -> 1
+                        Pose.VICTORY -> 2
+                        Pose.THREE_FINGERS -> 3
+                        Pose.FOUR_FINGERS -> 4
+                        Pose.OPEN_PALM -> 5
+                        else -> 0
+                    }
+                    actualCount == expectedCount
+                }
+            }
         }?.action
     }
 
@@ -514,7 +614,7 @@ class ActionDispatcher @Inject constructor(
     // ========== Global actions ==========
 
     private fun performGlobalAction(action: Int): Boolean {
-        val service = accessibilityService ?: run {
+        val service = accessibilityServiceRef.get() ?: run {
             Timber.w("Cannot perform global action: service not attached")
             return false
         }
@@ -538,6 +638,8 @@ class ActionDispatcher @Inject constructor(
 
     // ========== Volume & Media ==========
 
+    // TODO: m-06 — Replace adjustStreamVolume with VolumeProvider or AudioAttributes-based API for API 26+
+    @Suppress("DEPRECATION")
     private fun adjustVolume(up: Boolean): Boolean {
         val am = audioManager ?: return false
         val direction = if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
@@ -555,6 +657,8 @@ class ActionDispatcher @Inject constructor(
         }
     }
 
+    // TODO: m-05 — Replace dispatchMediaKeyEvent with MediaSessionManager approach for API 33+
+    @Suppress("DEPRECATION")
     private fun toggleMediaPlayback(): Boolean {
         val am = audioManager ?: return false
         try {
@@ -595,7 +699,7 @@ class ActionDispatcher @Inject constructor(
     // ========== Gesture dispatch with retry ==========
 
     private fun dispatchGestureWithRetry(gesture: GestureDescription, label: String): Boolean {
-        val service = accessibilityService ?: run {
+        val service = accessibilityServiceRef.get() ?: run {
             Timber.w("Cannot dispatch gesture '%s': service not attached", label)
             return false
         }
@@ -637,7 +741,7 @@ class ActionDispatcher @Inject constructor(
     @Suppress("DEPRECATION")
     private fun performHapticFeedback() {
         if (!currentPreferences.hapticFeedback) return
-        val service = accessibilityService ?: return
+        val service = accessibilityServiceRef.get() ?: return
         val vibrator = service.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
         vibrator?.let {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -656,10 +760,41 @@ class ActionDispatcher @Inject constructor(
 
     // ========== Utilities ==========
 
-    private fun isKeyguardLocked(): Boolean {
-        val service = accessibilityService ?: return true
-        val km = service.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-        return km?.isDeviceLocked ?: true
+    private fun isKeyguardLocked(): Boolean = cachedKeyguardLocked
+
+    private fun registerKeyguardReceiver(ctx: Context) {
+        val appCtx = ctx.applicationContext
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        cachedKeyguardLocked = true
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        cachedKeyguardLocked = false
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        appCtx.registerReceiver(receiver, filter)
+        keyguardReceiver = receiver
+        keyguardReceiverContext = appCtx
+    }
+
+    private fun unregisterKeyguardReceiver() {
+        keyguardReceiver?.let {
+            try {
+                keyguardReceiverContext?.unregisterReceiver(it)
+            } catch (_: Exception) {
+                // Not registered
+            }
+        }
+        keyguardReceiver = null
+        keyguardReceiverContext = null
     }
 
     private fun globalActionName(action: Int): String = when (action) {
@@ -680,8 +815,7 @@ class ActionDispatcher @Inject constructor(
         private const val LONG_PRESS_THRESHOLD_MS = 600L
         private const val DRAG_STEP_DURATION_MS = 16L
         private const val HAPTIC_TICK_MS = 15L
-        private const val EDGE_MARGIN_FRACTION = 0.02f
-
+        private const val EDGE_MARGIN_FRACTION = 0.005f
         // Gesture map keys
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"

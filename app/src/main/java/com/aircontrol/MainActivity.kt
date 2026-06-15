@@ -4,14 +4,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.ui.navigation.AirControlNavHost
 import com.aircontrol.ui.navigation.AirControlRoute
@@ -36,9 +38,18 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AirControlApp() {
         val preferences by settingsRepository.userPreferences.collectAsState(
-            initial = UserPreferences(),
+            initial = null,
         )
-        val startDestination = if (preferences.onboardingCompleted) {
+
+        if (preferences == null) {
+            // Show loading/splash screen while preferences load
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return
+        }
+
+        val startDestination = if (preferences!!.onboardingCompleted) {
             AirControlRoute.Home.route
         } else {
             AirControlRoute.Onboarding.route

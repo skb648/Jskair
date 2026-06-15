@@ -36,7 +36,7 @@ data class HandFrame(
         val EMPTY = HandFrame(
             landmarks = emptyList(),
             handedness = Handedness.UNKNOWN,
-            timestampMs = 0L,
+            timestampMs = -1L,
             confidence = 0f,
         )
     }

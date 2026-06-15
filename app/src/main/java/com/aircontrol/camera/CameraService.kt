@@ -5,11 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.IBinder
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -32,6 +35,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.Volatile
 
 /**
  * Foreground service that manages the camera and feeds frames to HandTracker.
@@ -83,7 +87,9 @@ class CameraService : LifecycleService() {
     private var imageAnalysis: ImageAnalysis? = null
 
     private val isPaused = AtomicBoolean(false)
+    @Volatile
     private var lastFrameTimestampMs = 0L
+    @Volatile
     private var lastProcessedFrameMs: Long = 0L
     private var configuredFps = 24
 
@@ -95,12 +101,22 @@ class CameraService : LifecycleService() {
     private lateinit var thermalMonitor: com.aircontrol.tracking.ThermalMonitor
     private var thermalMonitoringJob: Job? = null
     private var thermalPaused = false
+    private var userPaused = false
+    private var thermalRecoveryJob: Job? = null
+    private var postRecoveryFps: Int = 0
 
     // Reusable transform bitmap — avoids allocation per frame for the rotation+mirror step.
     // Since the analysis executor is single-threaded, no synchronization needed.
     private var reusableTransformBitmap: Bitmap? = null
     private var reusableBitmapWidth: Int = 0
     private var reusableBitmapHeight: Int = 0
+
+    // Cached transform matrix — only rebuilds when rotation changes
+    private var cachedRotationDegrees = -1
+    private var cachedMatrix: android.graphics.Matrix? = null
+
+    // Restart coroutine job — tracked for cancellation
+    private var restartJob: Job? = null
 
     private lateinit var adaptiveFpsController: AdaptiveFpsController
 
@@ -115,6 +131,10 @@ class CameraService : LifecycleService() {
         } ?: run {
             Timber.e("Application is not AirControlApp — cannot inject HandTracker")
         }
+
+        // Reset companion object state in case service was recreated
+        _isRunning.value = false
+        _isPaused.value = false
 
         adaptiveFpsController = AdaptiveFpsController(
             scope = serviceScope,
@@ -165,10 +185,18 @@ class CameraService : LifecycleService() {
         stopTracking()
         frameWatchdogJob?.cancel()
         frameWatchdogJob = null
-        analysisExecutor.shutdownNow()
-        serviceScope.cancel()
+        analysisExecutor.shutdown()
+        try {
+            if (!analysisExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                analysisExecutor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            analysisExecutor.shutdownNow()
+        }
         reusableTransformBitmap?.recycle()
         reusableTransformBitmap = null
+        cachedMatrix = null
+        serviceScope.cancel()
         super.onDestroy()
         Timber.i("CameraService destroyed")
     }
@@ -183,14 +211,13 @@ class CameraService : LifecycleService() {
         }
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification(isPaused = false))
+            startForeground(NOTIFICATION_ID, buildNotification(isPaused = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
         } catch (e: Exception) {
             Timber.e(e, "Failed to enter foreground; cannot start camera tracking")
             stopSelf()
             return
         }
 
-        _isRunning.value = true
         _isPaused.value = false
 
         handTracker.initialize()
@@ -227,9 +254,11 @@ class CameraService : LifecycleService() {
                         .build()
 
                     // ImageAnalysis for hand tracking
-                    @Suppress("DEPRECATION")
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.STRATEGY_NEAREST_HIGHER))
+                        .build()
                     val analysis = ImageAnalysis.Builder()
-                        .setTargetResolution(android.util.Size(640, 480))
+                        .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                         .also { imgAnalysis ->
@@ -247,6 +276,7 @@ class CameraService : LifecycleService() {
                     )
                 }
 
+                _isRunning.value = true
                 Timber.i("Camera started successfully")
 
                 // Start frame watchdog after camera binding succeeds
@@ -262,8 +292,12 @@ class CameraService : LifecycleService() {
     }
 
     private fun stopTracking() {
+        restartJob?.cancel()
+        restartJob = null
         frameWatchdogJob?.cancel()
         frameWatchdogJob = null
+        thermalRecoveryJob?.cancel()
+        thermalRecoveryJob = null
         trackingJobs.forEach { it.cancel() }
         trackingJobs.clear()
         stopThermalMonitoring()
@@ -281,6 +315,8 @@ class CameraService : LifecycleService() {
         _isRunning.value = false
         _isPaused.value = false
         thermalPaused = false
+        userPaused = false
+        postRecoveryFps = 0
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -289,6 +325,7 @@ class CameraService : LifecycleService() {
     }
 
     private fun pauseTracking() {
+        userPaused = true
         isPaused.set(true)
         _isPaused.value = true
         imageAnalysis?.clearAnalyzer()
@@ -297,6 +334,7 @@ class CameraService : LifecycleService() {
     }
 
     private fun resumeTracking() {
+        userPaused = false
         isPaused.set(false)
         _isPaused.value = false
         lastFrameTimestampMs = 0L // Reset to allow immediate frame processing
@@ -387,24 +425,30 @@ class CameraService : LifecycleService() {
             val targetBitmap = reusableTransformBitmap!!
 
             // Build combined transform: rotate then mirror
-            val matrix = android.graphics.Matrix()
-            when (rotationDegrees) {
-                90 -> {
-                    matrix.postRotate(90f)
-                    matrix.postTranslate(sourceBitmap.height.toFloat(), 0f)
+            // Cache the matrix — only rebuild when rotation changes
+            if (cachedRotationDegrees != rotationDegrees || cachedMatrix == null) {
+                val matrix = android.graphics.Matrix()
+                when (rotationDegrees) {
+                    90 -> {
+                        matrix.postRotate(90f)
+                        matrix.postTranslate(sourceBitmap.height.toFloat(), 0f)
+                    }
+                    180 -> {
+                        matrix.postRotate(180f)
+                        matrix.postTranslate(sourceBitmap.width.toFloat(), sourceBitmap.height.toFloat())
+                    }
+                    270 -> {
+                        matrix.postRotate(270f)
+                        matrix.postTranslate(0f, sourceBitmap.width.toFloat())
+                    }
+                    // 0 degrees: no rotation needed
                 }
-                180 -> {
-                    matrix.postRotate(180f)
-                    matrix.postTranslate(sourceBitmap.width.toFloat(), sourceBitmap.height.toFloat())
-                }
-                270 -> {
-                    matrix.postRotate(270f)
-                    matrix.postTranslate(0f, sourceBitmap.width.toFloat())
-                }
-                // 0 degrees: no rotation needed
+                // Mirror horizontally for front camera (selfie view)
+                matrix.postScale(-1f, 1f, targetWidth / 2f, targetHeight / 2f)
+                cachedMatrix = matrix
+                cachedRotationDegrees = rotationDegrees
             }
-            // Mirror horizontally for front camera (selfie view)
-            matrix.postScale(-1f, 1f, targetWidth / 2f, targetHeight / 2f)
+            val matrix = cachedMatrix!!
 
             // Draw into reusable target bitmap
             val canvas = android.graphics.Canvas(targetBitmap)
@@ -508,7 +552,7 @@ class CameraService : LifecycleService() {
     }
 
     private fun restartCamera() {
-        Timber.i("Restarting camera binding")
+        Timber.i("Restarting camera binding and HandTracker")
         try {
             cameraProvider?.unbindAll()
         } catch (e: Exception) {
@@ -517,7 +561,11 @@ class CameraService : LifecycleService() {
         imageAnalysis = null
         lastProcessedFrameMs = 0L
 
-        serviceScope.launch {
+        // Reinitialize HandTracker in case it was the cause of the stall
+        handTracker.close()
+        handTracker.initialize()
+
+        restartJob = serviceScope.launch {
             try {
                 withContext(Dispatchers.Main.immediate) {
                     val provider = cameraProvider ?: withContext(Dispatchers.Default) {
@@ -529,9 +577,11 @@ class CameraService : LifecycleService() {
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
                         .build()
 
-                    @Suppress("DEPRECATION")
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.STRATEGY_NEAREST_HIGHER))
+                        .build()
                     val analysis = ImageAnalysis.Builder()
-                        .setTargetResolution(android.util.Size(640, 480))
+                        .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                         .also { imgAnalysis ->
@@ -576,16 +626,51 @@ class CameraService : LifecycleService() {
 
     private fun applyThermalThrottling(status: com.aircontrol.tracking.ThermalStatus) {
         when (status) {
-            com.aircontrol.tracking.ThermalStatus.NONE,
+            com.aircontrol.tracking.ThermalStatus.NONE -> {
+                if (thermalPaused) {
+                    Timber.i("Thermal recovered — resuming tracking")
+                    thermalPaused = false
+                    if (!userPaused) {
+                        resumeTracking()
+                        updateNotification(isPaused = false)
+                    }
+                    // Resume at reduced FPS with gradual recovery
+                    postRecoveryFps = (configuredFps / 2).coerceAtLeast(5)
+                    adaptiveFpsController.updateConfiguredFps(postRecoveryFps)
+
+                    // Gradually restore FPS over 30 seconds
+                    thermalRecoveryJob?.cancel()
+                    thermalRecoveryJob = serviceScope.launch {
+                        delay(30_000L)
+                        adaptiveFpsController.updateConfiguredFps(configuredFps)
+                        postRecoveryFps = 0
+                    }
+                }
+            }
             com.aircontrol.tracking.ThermalStatus.LIGHT -> {
                 if (thermalPaused) {
                     Timber.i("Thermal recovered — resuming tracking")
                     thermalPaused = false
-                    if (_isPaused.value) {
+                    if (!userPaused) {
                         resumeTracking()
+                        updateNotification(isPaused = false)
                     }
-                    adaptiveFpsController.updateConfiguredFps(configuredFps)
-                    updateNotification(isPaused = false)
+                    // Resume at reduced FPS with gradual recovery
+                    postRecoveryFps = (configuredFps / 2).coerceAtLeast(5)
+                    adaptiveFpsController.updateConfiguredFps(postRecoveryFps)
+
+                    // Gradually restore FPS over 30 seconds
+                    thermalRecoveryJob?.cancel()
+                    thermalRecoveryJob = serviceScope.launch {
+                        delay(30_000L)
+                        adaptiveFpsController.updateConfiguredFps(configuredFps)
+                        postRecoveryFps = 0
+                    }
+                } else if (postRecoveryFps <= 0) {
+                    // Proactive throttling at LIGHT status
+                    val throttledFps = (configuredFps * 2 / 3).coerceIn(8, 20)
+                    Timber.i("Thermal LIGHT — reducing FPS to %d", throttledFps)
+                    adaptiveFpsController.updateConfiguredFps(throttledFps)
                 }
             }
             com.aircontrol.tracking.ThermalStatus.MODERATE -> {
@@ -596,6 +681,9 @@ class CameraService : LifecycleService() {
             com.aircontrol.tracking.ThermalStatus.SEVERE -> {
                 Timber.w("Thermal SEVERE — pausing tracking")
                 thermalPaused = true
+                thermalRecoveryJob?.cancel()
+                thermalRecoveryJob = null
+                postRecoveryFps = 0
                 if (!isPaused.get()) {
                     pauseTracking()
                     updateNotification(isPaused = true, isThermal = true)
