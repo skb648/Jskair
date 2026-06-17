@@ -678,6 +678,15 @@ class ActionDispatcher @Inject constructor(
                     }
                     actualCount == expectedCount
                 }
+                is CustomGestureTrigger.LandmarkTemplateTrigger -> {
+                    // LandmarkTemplate triggers are matched by the StaticPoseClassifier's
+                    // matchCustomTemplate() algorithm, NOT by this pose-based lookup.
+                    // They emit CustomGestureTriggered events directly and are handled
+                    // by dispatchCustomGesture(). This method (matchCustomGesture) is
+                    // only called for standard PoseTriggered events, so a
+                    // LandmarkTemplateTrigger can never match here — return false.
+                    false
+                }
             }
         }?.action
     }

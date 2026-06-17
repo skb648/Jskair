@@ -333,6 +333,11 @@ private fun formatTriggerDisplay(trigger: CustomGestureTrigger): String {
         is CustomGestureTrigger.FingerCount -> {
             trigger.extendedFingers.toString() + " fingers"
         }
+        is CustomGestureTrigger.LandmarkTemplateTrigger -> {
+            // Bug: Custom Gestures Not Triggering Fix — Display the template name
+            // for landmark-template-based custom gestures.
+            "Template: " + trigger.template.name
+        }
     }
 }
 
