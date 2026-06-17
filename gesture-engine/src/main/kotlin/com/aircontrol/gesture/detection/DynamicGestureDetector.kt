@@ -131,6 +131,24 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
      * We verify that the majority of intermediate velocity vectors agree
      * with the overall displacement direction. This eliminates swipes that
      * look consistent in total displacement but have zigzag intermediate paths.
+     *
+     * Bug: Swipe Up/Down Confusion Fix:
+     * Two additional checks specifically target vertical swipe reliability:
+     *
+     * 1. STRICT DIRECTIONAL ANGLE FILTER: Vertical swipes (UP/DOWN) require
+     *    |dY| >= 2 × |dX|. If |dX| > 0.5 × |dY|, the movement is too diagonal
+     *    and is rejected as noise. Horizontal swipes use the existing
+     *    swipeAxisDominanceRatio (default 2.0) which is symmetric, but vertical
+     *    swipes have more geometric overlap in natural hand motion, so the
+     *    strict filter is applied explicitly.
+     *
+     * 2. MONOTONIC VECTOR VERIFICATION: For Swipe UP, the Y coordinate must
+     *    continuously decrease (in screen space, Y increases downward) across
+     *    the buffer without erratic directional reversals. For Swipe DOWN, Y
+     *    must continuously increase. A single reversed intermediate step is
+     *    tolerated (noise), but two or more reversals reject the swipe. This
+     *    prevents diagonal-drift hand motion from being misread as a vertical
+     *    swipe.
      */
     internal fun analyzeWindow(window: ArrayDeque<PositionSample>, currentTimeMs: Long): SwipeResult {
         if (window.size < 2) return SwipeResult(detected = false)
@@ -175,6 +193,36 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
             )
         }
 
+        // Determine direction based on dominant axis
+        val direction = if (isHorizontalDominant) {
+            if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
+        } else {
+            if (displacementY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
+        }
+
+        // Bug: Swipe Up/Down Confusion Fix — STRICT DIRECTIONAL ANGLE FILTER
+        // for vertical swipes.
+        //
+        // Vertical swipes (UP/DOWN) suffer from geometric overlap in natural
+        // hand motion — it's hard to move the hand straight up/down without
+        // some horizontal drift. We apply a strict filter: |dY| must be at
+        // least 2× |dX| (equivalently, |dX| <= 0.5 × |dY|). If the movement
+        // is too diagonal, reject it as noise rather than guessing UP vs DOWN.
+        //
+        // Horizontal swipes (LEFT/RIGHT) are NOT subject to this extra filter
+        // — they use the existing swipeAxisDominanceRatio check above, which
+        // is sufficient because horizontal hand motion is naturally cleaner.
+        if (direction == SwipeDirection.UP || direction == SwipeDirection.DOWN) {
+            if (absDispY < VERTICAL_SWIPE_MIN_Y_TO_X_RATIO * absDispX) {
+                // |dY| < 2 × |dX| → too diagonal to be a confident vertical swipe
+                return SwipeResult(
+                    detected = false,
+                    displacementX = displacementX,
+                    displacementY = displacementY,
+                )
+            }
+        }
+
         // Compute peak velocity
         val peakVelocity = computePeakVelocity(window)
         val velocityThreshold = config.scaledSwipeVelocity()
@@ -188,14 +236,31 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
             )
         }
 
-        // Determine direction based on dominant axis
-        val direction = if (isHorizontalDominant) {
-            if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
-        } else {
-            if (displacementY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
+        // Bug: Swipe Up/Down Confusion Fix — MONOTONIC VECTOR VERIFICATION
+        // for vertical swipes.
+        //
+        // For Swipe UP, the Y coordinate must continuously decrease (screen Y
+        // increases downward, so UP = decreasing Y) across the buffer. For
+        // Swipe DOWN, Y must continuously increase. We count directional
+        // reversals in the intermediate steps. A single reversal is tolerated
+        // (one noisy frame), but two or more reversals indicate erratic
+        // diagonal drift, not a deliberate vertical swipe.
+        //
+        // Horizontal swipes use the existing directional consistency check
+        // (below) which is sufficient for their cleaner motion profile.
+        if (direction == SwipeDirection.UP || direction == SwipeDirection.DOWN) {
+            val reversals = countDirectionalReversals(window, direction)
+            if (reversals > MAX_VERTICAL_REVERSALS) {
+                return SwipeResult(
+                    detected = false,
+                    displacementX = displacementX,
+                    displacementY = displacementY,
+                    peakVelocity = peakVelocity,
+                )
+            }
         }
 
-        // Issue 6 Fix: Directional consistency check
+        // Issue 6 Fix: Directional consistency check (applies to ALL directions)
         // Verify that the majority of intermediate velocity vectors agree with
         // the overall displacement direction. This prevents zigzag movements
         // from being detected as swipes.
@@ -290,6 +355,47 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         return agreeing.toFloat() / total.toFloat()
     }
 
+    /**
+     * Bug: Swipe Up/Down Confusion Fix — Counts directional reversals in the
+     * Y coordinate across the window for vertical swipes.
+     *
+     * For Swipe UP (Y decreasing), a reversal is any intermediate step where
+     * Y increases (moves DOWN) instead of decreasing. For Swipe DOWN (Y
+     * increasing), a reversal is any step where Y decreases (moves UP).
+     *
+     * Trivial jitter (below [MIN_INTERMEDIATE_DISPLACEMENT]) is skipped to avoid
+     * counting sub-pixel noise as a reversal.
+     *
+     * @return The number of directional reversals. 0 = perfectly monotonic.
+     */
+    internal fun countDirectionalReversals(
+        window: ArrayDeque<PositionSample>,
+        direction: SwipeDirection,
+    ): Int {
+        if (window.size < 3) return 0
+
+        var reversals = 0
+        for (i in 1 until window.size) {
+            val prev = window[i - 1]
+            val curr = window[i]
+            val dy = curr.y - prev.y
+
+            // Skip trivial jitter
+            if (kotlin.math.abs(dy) < MIN_INTERMEDIATE_DISPLACEMENT) continue
+
+            val isReversal = when (direction) {
+                // UP = Y should decrease (dy < 0). Reversal = dy > 0.
+                SwipeDirection.UP -> dy > 0f
+                // DOWN = Y should increase (dy > 0). Reversal = dy < 0.
+                SwipeDirection.DOWN -> dy < 0f
+                // Not applicable for horizontal swipes — return 0.
+                SwipeDirection.LEFT, SwipeDirection.RIGHT -> return 0
+            }
+            if (isReversal) reversals++
+        }
+        return reversals
+    }
+
     /** Resets the detector state. */
     fun reset() {
         wristWindow.clear()
@@ -305,5 +411,21 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         private const val DIRECTIONAL_CONSISTENCY_THRESHOLD = 0.7f
         // Minimum displacement for an intermediate step to be counted in consistency check
         private const val MIN_INTERMEDIATE_DISPLACEMENT = 0.005f
+
+        // Bug: Swipe Up/Down Confusion Fix — Strict directional angle filter.
+        // Vertical swipes (UP/DOWN) require |dY| >= 2 × |dX|. Equivalently,
+        // if |dX| > 0.5 × |dY|, the movement is too diagonal and is rejected.
+        // 2.0 was chosen because it matches the existing swipeAxisDominanceRatio
+        // default but is applied EXPLICITLY and ONLY to vertical swipes, where
+        // geometric overlap from natural hand motion causes the most confusion.
+        private const val VERTICAL_SWIPE_MIN_Y_TO_X_RATIO = 2.0f
+
+        // Bug: Swipe Up/Down Confusion Fix — Maximum tolerated directional
+        // reversals in the Y coordinate for vertical swipes. 0 = perfectly
+        // monotonic required. 1 = tolerate one noisy frame. We use 1 because
+        // MediaPipe tracking can produce a single noisy Y sample during fast
+        // vertical motion, but two or more reversals indicate genuine erratic
+        // drift, not a deliberate swipe.
+        private const val MAX_VERTICAL_REVERSALS = 1
     }
 }

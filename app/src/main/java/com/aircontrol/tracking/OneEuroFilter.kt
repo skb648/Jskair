@@ -201,8 +201,8 @@ class HandFrameFilter(
  * not updated. This produces a rock-steady cursor when the hand is still.
  */
 class CursorSmoother(
-    minCutoff: Float = 0.6f,
-    beta: Float = 0.1f,
+    minCutoff: Float = 0.45f,
+    beta: Float = 0.15f,
 ) {
     private val xFilter = OneEuroFilter(minCutoff, beta)
     private val yFilter = OneEuroFilter(minCutoff, beta)
@@ -253,7 +253,14 @@ class CursorSmoother(
 
     companion object {
         // Dead-zone in normalized coordinates.
-        // ~0.001 = ~1px on a 1080p screen. Below this, cursor stays put.
-        private const val DEAD_ZONE_NORMALIZED = 0.001f
+        // 0.004 ≈ 4px on a 1080p screen.
+        //
+        // (Bug #6 & #7 Fix): Increased from 0.001 to 0.004 to better suppress
+        // residual hand tremor that survives the One Euro Filter. Since the
+        // landmark-level filter has been removed from HandTracker, CursorSmoother
+        // is now the sole smoothing stage; a slightly larger dead zone compensates
+        // for the raw input noise. Combined with the 3dp dead zone in CursorOverlay,
+        // the cursor is rock-steady when the hand is still.
+        private const val DEAD_ZONE_NORMALIZED = 0.004f
     }
 }

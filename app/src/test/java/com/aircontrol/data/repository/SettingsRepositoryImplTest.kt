@@ -36,7 +36,12 @@ class SettingsRepositoryImplTest {
         testDataStore = PreferenceDataStoreFactory.createWithPath(
             produceFile = { dataStoreFile.toPath() },
         )
-        repository = SettingsRepositoryImpl(testDataStore)
+        // Bug #22 Fix: Pass the test scope as the applicationScope parameter.
+        // SettingsRepositoryImpl now requires a CoroutineScope for background
+        // migration write-back (replacing the old GlobalScope.launch). Using the
+        // TestScope ensures the write-back coroutines are testable and
+        // deterministic (UnconfinedTestDispatcher runs them eagerly).
+        repository = SettingsRepositoryImpl(testDataStore, testScope)
     }
 
     // ========== Serialization Tests (JSON format) ==========

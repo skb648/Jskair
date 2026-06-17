@@ -1,6 +1,7 @@
 package com.aircontrol.data.model
 
 import com.aircontrol.accessibility.GestureAction
+import com.aircontrol.gesture.model.LandmarkTemplate
 
 /**
  * Represents a user-defined custom gesture.
@@ -25,7 +26,8 @@ data class CustomGesture(
 
 /**
  * Defines what triggers a custom gesture.
- * Can be a static pose, a pose with direction, or a finger count pattern.
+ * Can be a static pose, a pose with direction, a finger count pattern, or a
+ * recorded landmark template.
  */
 sealed class CustomGestureTrigger {
     /** A specific hand pose combined with an optional direction. */
@@ -38,6 +40,23 @@ sealed class CustomGestureTrigger {
     data class FingerCount(
         val extendedFingers: Int,
         val whichFingers: Set<FingerType> = emptySet(),
+    ) : CustomGestureTrigger()
+
+    /**
+     * Bug: Custom Gestures Not Triggering Fix — A recorded landmark template
+     * that is matched against live hand frames using Euclidean distance
+     * comparison in the [com.aircontrol.gesture.detection.StaticPoseClassifier].
+     *
+     * This trigger type enables truly custom hand shapes that don't map to any
+     * of the hardcoded [CustomGesturePose] enum values. The user records a hand
+     * shape, and the engine matches it by comparing normalized inter-landmark
+     * distances within [LandmarkTemplate.MATCH_TOLERANCE].
+     *
+     * The [LandmarkTemplate] is stored as-is (it's a pure-Kotlin data class with
+     * no Android dependencies, so it serializes cleanly to JSON).
+     */
+    data class LandmarkTemplateTrigger(
+        val template: LandmarkTemplate,
     ) : CustomGestureTrigger()
 }
 

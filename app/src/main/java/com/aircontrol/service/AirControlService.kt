@@ -79,6 +79,8 @@ class AirControlServiceImpl @Inject constructor(
                             "Pinch ${event.phase}"
                         is com.aircontrol.gesture.model.GestureEvent.PoseTriggered ->
                             event.pose.name
+                        is com.aircontrol.gesture.model.GestureEvent.CustomGestureTriggered ->
+                            "Custom: ${event.gestureName}"
                         is com.aircontrol.gesture.model.GestureEvent.Armed ->
                             "Armed"
                         is com.aircontrol.gesture.model.GestureEvent.Disarmed ->

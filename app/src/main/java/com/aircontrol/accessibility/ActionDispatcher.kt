@@ -238,6 +238,8 @@ class ActionDispatcher @Inject constructor(
             is GestureEvent.Swipe -> dispatchSwipe(event, screenWidth, screenHeight)
             is GestureEvent.Pinch -> dispatchPinch(event, cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.PoseTriggered -> dispatchPose(event, cursorX, cursorY, screenWidth, screenHeight)
+            is GestureEvent.CustomGestureTriggered ->
+                dispatchCustomGesture(event, cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.Armed,
             is GestureEvent.Disarmed,
             is GestureEvent.CursorMoved -> false
@@ -424,10 +426,34 @@ class ActionDispatcher @Inject constructor(
                 dragGraceFrameCount = 0
                 dragLockUntilMs = 0L
 
+                // Bug #2 Fix: Coordinate routing by action type.
+                //
+                // The Pinch event carries TWO coordinate pairs:
+                //   - event.x / event.y           : live hand position (current index tip)
+                //   - event.anchoredX / event.anchoredY : index tip position at pinch START
+                //
+                // For DRAG: the drop target must be where the user's hand is NOW
+                //           (event.x/y). Using the anchored position would drop the
+                //           dragged item back at the drag start — making drags feel
+                //           broken (item snaps back).
+                //
+                // For TAP / LONG_PRESS / other discrete actions: the click target
+                //           must be where the user was AIMING when they initiated
+                //           the pinch (event.anchoredX/Y = pinchStartX/Y). The live
+                //           position has already drifted as fingers separated.
+                //
+                // pinchStartX/Y (set during START from cursorX = event.anchoredX)
+                // already holds the anchored position, so we keep using it for the
+                // click-style actions and only override for DRAG.
+                val dropX = event.x
+                val dropY = event.y
+
                 when {
-                    finalAction == GestureAction.DRAG -> dispatchDragEnd(cursorX, cursorY, screenWidth, screenHeight)
-                    holdDurationMs >= LONG_PRESS_THRESHOLD_MS && finalAction == effectiveAction -> dispatchLongPress(pinchStartX, pinchStartY, screenWidth, screenHeight)
-                    finalAction != GestureAction.DRAG && finalAction != GestureAction.NONE -> executeAction(finalAction, pinchStartX, pinchStartY, screenWidth, screenHeight)
+                    finalAction == GestureAction.DRAG -> dispatchDragEnd(dropX, dropY, screenWidth, screenHeight)
+                    holdDurationMs >= LONG_PRESS_THRESHOLD_MS && finalAction == effectiveAction ->
+                        dispatchLongPress(pinchStartX, pinchStartY, screenWidth, screenHeight)
+                    finalAction != GestureAction.DRAG && finalAction != GestureAction.NONE ->
+                        executeAction(finalAction, pinchStartX, pinchStartY, screenWidth, screenHeight)
                     else -> dispatchTap(pinchStartX, pinchStartY, screenWidth, screenHeight)
                 }
             }
@@ -443,8 +469,12 @@ class ActionDispatcher @Inject constructor(
 
         val path = Path().apply {
             moveTo(x, y)
-            // Tiny movement to ensure tap registers
-            lineTo(x + 1f, y)
+            // Bug #15 Fix: Minimum 3px displacement to guarantee the system
+            // registers the touch as a tap (zero/sub-pixel displacement can be
+            // misread as a touch-and-hold with no movement, which some apps
+            // ignore). 3px is above the synthetic-path noise floor but well
+            // below touch slop, so it reads as a discrete tap, not a scroll.
+            lineTo(x + TAP_PATH_DISPLACEMENT_PX, y)
         }
 
         val gesture = GestureDescription.Builder()
@@ -461,7 +491,9 @@ class ActionDispatcher @Inject constructor(
         val x = normalizeToScreenX(normX, screenWidth)
         val y = normalizeToScreenY(normY, screenHeight)
 
-        val path = Path().apply { moveTo(x, y); lineTo(x + 1f, y) }
+        // Bug #15 Fix: Apply the same 3px minimum displacement as tap so the
+        // long-press stroke is reliably registered by the gesture detector.
+        val path = Path().apply { moveTo(x, y); lineTo(x + TAP_PATH_DISPLACEMENT_PX, y) }
 
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, LONG_PRESS_DURATION_MS))
@@ -525,13 +557,18 @@ class ActionDispatcher @Inject constructor(
             lineTo(x, y)
         }
 
-        // M-04: Use continueStroke to finalize the drag gesture
+        // M-04: Use continueStroke to finalize the drag gesture.
+        // Bug #14 Fix: Use DRAG_END_DURATION_MS (proportional to the increased
+        // DRAG_STEP_DURATION_MS) so the final "drop" stroke has a duration
+        // consistent with the preceding drag steps. Previously this was a
+        // hardcoded 32L which was 2× the old 16ms step; we keep the 2× ratio
+        // by making it 2× the new 50ms step (100ms).
         val stroke = if (lastDragStroke != null) {
             // Continue and finalize the drag stroke
-            lastDragStroke!!.continueStroke(path, 0L, 32L, false)
+            lastDragStroke!!.continueStroke(path, 0L, DRAG_END_DURATION_MS, false)
         } else {
             // No prior stroke — just dispatch a single stroke
-            GestureDescription.StrokeDescription(path, 0L, 32L)
+            GestureDescription.StrokeDescription(path, 0L, DRAG_END_DURATION_MS)
         }
         lastDragStroke = null
 
@@ -567,6 +604,36 @@ class ActionDispatcher @Inject constructor(
         val action = gestureMap[key] ?: GestureAction.NONE
 
         return executeAction(action, cursorX, cursorY, screenWidth, screenHeight)
+    }
+
+    /**
+     * Bug: Custom Gestures Not Triggering Fix — Dispatches a user-defined custom
+     * gesture that was matched via landmark template comparison in the engine.
+     *
+     * The engine emits [GestureEvent.CustomGestureTriggered] when the live hand
+     * landmarks match a saved [LandmarkTemplate] within tolerance. This method
+     * looks up the user's configured [GestureAction] by the gesture ID and
+     * executes it.
+     *
+     * @param event The custom gesture event carrying the matched gesture ID.
+     * @return true if the action was dispatched, false otherwise.
+     */
+    private fun dispatchCustomGesture(
+        event: GestureEvent.CustomGestureTriggered,
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): Boolean {
+        // Find the custom gesture by ID in the cached list
+        val customGesture = customGesturesList.find { it.id == event.gestureId }
+        if (customGesture == null) {
+            Timber.w("Custom gesture '%s' (id=%s) not found in cached list", event.gestureName, event.gestureId)
+            return false
+        }
+
+        Timber.i("Dispatching custom gesture '%s' → action %s", event.gestureName, customGesture.action)
+        return executeAction(customGesture.action, cursorX, cursorY, screenWidth, screenHeight)
     }
 
     /**
@@ -849,15 +916,71 @@ class ActionDispatcher @Inject constructor(
 
     companion object {
         private const val SCROLL_DURATION_MS = 250L
-        private const val TAP_DURATION_MS = 50L
+        // Bug #15 Fix: Increased from 50ms to 90ms. Many target applications and
+        // games reject taps shorter than ~80ms as "accidental touches" (Android's
+        // own ViewConfiguration treats very short touch durations as potential
+        // palm-touch noise). 90ms is safely above the rejection threshold while
+        // still feeling instantaneous to the user (human perception of tap latency
+        // is ~100ms). This fix is especially important for game UIs and launcher
+        // icons that were silently swallowing 50ms taps.
+        private const val TAP_DURATION_MS = 90L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val LONG_PRESS_THRESHOLD_MS = 600L
-        private const val DRAG_STEP_DURATION_MS = 16L
+        // Bug #15 Fix: Minimum touch-path displacement in pixels. Android's gesture
+        // detector may ignore a tap whose touch path has zero or sub-pixel
+        // displacement (it can't distinguish a tap from a touch-and-hold with no
+        // movement). The old code used 1px, which was below the touch-slop
+        // threshold on some devices and could be misread as a scroll attempt.
+        // 3px is above touch slop on all known devices (typical slop is 8px, but
+        // the path is a synthetic line, not a real drag, so even 3px is enough to
+        // register as a discrete tap rather than a jittery hold).
+        private const val TAP_PATH_DISPLACEMENT_PX = 3f
+        // Bug #14 Fix: Increased from 16ms to 50ms to bridge the 24fps frame gap.
+        //
+        // At 24fps, frames arrive every ~42ms. With the old 16ms step duration,
+        // consecutive continueStroke() calls could arrive 42ms apart while each
+        // stroke was only "alive" for 16ms — Android would interpret the gap
+        // between strokes as a touch-up + touch-down, breaking the continuous
+        // drag into a series of taps. With 50ms step duration, each stroke stays
+        // alive longer than the inter-frame interval, so Android sees a single
+        // uninterrupted drag gesture.
+        //
+        // 50ms also gives Android's gesture detector enough time to register
+        // motion before the next continueStroke replaces the active stroke.
+        private const val DRAG_STEP_DURATION_MS = 50L
+        // Bug #14 Fix: Final "drop" stroke duration. Proportional to the step
+        // duration (2× ratio, matching the old hardcoded 32L vs 16L step).
+        // Long enough for Android to register the final position before the
+        // stroke ends with willContinue=false.
+        private const val DRAG_END_DURATION_MS = 100L
         private const val HAPTIC_TICK_MS = 15L
 
-        // Viewport expansion: power < 1.0 expands center, compresses edges
-        // 0.8 means a hand at 50% of viewport reaches 57% of screen — less fatigue
-        private const val VIEWPORT_EXPANSION_POWER = 0.8f
+        // ---- Virtual Box / Dead Zone viewport mapping (Bug #1 & #12 Fix) ----
+        // The hand's physical range of motion is smaller than the camera viewport.
+        // Instead of a power curve (which compressed edges and was hard to reason
+        // about), we use a clean dead-zone approach: only the center 80% of the
+        // camera X-range maps to the full screen width. Anything in the outer 10%
+        // margins on either side is clamped to the nearest screen edge.
+        //
+        //   deadZoneStartX  = 0.10  (10% margin on the left)
+        //   activeZoneWidth = 0.80  (center 80% is the active region)
+        //   deadZoneEndX    = 0.90  (10% margin on the right)
+        //
+        // Formula:
+        //   screenPos = clamp((handPos - deadZoneStart) / activeZoneWidth, 0, 1) * screenSize
+        private const val X_DEAD_ZONE_START = 0.10f
+        private const val X_ACTIVE_ZONE_WIDTH = 0.80f
+
+        // Y-axis bias (Bug #12): the user should not have to lift their arm above
+        // shoulder height to reach the top of the screen. Only the bottom 60% of
+        // the camera Y-range maps to the full screen height; the top 40% is the
+        // dead zone (clamped to the top of the screen). This means a hand held
+        // at chest/lower-face height already covers the entire screen.
+        //
+        //   yDeadZoneStart    = 0.0  (no bottom margin — bottom of camera = bottom of screen)
+        //   yActiveZoneHeight = 0.6  (top 40% of camera clamps to top of screen)
+        private const val Y_DEAD_ZONE_START = 0.0f
+        private const val Y_ACTIVE_ZONE_HEIGHT = 0.6f
 
         // Issue 7 Fix: Drag grace period — once drag starts, keep it alive
         // for at least this duration even if tracking flickers. This prevents
@@ -880,48 +1003,61 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
 
         /**
-         * Maps normalized X coordinate [0,1] to screen pixel with expanded viewport.
+         * Maps normalized X coordinate [0,1] to screen pixel using a Virtual Box
+         * (dead-zone) mapping.
          *
          * Since the camera image is already mirrored in CameraService.imageProxyToMPImage
          * (selfie-view), MediaPipe landmarks are in selfie coordinates where the user's
          * right hand appears on the right side. No additional mirroring is needed here.
          *
-         * EXPANDED VIEWPORT (Issue 3 Fix):
+         * VIRTUAL BOX MAPPING (Bug #1 & #12 Fix):
          * The hand's physical range of motion is smaller than the camera viewport.
-         * Mapping [0,1] linearly means the user must move their hand to extreme edges
-         * to reach screen corners — causing fatigue.
+         * Only the center 80% of the camera X-range maps to the full screen width.
+         * The outer 10% on each side is a dead zone: hand positions there clamp to
+         * the nearest screen edge. This lets the user reach screen corners without
+         * having to move their hand to the edge of the camera field of view.
          *
-         * Solution: Apply a power-curve mapping that expands the center of the viewport
-         * and compresses the edges. A small physical movement near the center maps to
-         * a larger screen area, while edge movements still reach the corners.
+         * Formula:
+         *   screenPos = clamp((handPos - X_DEAD_ZONE_START) / X_ACTIVE_ZONE_WIDTH, 0, 1) * screenWidth
          *
-         * The curve: screenPos = sign(norm) * |norm|^POWER * screenSize
-         * With POWER=0.8, the mapping is:
-         * - norm=0.5 → screen 0.57 (center expanded by 14%)
-         * - norm=0.9 → screen 0.92 (edges slightly compressed)
-         * - norm=1.0 → screen 1.0 (corners still fully reachable)
+         * Mapping table (with X_DEAD_ZONE_START=0.10, X_ACTIVE_ZONE_WIDTH=0.80):
+         *   handPos=0.00 → screen 0.00 (clamped, left edge)
+         *   handPos=0.10 → screen 0.00 (start of active zone)
+         *   handPos=0.50 → screen 0.50 (center → center)
+         *   handPos=0.90 → screen 1.00 (end of active zone)
+         *   handPos=1.00 → screen 1.00 (clamped, right edge)
          */
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             // No mirror — camera already provides selfie-view coordinates
-            // Apply power curve for expanded viewport (less hand movement needed)
-            val centered = (normX * 2f - 1f).toDouble()  // Map to [-1, 1]
-            val absVal = kotlin.math.abs(centered)
-            val expanded = kotlin.math.sign(centered) * java.lang.Math.pow(absVal, VIEWPORT_EXPANSION_POWER.toDouble())
-            val mapped = ((expanded + 1.0) / 2.0).toFloat()  // Map back to [0, 1]
-            return (mapped * screenWidth).coerceIn(0f, screenWidth.toFloat())
+            val activePos = (normX - X_DEAD_ZONE_START) / X_ACTIVE_ZONE_WIDTH
+            val clamped = activePos.coerceIn(0f, 1f)
+            return clamped * screenWidth
         }
 
         /**
-         * Maps normalized Y coordinate [0,1] to screen pixel with expanded viewport.
+         * Maps normalized Y coordinate [0,1] to screen pixel using a biased
+         * Virtual Box mapping.
          *
-         * Same power-curve expansion as X axis for consistent feel.
+         * Y-AXIS BIAS (Bug #12 Fix):
+         * The user should not have to lift their arm above shoulder height to
+         * reach the top of the screen. Only the bottom 60% of the camera Y-range
+         * maps to the full screen height. Hand positions in the top 40% of the
+         * camera clamp to the top of the screen. This lets the user operate the
+         * full screen with their hand at chest/lower-face height.
+         *
+         * Formula:
+         *   screenPos = clamp((handPos - Y_DEAD_ZONE_START) / Y_ACTIVE_ZONE_HEIGHT, 0, 1) * screenHeight
+         *
+         * Mapping table (with Y_DEAD_ZONE_START=0.0, Y_ACTIVE_ZONE_HEIGHT=0.6):
+         *   handPos=0.00 → screen 0.00 (bottom of camera → bottom of screen)
+         *   handPos=0.30 → screen 0.50 (mid active zone → center of screen)
+         *   handPos=0.60 → screen 1.00 (top of active zone → top of screen)
+         *   handPos=1.00 → screen 1.00 (clamped, top edge)
          */
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
-            val centered = (normY * 2f - 1f).toDouble()
-            val absVal = kotlin.math.abs(centered)
-            val expanded = kotlin.math.sign(centered) * java.lang.Math.pow(absVal, VIEWPORT_EXPANSION_POWER.toDouble())
-            val mapped = ((expanded + 1.0) / 2.0).toFloat()
-            return (mapped * screenHeight).coerceIn(0f, screenHeight.toFloat())
+            val activePos = (normY - Y_DEAD_ZONE_START) / Y_ACTIVE_ZONE_HEIGHT
+            val clamped = activePos.coerceIn(0f, 1f)
+            return clamped * screenHeight
         }
     }
 

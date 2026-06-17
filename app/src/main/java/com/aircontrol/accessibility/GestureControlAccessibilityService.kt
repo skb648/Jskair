@@ -96,11 +96,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var isCursorFrozen = false
     private var cursorFreezeJob: Job? = null
 
-    // Issue 1 Fix: Cursor-level smoothing with dead-zone for micro-jitter elimination
+    // Issue 1 Fix / Bug #6 & #7 Fix: Single, consolidated cursor-side One Euro
+    // Filter. The landmark-level filter previously in HandTracker has been removed,
+    // so this is now the ONLY smoothing stage for the cursor. Parameters are more
+    // aggressive than the old defaults to compensate:
+    //   - minCutoff = 0.45  (heavier smoothing at rest, was 0.6)
+    //   - beta      = 0.15  (faster tracking during motion, was 0.1)
+    // Combined with the 0.004 normalized dead zone in CursorSmoother and the 3dp
+    // dead zone in CursorOverlay, this eliminates hand tremor while keeping
+    // motion-to-cursor latency low (no double-filtering).
     private val cursorSmoother = com.aircontrol.tracking.CursorSmoother(
-        minCutoff = 0.6f,
-        beta = 0.1f,
+        minCutoff = DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF,
+        beta = DEFAULT_CURSOR_SMOOTHER_BETA,
     )
+
+    // Bug #13 Fix: Track the current beta so we can call cursorSmoother.updateParams
+    // with the correct beta when only the minCutoff changes (via minCutoffHint).
+    // Also track the last applied minCutoffHint to avoid redundant updateParams
+    // calls on every frame — only call updateParams when the hint actually changes.
+    @Volatile
+    private var currentCursorBeta: Float = DEFAULT_CURSOR_SMOOTHER_BETA
+    @Volatile
+    private var lastAppliedMinCutoffHint: Float? = null
 
     // Broadcast receiver for screen state
     private val screenReceiver = object : BroadcastReceiver() {
@@ -269,6 +286,39 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
+        // Bug: Custom Gestures Not Triggering Fix — Collect custom gestures from
+        // the repository and push landmark templates to the gesture detector.
+        //
+        // Only CustomGestures with a LandmarkTemplateTrigger are converted to
+        // LandmarkTemplate objects and passed to the engine. CustomGestures with
+        // PoseWithDirection or FingerCount triggers are handled by the
+        // ActionDispatcher's existing matchCustomGesture() logic (they piggyback
+        // on the standard Pose classification).
+        //
+        // This collector runs for the lifetime of the tracking pipeline. When the
+        // user creates/edits/deletes a custom gesture in the UI, the repository
+        // emits a new list, which flows here and updates the engine atomically.
+        pipelineJobs.add(serviceScope.launch {
+            settingsRepository?.customGestures?.collect { gestures ->
+                try {
+                    val templates = gestures
+                        .filter { it.isEnabled }
+                        .mapNotNull { gesture ->
+                            val trigger = gesture.triggerPose
+                            if (trigger is com.aircontrol.data.model.CustomGestureTrigger.LandmarkTemplateTrigger) {
+                                trigger.template
+                            } else {
+                                null
+                            }
+                        }
+                    gestureDetector?.updateCustomTemplates(templates)
+                    Timber.d("Loaded %d landmark-template custom gestures", templates.size)
+                } catch (e: Exception) {
+                    Timber.e(e, "Error updating custom gesture templates")
+                }
+            }
+        })
+
         // Collect hand frames → gesture detector (with thermal frame skipping)
         pipelineJobs.add(serviceScope.launch {
             var thermalSkipIndex = 0
@@ -335,14 +385,45 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             gestureDetector?.gestureEvents?.collect { event ->
                 try {
-                    // Freeze cursor during gesture execution for better accuracy
                     if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled && !isCursorFrozen) {
+                        // Bug #13 Fix: Adaptive smoothing for low-confidence frames.
+                        // If the engine provides a minCutoffHint, dynamically update
+                        // the CursorSmoother's minCutoff. Only call updateParams when
+                        // the hint actually changes (avoid per-frame overhead).
+                        // When the hint is null (confidence recovered), restore the
+                        // default minCutoff.
+                        if (event.minCutoffHint != lastAppliedMinCutoffHint) {
+                            val newMinCutoff = event.minCutoffHint ?: DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF
+                            cursorSmoother.updateParams(
+                                minCutoff = newMinCutoff,
+                                beta = currentCursorBeta,
+                            )
+                            lastAppliedMinCutoffHint = event.minCutoffHint
+                            Timber.v(
+                                "CursorSmoother minCutoff updated to %.2f (low-confidence=%s)",
+                                newMinCutoff,
+                                event.minCutoffHint != null,
+                            )
+                        }
+
                         // Issue 1 Fix: Apply cursor-level smoothing with dead-zone.
                         // This eliminates micro-jitter from hand tremor while preserving
                         // intentional movements with no perceptible lag.
                         val (smoothX, smoothY) = cursorSmoother.filter(
                             event.x, event.y, event.timestampMs,
                         )
+
+                        // Bug #18 Fix: If this CursorMoved is "silent" (emitted during
+                        // ARMING to pre-warm the smoother), feed the coordinates to the
+                        // smoother (above) but SKIP showing/updating the visual cursor
+                        // overlay and cursorController. The cursor should remain hidden
+                        // until the engine reaches ARMED — this prevents a visible
+                        // "jump" when the cursor first appears (the smoother has already
+                        // converged on a stable position during ARMING).
+                        if (event.isSilent) {
+                            return@collect
+                        }
+
                         withContext(Dispatchers.Main) {
                             cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                         }
@@ -402,11 +483,20 @@ class GestureControlAccessibilityService : AccessibilityService() {
         monitor.startMonitoring()
 
         // Collect thermal status and apply graceful degradation
-        // Issue 5 Fix: Never fully pause the service. Instead, skip frames
-        // progressively to reduce thermal load while keeping the pipeline alive.
+        // Issue 5 Fix / Bug #5 Fix: Never fully pause the service on SEVERE.
+        // Instead, skip frames progressively to reduce thermal load while keeping
+        // the pipeline alive. Only CRITICAL (PowerManager CRITICAL/EMERGENCY/SHUTDOWN)
+        // fully pauses gesture dispatch.
         thermalMonitoringJob = serviceScope.launch {
             monitor.thermalStatus.collect { status ->
                 when (status) {
+                    com.aircontrol.tracking.ThermalStatus.CRITICAL -> {
+                        // Critical/Emergency/Shutdown — pause gesture dispatch entirely.
+                        // The CameraService has already paused the camera pipeline.
+                        Timber.w("Thermal CRITICAL — pausing gesture dispatch")
+                        isThermalPaused = true
+                        thermalFrameSkipCounter = 0
+                    }
                     com.aircontrol.tracking.ThermalStatus.SEVERE -> {
                         Timber.w("Thermal SEVERE — aggressive frame skipping (1 in 3 frames)")
                         isThermalPaused = false // Don't pause entirely
@@ -439,7 +529,24 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private suspend fun handleGestureEvent(event: GestureEvent, engineState: GestureEngineState) {
         withContext(Dispatchers.Main) {
             val cursorState = cursorController?.cursorState?.value
-            // Use actual position for drag (x/y), anchored position for tap/long-press
+            // Bug #2 Fix: Coordinate routing by pinch phase.
+            //
+            // The Pinch event carries TWO coordinate pairs:
+            //   - event.x / event.y            : live hand position (current index tip)
+            //   - event.anchoredX / event.anchoredY : index tip position at pinch START
+            //
+            // For PinchPhase.MOVE: pass the LIVE position (event.x/y). The drag
+            //   stroke must follow the hand.
+            // For PinchPhase.START and PinchPhase.END: pass the ANCHORED position
+            //   (event.anchoredX/Y). This is the value ActionDispatcher uses for
+            //   pinchStartX/Y (click-target for TAP / LONG_PRESS).
+            //
+            // IMPORTANT (Bug #2 Fix): For PinchPhase.END with a DRAG action,
+            //   ActionDispatcher.dispatchPinch() overrides this and reads event.x/y
+            //   directly from the event (the live hand position) as the drop target.
+            //   So even though we pass anchoredX/Y here, the DRAG drop uses the
+            //   current hand position. This keeps the routing logic in one place
+            //   (dispatchPinch) where the action type is known.
             val cursorX = if (event is GestureEvent.Pinch) {
                 if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) event.x else event.anchoredX
             } else cursorState?.x ?: 0f
@@ -469,13 +576,34 @@ class GestureControlAccessibilityService : AccessibilityService() {
             // Freeze cursor during gesture execution for better accuracy
             // When any gesture is recognized (swipe, pose, pinch start), freeze the cursor
             // briefly so the action targets the correct position
+            //
+            // Bug #8 Fix: The pinch START freeze was previously 150ms, which locked
+            // the visual cursor for the first ~5 frames of a drag (at 30fps). When
+            // MOVE events started arriving, the cursor would suddenly "pop" from
+            // the anchor to the live hand position — a jarring visual jump.
+            //
+            // Two-pronged fix:
+            //   1. CURSOR_FREEZE_MS_PINCH reduced from 150ms to 50ms (safety net
+            //      in case MOVE events are delayed).
+            //   2. On the first PinchPhase.MOVE event, immediately call
+            //      unfreezeCursor() to release the lock the instant the drag
+            //      actually begins.
             when (event) {
                 is GestureEvent.Swipe -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
                 is GestureEvent.PoseTriggered -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
+                is GestureEvent.CustomGestureTriggered -> freezeCursorBriefly(CURSOR_FREEZE_MS_GESTURE)
                 is GestureEvent.Pinch -> {
                     when (event.phase) {
                         com.aircontrol.gesture.model.PinchPhase.START -> freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
-                        com.aircontrol.gesture.model.PinchPhase.MOVE -> { /* Don't freeze during drag */ }
+                        com.aircontrol.gesture.model.PinchPhase.MOVE -> {
+                            // Bug #8 Fix: Release the START freeze immediately so
+                            // the visual cursor dot can follow the hand during drag.
+                            // Without this, the cursor stays locked at the anchor
+                            // for up to 50ms (or longer if the START freeze window
+                            // hasn't elapsed), causing a visible "pop" when it
+                            // finally unlocks.
+                            unfreezeCursor()
+                        }
                         com.aircontrol.gesture.model.PinchPhase.END -> {
                             (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
                         }
@@ -512,6 +640,22 @@ class GestureControlAccessibilityService : AccessibilityService() {
             delay(durationMs)
             isCursorFrozen = false
         }
+    }
+
+    /**
+     * Immediately releases any active cursor freeze.
+     *
+     * Bug #8 Fix: Called on the first PinchPhase.MOVE event so the visual cursor
+     * dot can follow the hand during drag operations. Without this, the 50ms
+     * START freeze (or the previous 150ms freeze) would keep the cursor locked
+     * at the anchor for several frames, causing a visible "pop" when MOVE
+     * events finally override the position.
+     */
+    private fun unfreezeCursor() {
+        if (!isCursorFrozen) return
+        cursorFreezeJob?.cancel()
+        cursorFreezeJob = null
+        isCursorFrozen = false
     }
 
     // ========== Camera service ==========
@@ -622,6 +766,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val CURSOR_FREEZE_MS_GESTURE = 300L  // Freeze for swipe/pose gestures
-        private const val CURSOR_FREEZE_MS_PINCH = 150L    // Shorter freeze for pinch (tap)
+        // Bug #8 Fix: Reduced from 150ms to 50ms. The pinch START freeze is now
+        // a short safety window; the cursor is also explicitly released on the
+        // first PinchPhase.MOVE event via unfreezeCursor(). 50ms is ~1.5 frames
+        // at 30fps — long enough to register a stable click target, short enough
+        // that the visual dot can follow the hand as soon as the drag begins.
+        private const val CURSOR_FREEZE_MS_PINCH = 50L
+
+        // Bug #13 Fix: Default CursorSmoother parameters. Used to construct the
+        // smoother AND to restore defaults when minCutoffHint transitions back
+        // to null (confidence recovered).
+        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 0.45f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.15f
     }
 }

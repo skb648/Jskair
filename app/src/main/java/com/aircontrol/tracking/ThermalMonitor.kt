@@ -17,10 +17,13 @@ import timber.log.Timber
 /**
  * Monitors device thermal status and reports it as a flow.
  *
- * Thermal thresholds:
- * - THROTTLING_MODERATE → Auto-drop FPS to reduce thermal load
- * - SEVERE → Pause tracking with user notification
- * - NORMAL/None → Resume normal operation
+ * Thermal thresholds (Bug #5 Fix — graduated degradation instead of pause on SEVERE):
+ * - LIGHT       → Proactive FPS reduction to 2/3 of configured (only if not already throttled).
+ * - MODERATE    → Reduce FPS to 1/2 of configured (clamped 5..15).
+ * - SEVERE      → Dynamic frame skipping: reduce FPS to 5 FPS, but keep tracking alive.
+ *                 Notification reads "Performance reduced due to heat". No pauseTracking().
+ * - CRITICAL    → Pause tracking entirely (covers PowerManager CRITICAL/EMERGENCY/SHUTDOWN).
+ * - NORMAL/None → Resume normal operation (with a 30s gradual FPS ramp).
  *
  * On API < 29 (before PowerManager thermal status API), polling is skipped
  * and the monitor reports THERMAL_NONE always.
@@ -28,8 +31,9 @@ import timber.log.Timber
 enum class ThermalStatus {
     NONE,       // No thermal stress
     LIGHT,      // Light throttling
-    MODERATE,   // Moderate throttling - reduce FPS
-    SEVERE,     // Severe throttling - pause tracking
+    MODERATE,   // Moderate throttling - reduce FPS to 1/2
+    SEVERE,     // Severe throttling - dynamic frame skipping at 5 FPS (no pause)
+    CRITICAL,   // Critical/Emergency/Shutdown - pause tracking entirely
 }
 
 class ThermalMonitor(
@@ -81,10 +85,12 @@ class ThermalMonitor(
             PowerManager.THERMAL_STATUS_NONE -> ThermalStatus.NONE
             PowerManager.THERMAL_STATUS_LIGHT -> ThermalStatus.LIGHT
             PowerManager.THERMAL_STATUS_MODERATE -> ThermalStatus.MODERATE
-            PowerManager.THERMAL_STATUS_SEVERE,
+            // Bug #5 Fix: SEVERE is now a "frame-skip" state, not a pause state.
+            PowerManager.THERMAL_STATUS_SEVERE -> ThermalStatus.SEVERE
+            // Critical / Emergency / Shutdown — pause tracking entirely to protect device.
             PowerManager.THERMAL_STATUS_CRITICAL,
             PowerManager.THERMAL_STATUS_EMERGENCY,
-            PowerManager.THERMAL_STATUS_SHUTDOWN -> ThermalStatus.SEVERE
+            PowerManager.THERMAL_STATUS_SHUTDOWN -> ThermalStatus.CRITICAL
             else -> ThermalStatus.NONE
         }
 

@@ -236,8 +236,12 @@ class GestureEngineTest {
             engine.gestureEvents.toList(events)
         }
 
-        // Feed hand frame while DISARMED
-        engine.processFrame(openPalmInput(100L))
+        // Feed a FIST frame while DISARMED. FIST does not trigger arming (only
+        // OPEN_PALM does), so the state remains DISARMED after this frame.
+        // (Bug #18 Fix: CursorMoved is now emitted during ARMING to pre-warm the
+        // smoother, so we can't use OPEN_PALM here — it would transition to ARMING
+        // and emit a CursorMoved.)
+        engine.processFrame(fistInput(100L))
 
         assertFalse(
             "CursorMoved should not be emitted when DISARMED",

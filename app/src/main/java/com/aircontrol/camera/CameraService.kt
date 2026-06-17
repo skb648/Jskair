@@ -496,20 +496,31 @@ class CameraService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // Bug #5 Fix: When isThermal is true but isPaused is false, we are in the
+        // SEVERE state (5 FPS frame-skip). The user is NOT paused and may still want
+        // to pause manually — so we show the Pause button. The notification text
+        // reads "Performance reduced due to heat".
+        // When isThermal is true AND isPaused is true, we are in the CRITICAL state
+        // (full pause). The user should not be able to resume manually (cooling
+        // resumes automatically) — so no Resume button. The text reads
+        // "Paused — device is overheating".
         val pauseResumeAction = if (isPaused && !isThermal) {
+            // User-initiated pause — show Resume
             NotificationCompat.Action.Builder(
                 null,
                 getString(R.string.notification_action_resume),
                 createCommandPendingIntent(COMMAND_RESUME),
             ).build()
         } else if (!isPaused) {
+            // Active or SEVERE (frame-skip) — show Pause
             NotificationCompat.Action.Builder(
                 null,
                 getString(R.string.notification_action_pause),
                 createCommandPendingIntent(COMMAND_PAUSE),
             ).build()
         } else {
-            null // No resume action for thermal pause — it auto-resumes
+            // CRITICAL thermal pause — no Resume action (auto-resumes on cooling)
+            null
         }
 
         val stopAction = NotificationCompat.Action.Builder(
@@ -519,6 +530,9 @@ class CameraService : LifecycleService() {
         ).build()
 
         val contentText = when {
+            // CRITICAL thermal pause (isThermal + isPaused)
+            isThermal && isPaused -> getString(R.string.notification_text_thermal_critical)
+            // SEVERE thermal frame-skip (isThermal + !isPaused) — tracking still alive
             isThermal -> getString(R.string.notification_text_thermal)
             isPaused -> getString(R.string.notification_text_paused)
             else -> getString(R.string.notification_text_active)
@@ -638,7 +652,8 @@ class CameraService : LifecycleService() {
         when (status) {
             com.aircontrol.tracking.ThermalStatus.NONE -> {
                 if (thermalPaused) {
-                    Timber.i("Thermal recovered — resuming tracking")
+                    // Recovering from CRITICAL pause — resume tracking.
+                    Timber.i("Thermal recovered (CRITICAL → NONE) — resuming tracking")
                     thermalPaused = false
                     if (!userPaused) {
                         resumeTracking()
@@ -655,52 +670,114 @@ class CameraService : LifecycleService() {
                         adaptiveFpsController.updateConfiguredFps(configuredFps)
                         postRecoveryFps = 0
                     }
+                } else if (postRecoveryFps > 0 || isCurrentlyThermalThrottled()) {
+                    // Recovering from SEVERE/MODERATE/LIGHT throttle (no pause) — just restore FPS.
+                    Timber.i("Thermal recovered (→ NONE) — restoring FPS to %d", configuredFps)
+                    thermalRecoveryJob?.cancel()
+                    thermalRecoveryJob = null
+                    postRecoveryFps = 0
+                    adaptiveFpsController.updateConfiguredFps(configuredFps)
                 }
             }
             com.aircontrol.tracking.ThermalStatus.LIGHT -> {
                 if (thermalPaused) {
-                    Timber.i("Thermal recovered — resuming tracking")
+                    // Recovering from CRITICAL pause — same recovery path as NONE.
+                    Timber.i("Thermal recovering (CRITICAL → LIGHT) — resuming tracking")
                     thermalPaused = false
                     if (!userPaused) {
                         resumeTracking()
                         updateNotification(isPaused = false)
                     }
-                    // Resume at reduced FPS with gradual recovery
                     postRecoveryFps = (configuredFps / 2).coerceAtLeast(5)
                     adaptiveFpsController.updateConfiguredFps(postRecoveryFps)
 
-                    // Gradually restore FPS over 30 seconds
                     thermalRecoveryJob?.cancel()
                     thermalRecoveryJob = serviceScope.launch {
                         delay(30_000L)
                         adaptiveFpsController.updateConfiguredFps(configuredFps)
                         postRecoveryFps = 0
                     }
-                } else if (postRecoveryFps <= 0) {
-                    // Proactive throttling at LIGHT status
+                } else if (postRecoveryFps <= 0 && !isCurrentlySevereThrottled()) {
+                    // Proactive throttling at LIGHT status (only if not already throttled harder)
                     val throttledFps = (configuredFps * 2 / 3).coerceIn(8, 20)
                     Timber.i("Thermal LIGHT — reducing FPS to %d", throttledFps)
                     adaptiveFpsController.updateConfiguredFps(throttledFps)
                 }
+                // If currently SEVERE-throttled (5 FPS), LIGHT is an improvement —
+                // let the SEVERE branch's notification/text stand; FPS will be
+                // restored when we reach NONE.
             }
             com.aircontrol.tracking.ThermalStatus.MODERATE -> {
+                if (thermalPaused) {
+                    // Still in CRITICAL-pause path; don't stack MODERATE throttling on top.
+                    return
+                }
                 val throttledFps = (configuredFps / 2).coerceIn(5, 15)
                 Timber.i("Thermal MODERATE — reducing FPS to %d", throttledFps)
+                thermalRecoveryJob?.cancel()
+                thermalRecoveryJob = null
+                postRecoveryFps = 0
                 adaptiveFpsController.updateConfiguredFps(throttledFps)
+                // Update notification in case we're transitioning out of SEVERE state
+                updateNotification(isPaused = false, isThermal = false)
             }
             com.aircontrol.tracking.ThermalStatus.SEVERE -> {
-                Timber.w("Thermal SEVERE — pausing tracking")
+                // Bug #5 Fix: Dynamic frame skipping at 5 FPS — DO NOT pause tracking.
+                // Tracking stays alive so the user can still interact (just at lower
+                // responsiveness). The notification reads "Performance reduced due to
+                // heat" and the user can still manually pause if they want.
+                if (thermalPaused) {
+                    // Recovering from CRITICAL → SEVERE. Resume tracking at 5 FPS.
+                    Timber.i("Thermal improving (CRITICAL → SEVERE) — resuming at 5 FPS")
+                    thermalPaused = false
+                    if (!userPaused) {
+                        resumeTracking()
+                    }
+                }
+                Timber.w("Thermal SEVERE — dynamic frame skipping at 5 FPS (no pause)")
+                thermalRecoveryJob?.cancel()
+                thermalRecoveryJob = null
+                postRecoveryFps = 0
+                adaptiveFpsController.updateConfiguredFps(5)
+                // Show the "Performance reduced" notification (NOT a pause notification):
+                //   isPaused = false  → tracking still alive, user can manually pause
+                //   isThermal = true  → text reads "Performance reduced due to heat"
+                updateNotification(isPaused = false, isThermal = true)
+            }
+            com.aircontrol.tracking.ThermalStatus.CRITICAL -> {
+                // Critical/Emergency/Shutdown — pause tracking entirely to protect the device.
+                Timber.w("Thermal CRITICAL — pausing tracking")
                 thermalPaused = true
                 thermalRecoveryJob?.cancel()
                 thermalRecoveryJob = null
                 postRecoveryFps = 0
                 if (!isPaused.get()) {
                     pauseTracking()
+                    // isPaused=true + isThermal=true → "Paused — device is overheating",
+                    // no Resume button (auto-resumes on cooling).
                     updateNotification(isPaused = true, isThermal = true)
                 }
             }
         }
     }
+
+    /**
+     * Returns true if the current adaptive FPS is below the configured FPS due to
+     * SEVERE-level thermal throttling (5 FPS). Used by the NONE/LIGHT recovery
+     * branches to decide whether to restore the configured FPS.
+     */
+    private fun isCurrentlySevereThrottled(): Boolean =
+        !thermalPaused &&
+            adaptiveFpsController.currentFps.value <= 5 &&
+            adaptiveFpsController.currentFps.value < configuredFps
+
+    /**
+     * Returns true if the current adaptive FPS is below the configured FPS for any
+     * thermal reason (MODERATE or SEVERE). Used by the NONE recovery branch.
+     */
+    private fun isCurrentlyThermalThrottled(): Boolean =
+        !thermalPaused &&
+            adaptiveFpsController.currentFps.value < configuredFps
 
     private fun createCommandPendingIntent(command: Int): PendingIntent {
         val intent = Intent(this@CameraService, CameraService::class.java).apply {

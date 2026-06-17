@@ -18,7 +18,8 @@ import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.model.GestureMapEntry
 import com.aircontrol.data.model.HandPreference
 import com.aircontrol.data.model.UserPreferences
-import kotlinx.coroutines.GlobalScope
+import com.aircontrol.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -55,6 +56,14 @@ private object PreferencesKeys {
 @Singleton
 class SettingsRepositoryImpl @Inject constructor(
     private val dataStore: DataStore<Preferences>,
+    // Bug #22 Fix: Application-scoped CoroutineScope for background DataStore
+    // write-back operations (e.g., persisting gesture-map migrations). Previously
+    // this used GlobalScope.launch, which is an unstructured, leak-prone pattern —
+    // GlobalScope coroutines have no parent job and can outlive the application's
+    // meaningful lifecycle, making them impossible to cancel or test reliably.
+    // The injected scope is provided by AppModule with a SupervisorJob +
+    // Dispatchers.Default, so it's properly structured and cancellable.
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) : SettingsRepository {
 
     override val userPreferences: Flow<UserPreferences> = dataStore.data
@@ -316,10 +325,15 @@ class SettingsRepositoryImpl @Inject constructor(
             val migrated = GestureMapConfig.migrate(config)
             // Persist the migration result if it differs from the input
             if (migrated != config) {
-                // Schedule a write-back — we can't call dataStore.edit here (not a suspend
-                // function and we're inside a Flow map), so we launch it asynchronously.
-                // Using a detached coroutine scope to avoid relying on viewModelScope.
-                GlobalScope.launch {
+                // Bug #22 Fix: Use the injected applicationScope instead of
+                // GlobalScope. We can't call dataStore.edit here (not a suspend
+                // function and we're inside a Flow map), so we launch it
+                // asynchronously on the application-scoped coroutine. This is
+                // properly structured concurrency — the scope is owned by Hilt's
+                // SingletonComponent and cancelled when the application is
+                // destroyed, preventing the memory leaks and untestable behavior
+                // that GlobalScope caused.
+                applicationScope.launch {
                     dataStore.edit { prefs ->
                         prefs[PreferencesKeys.GESTURE_MAP_JSON] = serializeGestureMap(migrated)
                         prefs[PreferencesKeys.GESTURE_MAP_VERSION] = migrated.schemaVersion
@@ -440,6 +454,18 @@ class SettingsRepositoryImpl @Inject constructor(
                             })
                         }
                     }
+                    is CustomGestureTrigger.LandmarkTemplateTrigger -> {
+                        // Bug: Custom Gestures Not Triggering Fix — Serialize the
+                        // landmark template (gestureId, name, normalizedDistances).
+                        JSONObject().apply {
+                            put("type", "landmark_template")
+                            put("templateGestureId", gesture.triggerPose.template.gestureId)
+                            put("templateName", gesture.triggerPose.template.name)
+                            put("templateDistances", JSONArray().apply {
+                                gesture.triggerPose.template.normalizedDistances.forEach { put(it) }
+                            })
+                        }
+                    }
                 }
                 put("trigger", triggerObj)
             }
@@ -472,6 +498,21 @@ class SettingsRepositoryImpl @Inject constructor(
                             CustomGestureTrigger.FingerCount(
                                 extendedFingers = triggerObj.getInt("extendedFingers"),
                                 whichFingers = fingers,
+                            )
+                        }
+                        "landmark_template" -> {
+                            // Bug: Custom Gestures Not Triggering Fix — Deserialize
+                            // the landmark template.
+                            val templateGestureId = triggerObj.getString("templateGestureId")
+                            val templateName = triggerObj.getString("templateName")
+                            val distancesArray = triggerObj.getJSONArray("templateDistances")
+                            val distances = (0 until distancesArray.length()).map { distancesArray.getDouble(it).toFloat() }
+                            CustomGestureTrigger.LandmarkTemplateTrigger(
+                                template = com.aircontrol.gesture.model.LandmarkTemplate(
+                                    gestureId = templateGestureId,
+                                    name = templateName,
+                                    normalizedDistances = distances,
+                                ),
                             )
                         }
                         else -> null

@@ -150,6 +150,7 @@ class DebugViewModel @Inject constructor(
                     is GestureEvent.Swipe -> "Swipe ${event.direction}"
                     is GestureEvent.Pinch -> "Pinch ${event.phase}"
                     is GestureEvent.PoseTriggered -> event.pose.name
+                    is GestureEvent.CustomGestureTriggered -> "Custom: ${event.gestureName}"
                     is GestureEvent.Armed -> "ARMED"
                     is GestureEvent.Disarmed -> "DISARMED"
                     is GestureEvent.CursorMoved -> "" // Don't update label

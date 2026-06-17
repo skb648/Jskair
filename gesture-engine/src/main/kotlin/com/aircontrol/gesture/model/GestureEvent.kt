@@ -37,6 +37,26 @@ sealed class GestureEvent {
         val timestampMs: Long,
     ) : GestureEvent()
 
+    /**
+     * Bug: Custom Gestures Not Triggering Fix — A user-defined custom gesture
+     * (matched via landmark template comparison) was confirmed.
+     *
+     * Unlike [PoseTriggered] (which carries a hardcoded [Pose] enum value),
+     * this event carries a [gestureId] string that the ActionDispatcher uses
+     * to look up the user's configured [com.aircontrol.accessibility.GestureAction].
+     *
+     * @param gestureId The unique ID of the matched [LandmarkTemplate]. This
+     *   corresponds to the `id` field of the user's
+     *   [com.aircontrol.data.model.CustomGesture].
+     * @param gestureName Human-readable name (for logging/debugging only).
+     * @param timestampMs Frame timestamp when the match was confirmed.
+     */
+    data class CustomGestureTriggered(
+        val gestureId: String,
+        val gestureName: String,
+        val timestampMs: Long,
+    ) : GestureEvent()
+
     /** The state machine transitioned to ARMED. */
     data class Armed(
         val timestampMs: Long,
@@ -47,10 +67,29 @@ sealed class GestureEvent {
         val timestampMs: Long,
     ) : GestureEvent()
 
-    /** The cursor moved to a new normalized position. */
+    /**
+     * The cursor moved to a new normalized position.
+     *
+     * @param x Normalized X coordinate [0,1] of the cursor (post-engine-processing).
+     * @param y Normalized Y coordinate [0,1] of the cursor.
+     * @param timestampMs Frame timestamp in milliseconds.
+     * @param isSilent Bug #18 Fix: When true, this CursorMoved event is emitted
+     *   during the ARMING state to pre-warm the CursorSmoother. Consumers should
+     *   feed the coordinates to the smoother but SKIP showing/updating the visual
+     *   cursor overlay — the cursor should remain hidden until the engine reaches
+     *   the ARMED state. This prevents a visible "jump" when the cursor first
+     *   appears (the smoother has already converged on a stable position).
+     * @param minCutoffHint Bug #13 Fix: Optional adaptive smoothing hint. When
+     *   non-null, the consumer should call `cursorSmoother.updateParams(minCutoff
+     *   = minCutoffHint, beta = currentBeta)` to temporarily increase smoothing
+     *   for low-confidence frames near camera boundaries. When null, the consumer
+     *   should restore the smoother's default parameters.
+     */
     data class CursorMoved(
         val x: Float,
         val y: Float,
         val timestampMs: Long,
+        val isSilent: Boolean = false,
+        val minCutoffHint: Float? = null,
     ) : GestureEvent()
 }

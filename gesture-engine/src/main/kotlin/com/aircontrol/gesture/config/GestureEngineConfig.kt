@@ -96,12 +96,45 @@ data class GestureEngineConfig(
     fun scaledSwipeVelocity(): Float =
         swipeVelocityThreshold / (0.5f + sensitivity / 100f)
 
-    fun scaledPinchDistanceRatio(): Float =
-        pinchDistanceRatio / (0.5f + sensitivity / 100f)
+    /**
+     * Bug #11 Fix: Pinch distance ratio with a SEPARATE, gentler scaling formula
+     * and a strict minimum floor.
+     *
+     * Why a separate formula:
+     *   The global formula `base / (0.5 + sensitivity/100)` is too aggressive for
+     *   pinch — at sensitivity=100 it would yield 0.35 / 1.5 = 0.233, which is so
+     *   sensitive that a resting hand with fingers naturally curled can register
+     *   as a continuous pinch (and trigger accidental clicks/drags).
+     *
+     *   Pinch uses a gentler curve: `base / (0.7 + sensitivity / 200)`.
+     *     - At sensitivity=50:  0.35 / (0.7 + 0.25) = 0.35 / 0.95 ≈ 0.368 (≈ base)
+     *     - At sensitivity=100: 0.35 / (0.7 + 0.50) = 0.35 / 1.20 ≈ 0.292 (only ~16% easier)
+     *     - At sensitivity=0:   0.35 / (0.7 + 0.00) = 0.35 / 0.70 = 0.500 (harder)
+     *
+     * Strict minimum floor of 0.25:
+     *   Even at maximum sensitivity, the pinch distance ratio never drops below
+     *   0.25. This prevents resting hands (where thumb and index naturally sit
+     *   close together) from triggering clicks. A ratio of 0.25 means the
+     *   thumb-index distance must be less than 25% of the wrist-to-middle-MCP
+     *   distance — a deliberate finger-touch, not a relaxed hand.
+     */
+    fun scaledPinchDistanceRatio(): Float {
+        val scaled = pinchDistanceRatio / (0.7f + sensitivity / 200f)
+        return scaled.coerceAtLeast(MIN_PINCH_DISTANCE_RATIO)
+    }
 
     fun scaledFingerExtensionThreshold(): Float =
         fingerExtensionThreshold / (0.5f + sensitivity / 100f)
 
     fun scaledThumbExtensionAngleDeg(): Float =
         thumbExtensionAngleDeg / (0.5f + sensitivity / 100f)
+
+    companion object {
+        // Bug #11 Fix: Absolute minimum pinch distance ratio. Even at sensitivity=100,
+        // the pinch threshold never drops below this value. Prevents resting hands
+        // (where thumb and index naturally curl close together) from triggering
+        // accidental clicks. 0.25 = thumb-index distance must be < 25% of hand size
+        // (wrist-to-middle-MCP distance) to count as a pinch.
+        const val MIN_PINCH_DISTANCE_RATIO = 0.25f
+    }
 }

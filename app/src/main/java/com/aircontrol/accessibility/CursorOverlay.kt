@@ -253,6 +253,12 @@ class CursorOverlay(
     companion object {
         private const val CURSOR_SIZE_DP = 24
         private const val RING_SIZE_DP = 18
-        private const val DEAD_ZONE_DP = 1 // Minimal dead zone for sub-pixel jitter only
+        // (Bug #6 & #7 Fix): Increased from 1dp to 3dp to eliminate the remaining
+        // hand tremor that survives the (now consolidated) One Euro Filter in
+        // CursorSmoother. With the landmark-level filter removed from HandTracker,
+        // this overlay-side dead zone is the second of two anti-jitter stages;
+        // 3dp (~3px on mdpi, ~9px on xxxhdpi) is small enough to be invisible
+        // during intentional motion but large enough to suppress micro-tremor.
+        private const val DEAD_ZONE_DP = 3
     }
 }

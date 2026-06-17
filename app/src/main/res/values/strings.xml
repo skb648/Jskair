@@ -153,8 +153,9 @@
     <string name="notification_action_pause">Pause</string>
     <string name="notification_action_resume">Resume</string>
     <string name="notification_action_stop">Stop</string>
-    <string name="notification_text_thermal">Paused — device is overheating</string>
-    <string name="thermal_severe_notification">AirControl paused: Device is overheating. Tracking will resume when it cools down.</string>
+    <string name="notification_text_thermal">Performance reduced due to heat</string>
+    <string name="notification_text_thermal_critical">Paused — device is overheating</string>
+    <string name="thermal_severe_notification">AirControl performance reduced: Device is overheating. Frame rate lowered to 5 FPS; tracking stays active.</string>
     <string name="boot_resume_notification_title">Resume AirControl tracking</string>
     <string name="boot_resume_notification_text">Android requires you to open AirControl before camera tracking can resume after reboot.</string>
 

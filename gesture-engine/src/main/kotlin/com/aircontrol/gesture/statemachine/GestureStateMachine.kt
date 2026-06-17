@@ -18,6 +18,14 @@ import kotlin.jvm.Volatile
  *   Any → DISARMED: No hand for [GestureEngineConfig.autoDisarmTimeoutMs]
  *   ARMED → DISARMED: FIST held for [GestureEngineConfig.fistDisarmDurationMs]
  *
+ * RAPID-FIRE HOLD PREVENTION (Bug #3 Fix):
+ *   When a pose triggers EXECUTING, its value is recorded in [lastExecutedPose].
+ *   After COOLDOWN → ARMED, the same held pose will NOT trigger EXECUTING again —
+ *   the user must first return to a neutral pose (NONE or POINTING) to clear
+ *   [lastExecutedPose]. This prevents a single held VICTORY/THUMB_UP/etc. from
+ *   firing the same action on every cooldown cycle (e.g., volume ramping to max
+ *   in one continuous hold).
+ *
  * Every state transition is tracked and can be observed for UI rendering.
  */
 class GestureStateMachine(private val config: GestureEngineConfig) {
@@ -43,6 +51,18 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
     private var fistHoldStartMs: Long = 0L
     @Volatile
     private var fistWasHeld: Boolean = false
+
+    /**
+     * Last pose that triggered EXECUTING. Used to prevent rapid-fire repeats
+     * when the user holds the same pose across the COOLDOWN boundary.
+     *
+     * Reset to [Pose.NONE] only when a neutral pose (NONE or POINTING) is
+     * observed in ARMED state, indicating the user has relaxed their hand.
+     *
+     * (Bug #3 Fix)
+     */
+    @Volatile
+    private var lastExecutedPose: Pose = Pose.NONE
 
     /** Arming progress: 0.0 to 1.0, where 1.0 means fully armed. */
     @Volatile
@@ -135,6 +155,11 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
      * - Trigger gesture execution on non-trivial poses
      * - Disarm on FIST held for 1s
      * - Auto-disarm on no hand timeout
+     *
+     * RAPID-FIRE HOLD PREVENTION (Bug #3 Fix):
+     * If the current actionable pose matches [lastExecutedPose], execution is
+     * skipped. The user must first return to a neutral pose (NONE or POINTING)
+     * to clear [lastExecutedPose] before the same pose can trigger again.
      */
     private fun processArmed(pose: Pose, handDetected: Boolean, timestampMs: Long) {
         // Auto-disarm on no hand
@@ -161,11 +186,31 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
             resetFistTracking()
         }
 
+        // Bug #3 Fix: Clear the rapid-fire lock when the user returns to a neutral
+        // pose. NONE and POINTING are never actionable, so seeing them in ARMED
+        // state means the user has relaxed their hand. (The pose has already been
+        // debounced by StaticPoseClassifier, so a single-frame observation is
+        // trustworthy as "sustained".)
+        if (pose == Pose.NONE || pose == Pose.POINTING) {
+            if (lastExecutedPose != Pose.NONE) {
+                lastExecutedPose = Pose.NONE
+            }
+        }
+
         // Execute gesture on any actionable pose (not NONE, OPEN_PALM, FIST, PINCH, or POINTING)
         // PINCH has its own lifecycle (START/MOVE/END) managed by GestureEngine.processPinch()
         // POINTING is a neutral preparatory pose that maps to NONE action
-        if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST && pose != Pose.PINCH && pose != Pose.POINTING) {
+        //
+        // Bug #3 Fix: Skip execution if this pose is the same as the one that just
+        // fired (i.e., the user is holding the pose across the COOLDOWN boundary).
+        // The lock is cleared above when the user returns to a neutral pose.
+        if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST &&
+            pose != Pose.PINCH && pose != Pose.POINTING &&
+            pose != lastExecutedPose
+        ) {
             resetFistTracking()
+            // Record the pose so it can't fire again until a neutral pose clears the lock.
+            lastExecutedPose = pose
             transitionTo(GestureEngineState.EXECUTING)
         }
     }
@@ -214,6 +259,7 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         handCurrentlyDetected = false
         fistHoldStartMs = 0L
         fistWasHeld = false
+        lastExecutedPose = Pose.NONE
         armingProgress = 0f
     }
 }

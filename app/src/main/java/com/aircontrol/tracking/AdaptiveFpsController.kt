@@ -20,7 +20,15 @@ class AdaptiveFpsController(
     private val scope: CoroutineScope,
     configuredFps: Int = DEFAULT_FPS,
     private val scanFps: Int = SCAN_FPS,
-    private val noHandTimeoutMs: Long = 3000L,
+    // Bug #24 Fix: Increased from 3000ms (3s) to 5000ms (5s). The old 3-second
+    // timeout was too aggressive — natural hand absences like reaching for a
+    // drink, scratching an itch, or briefly dropping the hand below the camera
+    // would instantly drop the system to the laggy 5 FPS scan mode. When the
+    // hand returned, the scan-mode detection latency (up to 200ms at 5fps) made
+    // the system feel unresponsive. 5 seconds is long enough to tolerate natural
+    // micro-absences without dropping to scan mode, while still saving battery
+    // during genuine "walked away from the phone" scenarios.
+    private val noHandTimeoutMs: Long = 5000L,
 ) {
     @Volatile
     private var configuredFps: Int = configuredFps.coerceToSupportedFps()

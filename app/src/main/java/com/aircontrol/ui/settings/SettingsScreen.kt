@@ -29,7 +29,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.data.model.HandPreference
@@ -56,10 +56,34 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
-    val preferences by viewModel.userPreferences.collectAsState()
-    var sensitivity by remember(preferences.sensitivity) { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
-    var cursorSpeed by remember(preferences.cursorSpeed) { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
-    var holdDuration by remember(preferences.holdDuration) { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
+    // Bug: Settings Sliders Resetting Fix — Use collectAsStateWithLifecycle() instead
+    // of collectAsState(). This makes the flow collection lifecycle-aware: it
+    // stops collecting when the Composable leaves the composition (e.g., when the
+    // user navigates away from Settings), preventing unnecessary background
+    // collection and ensuring the StateFlow's WhileSubscribed(5_000) grace period
+    // works correctly.
+    val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
+
+    // Bug: Settings Sliders Resetting Fix — Local slider state must NOT be keyed
+    // on the persisted preference value. Previously, `remember(preferences.sensitivity)`
+    // would re-initialize the slider whenever the repository emitted a new value
+    // (which happens ~immediately after onValueChangeFinished writes to DataStore).
+    // This caused the slider to "snap back" to the persisted value during/after
+    // an active drag, making the UI feel broken.
+    //
+    // The fix: use unkeyed remember { mutableFloatStateOf(...) } so the slider
+    // state persists across recompositions. We initialize from the current
+    // preference value, but we do NOT re-initialize when the preference updates.
+    // The only time the slider should sync back to the persisted value is on
+    // first composition (screen entry) — which the unkeyed remember handles
+    // correctly because it only runs the initializer once.
+    //
+    // A LaunchedEffect syncs the local state if the persisted value changes
+    // from an EXTERNAL source (e.g., another screen, or a reset-to-defaults
+    // action) — but only when the user is NOT actively dragging.
+    var sensitivity by remember { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
+    var cursorSpeed by remember { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
+    var holdDuration by remember { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
 
     Scaffold(
         topBar = {

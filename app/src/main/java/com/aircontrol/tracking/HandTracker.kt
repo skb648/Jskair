@@ -56,10 +56,16 @@ class HandTrackerImpl @Inject constructor(
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
-    private val handFrameFilter = HandFrameFilter(
-        minCutoff = 0.8f,
-        beta = 0.08f,
-    )
+    // NOTE (Bug #6 & #7 Fix): The landmark-level OneEuroFilter previously applied
+    // here has been REMOVED. Raw MediaPipe landmarks are now emitted directly.
+    //
+    // Rationale: Filtering landmarks here AND filtering the cursor position again
+    // in CursorSmoother caused double-filtering latency — every frame was smoothed
+    // twice, adding visible lag between hand motion and cursor motion. By emitting
+    // raw landmarks, gesture detection sees the unfiltered signal (better for
+    // detecting fast swipes and pinch state changes), and the single cursor-side
+    // filter in CursorSmoother (minCutoff=0.45, beta=0.15) is the only smoothing
+    // applied to the visible cursor.
 
     // Timestamp mapping: MediaPipe uses monotonic timestamps in microseconds.
     // We track the offset between our system time (ms) and MediaPipe time (us).
@@ -157,7 +163,6 @@ class HandTrackerImpl @Inject constructor(
         handLandmarker = null
         _isInitialized = false
         isClosing = false
-        handFrameFilter.reset()
         synchronized(timestampLock) { pendingFrameTimestampsMs.clear() }
         Timber.i("HandTracker closed")
     }
@@ -222,6 +227,10 @@ class HandTrackerImpl @Inject constructor(
             0f
         }
 
+        // Emit raw landmarks directly — no landmark-level filtering here.
+        // (Bug #6 & #7 Fix: removed handFrameFilter to eliminate double-filtering
+        // latency. The cursor path now uses a single, more aggressive filter in
+        // CursorSmoother.)
         val rawFrame = HandFrame(
             landmarks = landmark3DList,
             handedness = handednessCategory,
@@ -229,10 +238,7 @@ class HandTrackerImpl @Inject constructor(
             confidence = confidence,
         )
 
-        // Apply One Euro Filter for jitter reduction
-        val filteredFrame = handFrameFilter.filter(rawFrame)
-
-        _handFrames.tryEmit(filteredFrame)
+        _handFrames.tryEmit(rawFrame)
     }
 
     /**

@@ -5,6 +5,7 @@ import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gesture.model.HandInput
+import com.aircontrol.gesture.model.LandmarkTemplate
 import com.aircontrol.gesture.model.Pose
 import com.aircontrol.tracking.HandFrame
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,18 @@ interface GestureDetector : AutoCloseable {
     val armingProgress: StateFlow<Float>
     fun processHandFrame(frame: HandFrame)
     fun updateSensitivity(sensitivity: Int)
+
+    /**
+     * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
+     * user-defined landmark templates that the engine matches against live
+     * hand frames. The templates are converted from app-layer
+     * [com.aircontrol.data.model.CustomGesture] objects by the caller.
+     *
+     * Safe to call from any thread. The templates are applied atomically on
+     * the next frame.
+     */
+    fun updateCustomTemplates(templates: List<LandmarkTemplate>)
+
     fun reset()
 
     override fun close() {
@@ -99,6 +112,16 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         engineEventsJob?.cancel()
         collectEngineEvents()
         resetStateFlows()
+    }
+
+    /**
+     * Bug: Custom Gestures Not Triggering Fix — Delegates to the engine's
+     * [GestureEngine.updateCustomTemplates]. The templates are forwarded as-is
+     * (they're already converted from app-layer CustomGesture objects by the
+     * caller in GestureControlAccessibilityService).
+     */
+    override fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
+        engine.updateCustomTemplates(templates)
     }
 
     override fun reset() {
