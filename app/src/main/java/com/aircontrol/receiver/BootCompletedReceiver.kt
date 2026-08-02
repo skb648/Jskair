@@ -97,13 +97,29 @@ class BootCompletedReceiver : BroadcastReceiver() {
                 NotificationChannel(
                     CameraService.CHANNEL_ID,
                     context.getString(R.string.notification_channel_name),
-                    NotificationManager.IMPORTANCE_LOW,
+                    // H-02 Fix: Use DEFAULT importance instead of LOW for boot recovery
+                    // Users who enabled "Start on Boot" expect to be notified audibly
+                    // that they need to open the app to resume tracking.
+                    NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply {
                     description = context.getString(R.string.notification_channel_description)
                     setShowBadge(false)
+                    // Enable vibration and sound for boot recovery notification
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 300, 200, 300)
                 },
             )
         }
+
+        // H-02 Fix: Add direct "Resume Tracking" action button
+        val resumeIntent = PendingIntent.getService(
+            context,
+            BOOT_RESUME_ACTION_REQUEST_CODE,
+            Intent(context, CameraService::class.java).apply {
+                action = CameraService.ACTION_START
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
         val contentIntent = PendingIntent.getActivity(
             context,
@@ -114,21 +130,32 @@ class BootCompletedReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // H-02 Fix: Improved notification with action button and better UX
         val notification = NotificationCompat.Builder(context, CameraService.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_tracking_notification)
             .setContentTitle(context.getString(R.string.boot_resume_notification_title))
             .setContentText(context.getString(R.string.boot_resume_notification_text))
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(context.getString(R.string.boot_resume_notification_text_extended))
+            )
             .setContentIntent(contentIntent)
+            .addAction(
+                R.drawable.ic_tracking_notification,
+                context.getString(R.string.boot_resume_action_button),
+                resumeIntent,
+            )
             .setAutoCancel(true)
-            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
 
         NotificationManagerCompat.from(context).notify(BOOT_RESUME_NOTIFICATION_ID, notification)
-        Timber.i("Posted boot resume notification instead of starting camera foreground service")
+        Timber.i("Posted boot resume notification with action button")
     }
 
     companion object {
         private const val BOOT_RESUME_NOTIFICATION_ID = 1002
         private const val BOOT_RESUME_REQUEST_CODE = 2002
+        private const val BOOT_RESUME_ACTION_REQUEST_CODE = 2003
     }
 }

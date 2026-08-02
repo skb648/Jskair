@@ -23,6 +23,8 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val permissionsManager: PermissionsManager,
+    // M-01 Fix: Use centralized CameraServiceManager instead of duplicated start/stop logic
+    private val serviceManager: com.aircontrol.service.CameraServiceManager,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -40,12 +42,12 @@ class SettingsViewModel @Inject constructor(
             if (enabled && !perms.allGranted) {
                 Timber.w("Cannot enable gestures from settings: required permissions missing")
                 settingsRepository.updateGesturesEnabled(false)
-                stopTrackingService()
+                serviceManager.stopTracking()
                 return@launch
             }
 
             settingsRepository.updateGesturesEnabled(enabled)
-            if (enabled) startTrackingService() else stopTrackingService()
+            if (enabled) serviceManager.startTracking() else serviceManager.stopTracking()
         }
     }
 
@@ -106,28 +108,6 @@ class SettingsViewModel @Inject constructor(
     fun updateStatusPillEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.updateStatusPillEnabled(enabled)
-        }
-    }
-
-    private fun startTrackingService() {
-        runCatching {
-            val intent = Intent(appContext, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
-            }
-            ContextCompat.startForegroundService(appContext, intent)
-        }.onFailure { error ->
-            Timber.e(error, "Failed to start CameraService from settings")
-        }
-    }
-
-    private fun stopTrackingService() {
-        runCatching {
-            val intent = Intent(appContext, CameraService::class.java).apply {
-                action = CameraService.ACTION_STOP
-            }
-            appContext.startService(intent)
-        }.onFailure { error ->
-            Timber.e(error, "Failed to stop CameraService from settings")
         }
     }
 }

@@ -3,7 +3,7 @@ package com.aircontrol.gesture.statemachine
 import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.Pose
-import kotlin.jvm.Volatile
+import kotlin.concurrent.Volatile
 
 /**
  * State machine governing the gesture engine's armed/disarmed lifecycle.
@@ -28,7 +28,10 @@ import kotlin.jvm.Volatile
  *
  * Every state transition is tracked and can be observed for UI rendering.
  */
-class GestureStateMachine(private val config: GestureEngineConfig) {
+class GestureStateMachine(config: GestureEngineConfig) {
+    // H-06 Fix: Make config mutable so sensitivity can be updated without recreating the engine
+    @Volatile
+    private var config: GestureEngineConfig = config
 
     /** Current state of the machine. */
     @Volatile
@@ -261,5 +264,13 @@ class GestureStateMachine(private val config: GestureEngineConfig) {
         fistWasHeld = false
         lastExecutedPose = Pose.NONE
         armingProgress = 0f
+    }
+
+    /**
+     * H-06 Fix: Update the config (e.g., sensitivity change) without recreating the state machine.
+     * This preserves the current state and timing, avoiding disruption of in-progress gestures.
+     */
+    fun updateConfig(newConfig: GestureEngineConfig) {
+        this.config = newConfig
     }
 }

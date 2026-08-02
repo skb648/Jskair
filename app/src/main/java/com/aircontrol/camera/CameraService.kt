@@ -36,7 +36,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.jvm.Volatile
+import kotlin.concurrent.Volatile
 
 /**
  * Foreground service that manages the camera and feeds frames to HandTracker.
@@ -69,11 +69,44 @@ class CameraService : LifecycleService() {
         const val COMMAND_PAUSE = 3
         const val COMMAND_RESUME = 4
 
+        // M-02 Fix: Use AtomicReference<State> instead of separate static StateFlows.
+        // The old approach had two separate MutableStateFlows that could get out of sync
+        // (e.g., isRunning=true but isPaused=false when the service was actually paused).
+        // Now we use a single atomic state object that is always consistent.
+        //
+        // The StateFlows are exposed for backward compatibility with existing consumers
+        // (HomeViewModel, SettingsViewModel, etc.) but are derived from the single source
+        // of truth, eliminating the sync issue.
+        private data class ServiceState(
+            val isRunning: Boolean = false,
+            val isPaused: Boolean = false,
+        )
+
+        private val _state = java.util.concurrent.atomic.AtomicReference(ServiceState())
+        
+        // Expose as derived StateFlows for backward compatibility
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
 
         private val _isPaused = MutableStateFlow(false)
         val isPaused: StateFlow<Boolean> = _isPaused
+
+        /**
+         * Atomically update the service state and propagate to the derived StateFlows.
+         * This ensures isRunning and isPaused are always in sync.
+         */
+        private fun updateState(isRunning: Boolean, isPaused: Boolean) {
+            _state.set(ServiceState(isRunning, isPaused))
+            _isRunning.value = isRunning
+            _isPaused.value = isPaused
+        }
+
+        /**
+         * Reset the static state. Call this in tests or when the service is recreated.
+         */
+        fun resetState() {
+            updateState(isRunning = false, isPaused = false)
+        }
     }
 
     private lateinit var handTracker: HandTracker
@@ -124,18 +157,28 @@ class CameraService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
 
-        // Manual Hilt injection (LifecycleService is not supported by @AndroidEntryPoint)
-        (applicationContext as? com.aircontrol.AirControlApp)?.let { app ->
+        // H-03 Fix: Robust DI injection with explicit error handling.
+        // If injection fails, stop the service immediately rather than continuing
+        // with uninitialized dependencies (which would cause silent failures).
+        val app = applicationContext as? com.aircontrol.AirControlApp
+        if (app == null) {
+            Timber.e("Application is not AirControlApp — cannot inject dependencies. Stopping service.")
+            stopSelf()
+            return
+        }
+
+        try {
             val entryPoint = com.aircontrol.di.AccessibilityServiceEntryPoint.getFromApplication(app)
             handTracker = entryPoint.handTracker()
             settingsRepository = entryPoint.settingsRepository()
-        } ?: run {
-            Timber.e("Application is not AirControlApp — cannot inject HandTracker")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to inject dependencies via Hilt EntryPoint. Stopping service.")
+            stopSelf()
+            return
         }
 
         // Reset companion object state in case service was recreated
-        _isRunning.value = false
-        _isPaused.value = false
+        resetState()
 
         adaptiveFpsController = AdaptiveFpsController(
             scope = serviceScope,
@@ -168,7 +211,7 @@ class CameraService : LifecycleService() {
             }
             else -> {
                 // Launch from notification or system - ensure we're running
-                if (!_isRunning.value) {
+                if (!_state.get().isRunning) {
                     startTracking()
                 }
             }
@@ -203,7 +246,7 @@ class CameraService : LifecycleService() {
     }
 
     private fun startTracking() {
-        if (_isRunning.value) return
+        if (_state.get().isRunning) return
 
         if (!::handTracker.isInitialized || !::settingsRepository.isInitialized) {
             Timber.e("CameraService dependencies not initialized; cannot start tracking")
@@ -223,7 +266,7 @@ class CameraService : LifecycleService() {
             return
         }
 
-        _isPaused.value = false
+        updateState(isRunning = _state.get().isRunning, isPaused = false)
 
         handTracker.initialize()
 
@@ -258,9 +301,12 @@ class CameraService : LifecycleService() {
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
                         .build()
 
-                    // ImageAnalysis for hand tracking
+                    // UT-01 Fix: Increased resolution from 640x480 to 1280x720 (HD)
+                    // Higher resolution dramatically improves hand tracking accuracy,
+                    // especially for small hands, users far from camera, or edge-of-frame detection
+                    // Falls back to closest lower resolution if HD not available
                     val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
                         .build()
                     val analysis = ImageAnalysis.Builder()
                         .setResolutionSelector(resolutionSelector)
@@ -281,7 +327,7 @@ class CameraService : LifecycleService() {
                     )
                 }
 
-                _isRunning.value = true
+                updateState(isRunning = true, isPaused = _state.get().isPaused)
                 Timber.i("Camera started successfully")
 
                 // Start frame watchdog after camera binding succeeds
@@ -317,8 +363,8 @@ class CameraService : LifecycleService() {
 
         handTracker.close()
         adaptiveFpsController.reset()
-        _isRunning.value = false
-        _isPaused.value = false
+        // M-02 Fix: Use updateState to atomically reset both flags
+        updateState(isRunning = false, isPaused = false)
         thermalPaused = false
         userPaused = false
         postRecoveryFps = 0
@@ -337,7 +383,7 @@ class CameraService : LifecycleService() {
     private fun pauseTracking() {
         userPaused = true
         isPaused.set(true)
-        _isPaused.value = true
+        updateState(isRunning = _state.get().isRunning, isPaused = true)
         imageAnalysis?.clearAnalyzer()
         updateNotification(isPaused = true)
         Timber.i("Tracking paused")
@@ -346,7 +392,7 @@ class CameraService : LifecycleService() {
     private fun resumeTracking() {
         userPaused = false
         isPaused.set(false)
-        _isPaused.value = false
+        updateState(isRunning = _state.get().isRunning, isPaused = false)
         lastFrameTimestampMs = 0L // Reset to allow immediate frame processing
         imageAnalysis?.setAnalyzer(analysisExecutor) { imageProxy ->
             processImageFrame(imageProxy)
@@ -564,7 +610,7 @@ class CameraService : LifecycleService() {
         frameWatchdogJob = serviceScope.launch {
             while (true) {
                 delay(5000L)
-                if (_isRunning.value && !isPaused.get()) {
+                if (_state.get().isRunning && !isPaused.get()) {
                     val elapsed = System.currentTimeMillis() - lastProcessedFrameMs
                     if (lastProcessedFrameMs > 0L && elapsed > 5000L) {
                         Timber.w("No frames for %d ms — restarting camera", elapsed)

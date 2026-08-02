@@ -4,8 +4,8 @@
 image: eclipse-temurin:17-jdk
 
 variables:
-  ANDROID_COMPILE_SDK: "35"
-  ANDROID_BUILD_TOOLS: "35.0.1"
+  ANDROID_COMPILE_SDK: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
   ANDROID_SDK_TOOLS: "11076708"
   GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
   ANDROID_HOME: "/opt/android-sdk"
@@ -46,10 +46,11 @@ ktlint:
     reports:
       android_lint: app/build/reports/lint-results-debug.xml
     expire_in: 1 week
-  only:
-    - merge_requests
-    - main
-    - develop
+  # M-07 Fix: Replace deprecated 'only:' with modern 'rules:' syntax
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
 
 # ========== Unit Tests ==========
 
@@ -76,9 +77,10 @@ assemble-release:
     paths:
       - app/build/outputs/apk/release/app-release.apk
     expire_in: 1 month
-  only:
-    - main
-    - tags
+  # M-07 Fix: Replace deprecated 'only:' with modern 'rules:' syntax
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
 
 assemble-debug:
   stage: build
@@ -103,7 +105,9 @@ instrumented-tests:
     reports:
       junit: app/build/reports/androidTests/connected/flavors/debug/*.xml
     expire_in: 1 week
-  only:
-    - main
-    - merge_requests
-  when: manual  # Run manually to avoid burning emulator credits on every commit
+  # M-07 Fix: Replace deprecated 'only:' with modern 'rules:' syntax
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual  # Run manually to avoid burning emulator credits on every commit
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual

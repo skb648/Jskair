@@ -187,11 +187,14 @@ class GestureStateMachineTest {
     }
 
     @Test
-    fun `ARMED triggers execution on PINCH`() {
+    fun `ARMED does NOT trigger execution on PINCH — pinch has its own lifecycle`() {
+        // PINCH is managed by GestureEngine.processPinch() with START/MOVE/END phases,
+        // not by the state machine. The state machine explicitly excludes PINCH from
+        // triggering EXECUTING transitions.
         armSystem()
         val result = stateMachine.process(Pose.PINCH, true, 2000L)
-        assertEquals(GestureEngineState.EXECUTING, stateMachine.currentState)
-        assertTrue(result.shouldExecute)
+        assertEquals(GestureEngineState.ARMED, stateMachine.currentState)
+        assertFalse(result.shouldExecute)
     }
 
     @Test

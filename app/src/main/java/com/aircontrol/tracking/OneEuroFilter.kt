@@ -116,75 +116,16 @@ class OneEuroFilter(
     }
 }
 
-/**
- * Applies One Euro Filter independently to x, y, z components of Landmark3D.
- */
-class LandmarkFilter(
-    minCutoff: Float = 0.8f,
-    beta: Float = 0.08f,
-) {
-    private val xFilter = OneEuroFilter(minCutoff, beta)
-    private val yFilter = OneEuroFilter(minCutoff, beta)
-    private val zFilter = OneEuroFilter(minCutoff, beta)
-
-    fun filter(landmark: Landmark3D, timestampMs: Long): Landmark3D {
-        return Landmark3D(
-            x = xFilter.filter(landmark.x, timestampMs),
-            y = yFilter.filter(landmark.y, timestampMs),
-            z = zFilter.filter(landmark.z, timestampMs),
-        )
-    }
-
-    fun reset() {
-        xFilter.reset()
-        yFilter.reset()
-        zFilter.reset()
-    }
-
-    fun updateParams(minCutoff: Float, beta: Float) {
-        xFilter.updateParams(minCutoff, beta)
-        yFilter.updateParams(minCutoff, beta)
-        zFilter.updateParams(minCutoff, beta)
-    }
-}
-
-/**
- * Manages filtering of all 21 hand landmarks.
- * Creates 21 independent LandmarkFilters and applies them per-frame.
- *
- * CRITICAL: Filter tuning for Iron Man-level smoothness:
- * - minCutoff=0.8: Aggressive jitter suppression when hand is still
- * - beta=0.08: Fast release when hand moves (no perceptible lag)
- * - These values are calibrated for 24fps camera input with ~16ms frame gaps
- */
-class HandFrameFilter(
-    minCutoff: Float = 0.8f,
-    beta: Float = 0.08f,
-) {
-    private val landmarkFilters = List(21) { LandmarkFilter(minCutoff, beta) }
-
-    fun filter(frame: HandFrame): HandFrame {
-        if (frame.landmarks.isEmpty()) return frame
-
-        val filteredLandmarks = frame.landmarks.mapIndexed { index, landmark ->
-            if (index < landmarkFilters.size) {
-                landmarkFilters[index].filter(landmark, frame.timestampMs)
-            } else {
-                landmark
-            }
-        }
-
-        return frame.copy(landmarks = filteredLandmarks)
-    }
-
-    fun reset() {
-        landmarkFilters.forEach { it.reset() }
-    }
-
-    fun updateParams(minCutoff: Float, beta: Float) {
-        landmarkFilters.forEach { it.updateParams(minCutoff, beta) }
-    }
-}
+// H-07 Fix: Removed LandmarkFilter and HandFrameFilter classes.
+// These were previously used for landmark-level One Euro filtering in HandTracker,
+// but that filtering was removed to eliminate double-filtering latency.
+// The landmark-level filter was adding ~2 frames of lag on top of the cursor-side
+// CursorSmoother filter, making the cursor feel sluggish.
+//
+// If you need landmark-level filtering in the future, restore these classes from
+// git history (commit before H-07 fix) or implement a lighter-weight approach.
+//
+// The OneEuroFilter class itself is kept because CursorSmoother uses it.
 
 /**
  * Dedicated cursor-level smoothing filter.

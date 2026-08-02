@@ -22,6 +22,10 @@ tasks.test {
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     kotlinOptions {
-        allWarningsAsErrors = false
+        // L-03 Fix: Enable warnings-as-errors for the pure-Kotlin gesture-engine module.
+        // This catches issues early in the most critical part of the codebase.
+        // The app module keeps this disabled because Android/Compose generates
+        // many unavoidable warnings from the framework itself.
+        allWarningsAsErrors = true
     }
 }

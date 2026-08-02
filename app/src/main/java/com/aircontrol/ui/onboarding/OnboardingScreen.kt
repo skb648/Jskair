@@ -75,7 +75,7 @@ fun OnboardingScreen(
 ) {
     val permissionStates by viewModel.permissionStates.collectAsState()
     val currentStep by viewModel.currentStep.collectAsState()
-    val pagerState = rememberPagerState(initialPage = currentStep, pageCount = { 4 })
+    val pagerState = rememberPagerState(initialPage = currentStep, pageCount = { 5 })
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -138,30 +138,35 @@ fun OnboardingScreen(
                                 viewModel.permissionsManager.requestOverlayPermission(),
                             )
                         },
+                    )
+                    // UU-01 Fix: Added gesture tutorial page
+                    4 -> GestureTutorialStep(
                         onGetStarted = {
                             viewModel.completeOnboarding()
                             onGetStarted()
                         },
-                        allPreviousGranted = permissionStates.cameraGranted &&
-                            permissionStates.accessibilityGranted,
+                        allPermissionsGranted = permissionStates.cameraGranted &&
+                            permissionStates.accessibilityGranted &&
+                            permissionStates.overlayGranted,
                     )
                 }
             }
         }
 
         PageIndicator(
-            pageCount = 4,
+            pageCount = 5,
             currentPage = pagerState.currentPage,
             modifier = Modifier.padding(vertical = Dimens.paddingMedium),
         )
 
         NavigationControls(
             currentPage = pagerState.currentPage,
-            pageCount = 4,
+            pageCount = 5,
             canProceed = when (pagerState.currentPage) {
                 1 -> permissionStates.cameraGranted
                 2 -> permissionStates.accessibilityGranted
                 3 -> permissionStates.overlayGranted
+                4 -> true // Tutorial page - always allow to proceed
                 else -> true
             },
             onPrevious = {
@@ -170,7 +175,7 @@ fun OnboardingScreen(
                 }
             },
             onNext = {
-                if (pagerState.currentPage < 3) {
+                if (pagerState.currentPage < 4) {
                     scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
                 }
             },
@@ -367,8 +372,6 @@ private fun AccessibilityPermissionStep(
 private fun OverlayPermissionStep(
     isGranted: Boolean,
     onOpenSettings: () -> Unit,
-    onGetStarted: () -> Unit,
-    allPreviousGranted: Boolean,
 ) {
     val context = LocalContext.current
 
@@ -796,6 +799,217 @@ private fun OverlayIllustration(isGranted: Boolean) {
                     center = Offset(centerX, centerY),
                     radius = 70f * olScale,
                 ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun GestureTutorialStep(
+    onGetStarted: () -> Unit,
+    allPermissionsGranted: Boolean,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        GestureTutorialIllustration()
+
+        Spacer(modifier = Modifier.height(Dimens.spacing32))
+
+        Text(
+            text = stringResource(R.string.onboarding_tutorial_title),
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+
+        Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+        Text(
+            text = stringResource(R.string.onboarding_tutorial_subtitle),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(modifier = Modifier.height(Dimens.spacing24))
+
+        // Gesture list
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Dimens.spacing12),
+        ) {
+            GestureItem(
+                icon = "✋",
+                title = stringResource(R.string.onboarding_tutorial_open_palm_title),
+                description = stringResource(R.string.onboarding_tutorial_open_palm_desc),
+            )
+            GestureItem(
+                icon = "👌",
+                title = stringResource(R.string.onboarding_tutorial_pinch_title),
+                description = stringResource(R.string.onboarding_tutorial_pinch_desc),
+            )
+            GestureItem(
+                icon = "👋",
+                title = stringResource(R.string.onboarding_tutorial_swipe_title),
+                description = stringResource(R.string.onboarding_tutorial_swipe_desc),
+            )
+            GestureItem(
+                icon = "✌️",
+                title = stringResource(R.string.onboarding_tutorial_victory_title),
+                description = stringResource(R.string.onboarding_tutorial_victory_desc),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(Dimens.spacing32))
+
+        if (!allPermissionsGranted) {
+            Text(
+                text = stringResource(R.string.onboarding_tutorial_permissions_required),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+        }
+
+        Button(
+            onClick = onGetStarted,
+            enabled = allPermissionsGranted,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(Dimens.buttonCornerRadius),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = ElectricBlue,
+            ),
+        ) {
+            Text(text = stringResource(R.string.onboarding_get_started))
+        }
+    }
+}
+
+@Composable
+private fun GestureItem(
+    icon: String,
+    title: String,
+    description: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(Dimens.cardCornerRadius),
+            )
+            .padding(Dimens.paddingMedium),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = icon,
+            style = MaterialTheme.typography.headlineMedium,
+        )
+        Spacer(modifier = Modifier.width(Dimens.spacing12))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GestureTutorialIllustration() {
+    val infiniteTransition = rememberInfiniteTransition(label = "tutorial")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulse_scale",
+    )
+
+    Canvas(
+        modifier = Modifier
+            .size(Dimens.onboardingIllustrationSize)
+            .graphicsLayer {
+                scaleX = pulseScale
+                scaleY = pulseScale
+            }
+    ) {
+        val centerX = size.width / 2f
+        val centerY = size.height / 2f
+        val scale = size.minDimension / 240f
+
+        // Outer glow
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    ElectricBlue.copy(alpha = 0.2f),
+                    Color.Transparent,
+                ),
+                center = Offset(centerX, centerY),
+                radius = size.minDimension / 2f,
+            ),
+        )
+
+        // Hand outline (open palm)
+        val palmPath = Path().apply {
+            moveTo(centerX, centerY - 40f * scale)
+            lineTo(centerX - 30f * scale, centerY - 40f * scale)
+            lineTo(centerX - 35f * scale, centerY + 10f * scale)
+            lineTo(centerX + 35f * scale, centerY + 10f * scale)
+            lineTo(centerX + 30f * scale, centerY - 40f * scale)
+            close()
+        }
+
+        drawPath(
+            path = palmPath,
+            color = ElectricBlue,
+            style = Stroke(width = 3f * scale, cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
+
+        // Fingers
+        val fingerOffsets = listOf(-20f, -8f, 4f, 16f)
+        fingerOffsets.forEach { xOffset ->
+            drawLine(
+                color = ElectricBlue,
+                start = Offset(centerX + xOffset * scale, centerY - 40f * scale),
+                end = Offset(centerX + (xOffset - 2f) * scale, centerY - 70f * scale),
+                strokeWidth = 3f * scale,
+                cap = StrokeCap.Round,
+            )
+        }
+
+        // Thumb
+        drawLine(
+            color = ElectricBlue,
+            start = Offset(centerX - 30f * scale, centerY - 25f * scale),
+            end = Offset(centerX - 48f * scale, centerY - 50f * scale),
+            strokeWidth = 3f * scale,
+            cap = StrokeCap.Round,
+        )
+
+        // Gesture indicators (small circles around hand)
+        val indicatorRadius = 4f * scale
+        val indicatorDistance = 80f * scale
+        val angles = listOf(0f, 90f, 180f, 270f)
+        
+        angles.forEach { angle ->
+            val radians = Math.toRadians(angle.toDouble())
+            val x = centerX + indicatorDistance * Math.cos(radians).toFloat()
+            val y = centerY + indicatorDistance * Math.sin(radians).toFloat()
+            
+            drawCircle(
+                color = SuccessGreen,
+                radius = indicatorRadius,
+                center = Offset(x, y),
             )
         }
     }

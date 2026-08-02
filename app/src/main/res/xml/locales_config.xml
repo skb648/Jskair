@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  L-08 Fix: Per-app language configuration for Android 13+ (API 33+).
+  
+  This allows users to select AirControl's language independently from the
+  system language via Settings > System > Languages & input > App languages.
+  
+  Currently only English is supported, but this file can be extended when
+  translations are added.
+  
+  See: https://developer.android.com/guide/topics/resources/app-languages
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+</locale-config>

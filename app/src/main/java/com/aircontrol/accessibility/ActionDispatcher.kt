@@ -71,19 +71,43 @@ enum class GestureAction {
  *
  * Every action includes a haptic tick (if enabled in settings).
  * dispatchGesture cancellation is handled with one retry.
+ * 
+ * UG-09/UG-10 Fix: Added onGestureDispatched callback for visual feedback
  */
 @Singleton
 class ActionDispatcher @Inject constructor(
     private val settingsRepository: SettingsRepository,
 ) {
+    // UG-09/UG-10 Fix: Callback for visual feedback when gesture is successfully dispatched
+    // The accessibility service will listen to this and trigger cursor pulse animation
+    var onGestureDispatched: ((String) -> Unit)? = null
+    // H-08 Fix: Use a scope that can be properly cancelled when the service is destroyed.
+    // Previously this scope was never cancelled, which meant the three collect blocks
+    // in init{} could never be cleaned up. As a @Singleton this is technically fine
+    // (lives for app lifetime), but for testability and proper resource management,
+    // we track the jobs so they can be cancelled in detachService().
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val settingsJobs = mutableListOf<Job>()
 
     private var accessibilityServiceRef = WeakReference<AccessibilityService>(null)
     private var audioManager: AudioManager? = null
     private var currentPreferences = UserPreferences()
 
-    /** Current gesture-to-action mapping. Defaults are sensible. */
-    private val gestureMap = ConcurrentHashMap<String, GestureAction>()
+    /** 
+     * Current gesture-to-action mapping. Uses AtomicReference for thread-safe
+     * atomic swaps to prevent race conditions during settings updates.
+     * 
+     * Bug C-04 Fix: Previously used clear() + putAll() which created a brief
+     * window where the map was empty, causing dropped gestures during settings
+     * changes. Now uses atomic reference swap for zero-downtime updates.
+     */
+    private val gestureMapRef = java.util.concurrent.atomic.AtomicReference(
+        ConcurrentHashMap<String, GestureAction>()
+    )
+    
+    /** Convenience accessor for the current gesture map. */
+    private val gestureMap: ConcurrentHashMap<String, GestureAction>
+        get() = gestureMapRef.get()
 
     private val MAX_RETRIES = 1
 
@@ -118,40 +142,45 @@ class ActionDispatcher @Inject constructor(
     private var keyguardReceiverContext: android.content.Context? = null
 
     init {
-        // Populate default gesture mappings
-        gestureMap[KEY_SWIPE_LEFT] = GestureAction.SCROLL_LEFT
-        gestureMap[KEY_SWIPE_RIGHT] = GestureAction.SCROLL_RIGHT
-        gestureMap[KEY_SWIPE_UP] = GestureAction.SCROLL_UP
-        gestureMap[KEY_SWIPE_DOWN] = GestureAction.SCROLL_DOWN
-        gestureMap[KEY_POSE_PINCH] = GestureAction.TAP
-        gestureMap[KEY_POSE_POINTING] = GestureAction.NONE
-        gestureMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
-        gestureMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
-        gestureMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
-        gestureMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
+        // Populate default gesture mappings atomically
+        val defaultMap = ConcurrentHashMap<String, GestureAction>()
+        defaultMap[KEY_SWIPE_LEFT] = GestureAction.SCROLL_LEFT
+        defaultMap[KEY_SWIPE_RIGHT] = GestureAction.SCROLL_RIGHT
+        defaultMap[KEY_SWIPE_UP] = GestureAction.SCROLL_UP
+        defaultMap[KEY_SWIPE_DOWN] = GestureAction.SCROLL_DOWN
+        defaultMap[KEY_POSE_PINCH] = GestureAction.TAP
+        defaultMap[KEY_POSE_POINTING] = GestureAction.NONE
+        defaultMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
+        defaultMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
+        defaultMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
+        defaultMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
+        gestureMapRef.set(defaultMap)
 
-        scope.launch {
+        // H-08 Fix: Track settings collection jobs so they can be cancelled in detachService()
+        settingsJobs.add(scope.launch {
             settingsRepository.userPreferences.collect { prefs ->
                 currentPreferences = prefs
             }
-        }
-        scope.launch {
+        })
+        settingsJobs.add(scope.launch {
             settingsRepository.gestureMapConfig.collect { config ->
+                // Bug C-04 Fix: Atomic swap — build the new map completely before
+                // swapping the reference. This prevents the race condition where
+                // dispatch() could read an empty map during clear()+putAll().
                 val newMap = ConcurrentHashMap<String, GestureAction>()
                 config.entries.forEach { entry ->
                     newMap[entry.key] = entry.action
                 }
-                gestureMap.clear()
-                gestureMap.putAll(newMap)
-                Timber.d("Loaded %d gesture mappings from settings", gestureMap.size)
+                gestureMapRef.set(newMap)
+                Timber.d("Loaded %d gesture mappings from settings", newMap.size)
             }
-        }
-        scope.launch {
+        })
+        settingsJobs.add(scope.launch {
             settingsRepository.customGestures.collect { gestures ->
                 customGesturesList = gestures.filter { it.isEnabled }
                 Timber.d("Loaded %d custom gestures", customGesturesList.size)
             }
-        }
+        })
     }
 
     /**
@@ -180,6 +209,9 @@ class ActionDispatcher @Inject constructor(
         lastDragStroke = null
         dragGraceFrameCount = 0
         dragLockUntilMs = 0L
+        // H-08 Fix: Cancel settings collection jobs to prevent leaks
+        settingsJobs.forEach { it.cancel() }
+        settingsJobs.clear()
         Timber.i("ActionDispatcher detached from accessibility service")
     }
 
@@ -247,6 +279,11 @@ class ActionDispatcher @Inject constructor(
 
         if (dispatched) {
             performHapticFeedback()
+            // UG-09/UG-10 Fix: Trigger visual feedback callback
+            // The accessibility service uses this to pulse the cursor, giving users
+            // clear confirmation that their gesture was recognized and executed
+            val actionName = getActionName(event)
+            onGestureDispatched?.invoke(actionName)
         }
 
         return dispatched
@@ -1081,4 +1118,17 @@ class ActionDispatcher @Inject constructor(
     private var dragStartY = 0f
     private var dragCurrentX = 0f
     private var dragCurrentY = 0f
+
+    // UG-09/UG-10 Fix: Helper method to get action name for visual feedback
+    private fun getActionName(event: GestureEvent): String {
+        return when (event) {
+            is GestureEvent.Swipe -> "swipe_${event.direction.name.lowercase()}"
+            is GestureEvent.PoseTriggered -> "pose_${event.pose.name.lowercase()}"
+            is GestureEvent.Pinch -> "pinch_${event.phase.name.lowercase()}"
+            is GestureEvent.CustomGestureTriggered -> "custom_${event.gestureName}"
+            is GestureEvent.CursorMoved -> "cursor_moved"
+            is GestureEvent.Armed -> "armed"
+            is GestureEvent.Disarmed -> "disarmed"
+        }
+    }
 }

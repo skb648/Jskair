@@ -24,7 +24,7 @@ import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.jvm.Volatile
+import kotlin.concurrent.Volatile
 
 /**
  * Bridges the Android tracking layer (HandFrame from MediaPipe)
@@ -103,15 +103,14 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         val clamped = sensitivity.coerceIn(0, 100)
         if (clamped == currentSensitivity) return
 
-        Timber.d("Updating gesture engine sensitivity to %d", clamped)
+        Timber.i("Updating gesture engine sensitivity to %d (without engine recreation)", clamped)
         currentSensitivity = clamped
-        val oldEngine = engineRef.get()
-        val newEngine = GestureEngine(GestureEngineConfig(sensitivity = clamped))
-        engineRef.set(newEngine)
-        oldEngine.stop()
-        engineEventsJob?.cancel()
-        collectEngineEvents()
-        resetStateFlows()
+        // H-06 Fix: Update sensitivity without recreating the entire engine.
+        // The old code destroyed and recreated GestureEngine on every slider change,
+        // which lost all in-progress gesture state (arming, pinch, swipe detection).
+        // Now we call the engine's updateSensitivity() which propagates the new config
+        // to all detectors while preserving state.
+        engine.updateSensitivity(clamped)
     }
 
     /**

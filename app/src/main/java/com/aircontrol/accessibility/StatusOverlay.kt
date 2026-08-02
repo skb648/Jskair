@@ -54,9 +54,13 @@ class StatusOverlay(
     // Cached drawable (M-14)
     private val cachedDrawable = android.graphics.drawable.GradientDrawable()
 
-    // Screen dimensions for bounds clamping (M-15)
-    private val screenWidth = context.resources.displayMetrics.widthPixels
-    private val screenHeight = context.resources.displayMetrics.heightPixels
+    // Screen dimensions for bounds clamping (C-06 Fix: make dynamic for foldables/rotation)
+    // Previously cached at construction time, which broke on foldable devices or
+    // when display scaling changed. Now refreshed on each layout pass.
+    private val screenWidth: Int
+        get() = context.resources.displayMetrics.widthPixels
+    private val screenHeight: Int
+        get() = context.resources.displayMetrics.heightPixels
 
     // Current state
     private var currentState = GestureEngineState.DISARMED

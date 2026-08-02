@@ -4,6 +4,10 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
+    // H-01 Fix: Firebase Crashlytics for production crash reporting and ANR detection
+    // Setup: Place google-services.json in app/ directory (download from Firebase Console)
+    id("com.google.gms.google-services") version "4.4.2"
+    id("com.google.firebase.crashlytics") version "3.0.2"
 }
 
 // Auto versionCode from git commit count
@@ -35,6 +39,12 @@ android {
             )
             // Enable R8 full mode (already default, but explicit)
             isCrunchPngs = true
+            // Sign release builds if keystore is configured
+            // Falls back to unsigned if env vars are not set (local dev)
+            val keystoreFile = file("release.keystore")
+            if (keystoreFile.exists() && !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -44,15 +54,18 @@ android {
         }
     }
 
-    // TODO: Configure release signing before production release
-    // signingConfigs {
-    //     create("release") {
-    //         storeFile = file("release.keystore")
-    //         storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-    //         keyAlias = "release"
-    //         keyPassword = System.getenv("KEY_PASSWORD") ?: ""
-    //     }
-    // }
+    signingConfigs {
+        create("release") {
+            // Release signing is configured via environment variables for CI/CD.
+            // For local builds, place release.keystore in the app/ directory and
+            // set KEYSTORE_PASSWORD and KEY_PASSWORD environment variables.
+            // See docs/release-signing.md for setup instructions.
+            storeFile = file("release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("KEY_ALIAS") ?: "release"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -78,6 +91,8 @@ android {
     lint {
         warningsAsErrors = false
         abortOnError = true
+        // L-04 Fix: Use lint baseline to track known issues
+        baseline = file("lint-baseline.xml")
         // Disable lint checks that are not critical for build success
         disable += setOf(
             "MissingTranslation",
@@ -122,7 +137,8 @@ dependencies {
 
     // Hilt
     implementation(libs.hilt.android)
-    add("ksp", libs.hilt.android.compiler)
+    // L-06 Fix: Use proper KSP configuration instead of string-based add("ksp", ...)
+    ksp(libs.hilt.android.compiler)
     implementation(libs.hilt.navigation.compose)
 
     // CameraX
@@ -150,6 +166,12 @@ dependencies {
     // Timber
     implementation(libs.timber)
 
+    // H-01 Fix: Firebase Crashlytics for production crash reporting and ANR detection
+    // This provides visibility into real-world crashes that users experience
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-crashlytics-ktx")
+    implementation("com.google.firebase:firebase-analytics-ktx")
+
     // LeakCanary - debug only (auto-configures via ContentProvider)
     debugImplementation(libs.leakcanary.android)
 
@@ -166,7 +188,8 @@ dependencies {
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
-    add("kspAndroidTest", libs.hilt.android.compiler)
+    // L-06 Fix: Use proper KSP configuration instead of string-based add("kspAndroidTest", ...)
+    kspAndroidTest(libs.hilt.android.compiler)
     androidTestImplementation(libs.kotlinx.coroutines.test)
 
     // Compose test manifest for debug

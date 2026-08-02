@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.jvm.Volatile
+import kotlin.concurrent.Volatile
 
 /**
  * Wraps MediaPipe HandLandmarker for real-time hand tracking.

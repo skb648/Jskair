@@ -40,6 +40,8 @@ data class SessionStats(
 class HomeViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val permissionsManager: PermissionsManager,
+    // M-01 Fix: Use centralized CameraServiceManager instead of duplicated start/stop logic
+    private val serviceManager: com.aircontrol.service.CameraServiceManager,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -116,10 +118,14 @@ class HomeViewModel @Inject constructor(
     fun toggleGestures(enabled: Boolean) {
         Timber.d("Toggling gestures: %s", enabled)
         viewModelScope.launch {
-            // Refresh permissions and wait for the combine flow to propagate
+            // Refresh permissions and read the updated state
             permissionsManager.refreshAllPermissions()
-            // Give the combine flow a chance to propagate the updated values
-            kotlinx.coroutines.delay(100)
+            // L-05 Fix: Replace fragile delay(100) with yield() to allow flow
+            // propagation. The old code used delay(100) which was unreliable.
+            // yield() ensures the coroutine dispatcher processes pending work
+            // (including StateFlow updates from refreshAllPermissions) before
+            // we read the value. This is deterministic, not time-based.
+            kotlinx.coroutines.yield()
             val perms = permissionStates.value
 
             if (enabled && !perms.allGranted) {
@@ -130,15 +136,15 @@ class HomeViewModel @Inject constructor(
                     perms.overlayGranted,
                 )
                 settingsRepository.updateGesturesEnabled(false)
-                stopTrackingService()
+                serviceManager.stopTracking()
                 return@launch
             }
 
             settingsRepository.updateGesturesEnabled(enabled)
             if (enabled) {
-                startTrackingService()
+                serviceManager.startTracking()
             } else {
-                stopTrackingService()
+                serviceManager.stopTracking()
             }
         }
     }
@@ -186,39 +192,13 @@ class HomeViewModel @Inject constructor(
             val prefs = userPreferences.value
             val perms = permissionStates.value
             when {
-                prefs.gesturesEnabled && perms.allGranted && !CameraService.isRunning.value -> {
-                    startTrackingService()
+                prefs.gesturesEnabled && perms.allGranted && !serviceManager.isTracking() -> {
+                    serviceManager.startTracking()
                 }
-                (!prefs.gesturesEnabled || !perms.allGranted) && CameraService.isRunning.value -> {
-                    stopTrackingService()
+                (!prefs.gesturesEnabled || !perms.allGranted) && serviceManager.isTracking() -> {
+                    serviceManager.stopTracking()
                 }
             }
-        }
-    }
-
-    // TODO: Extract duplicated service start/stop logic into a shared ServiceManager
-    private fun startTrackingService() {
-        runCatching {
-            val intent = Intent(appContext, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
-            }
-            ContextCompat.startForegroundService(appContext, intent)
-            Timber.i("Camera tracking foreground service start requested")
-        }.onFailure { error ->
-            Timber.e(error, "Failed to start CameraService")
-        }
-    }
-
-    // TODO: Extract duplicated service start/stop logic into a shared ServiceManager
-    private fun stopTrackingService() {
-        runCatching {
-            val intent = Intent(appContext, CameraService::class.java).apply {
-                action = CameraService.ACTION_STOP
-            }
-            appContext.startService(intent)
-            Timber.i("Camera tracking foreground service stop requested")
-        }.onFailure { error ->
-            Timber.e(error, "Failed to stop CameraService")
         }
     }
 }

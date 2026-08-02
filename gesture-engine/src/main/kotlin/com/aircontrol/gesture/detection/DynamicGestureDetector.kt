@@ -4,6 +4,7 @@ import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.HandInput
 import com.aircontrol.gesture.model.LandmarkIndex
 import com.aircontrol.gesture.model.SwipeDirection
+import kotlin.concurrent.Volatile
 
 /**
  * Detects dynamic swipe gestures from a sliding window of hand positions.
@@ -28,7 +29,10 @@ import com.aircontrol.gesture.model.SwipeDirection
  *
  * All thresholds scale with the sensitivity setting (0–100).
  */
-class DynamicGestureDetector(private val config: GestureEngineConfig) {
+class DynamicGestureDetector(config: GestureEngineConfig) {
+    // H-06 Fix: Make config mutable so sensitivity can be updated without recreating the engine
+    @Volatile
+    private var config: GestureEngineConfig = config
 
     /**
      * A single tracked position sample.
@@ -427,5 +431,13 @@ class DynamicGestureDetector(private val config: GestureEngineConfig) {
         // vertical motion, but two or more reversals indicate genuine erratic
         // drift, not a deliberate swipe.
         private const val MAX_VERTICAL_REVERSALS = 1
+    }
+
+    /**
+     * H-06 Fix: Update the config (e.g., sensitivity change) without recreating the detector.
+     * This preserves the current sliding window state and avoids losing in-progress swipe detection.
+     */
+    fun updateConfig(newConfig: GestureEngineConfig) {
+        this.config = newConfig
     }
 }

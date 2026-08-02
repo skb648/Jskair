@@ -22,7 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlin.jvm.Volatile
+import kotlin.concurrent.Volatile
 
 /**
  * Core gesture recognition engine.
@@ -46,15 +46,19 @@ import kotlin.jvm.Volatile
  * ```
  */
 class GestureEngine(
-    private val config: GestureEngineConfig = GestureEngineConfig(),
+    initialConfig: GestureEngineConfig = GestureEngineConfig(),
 ) {
+    // H-06 Fix: Make config mutable so sensitivity can be updated without recreating the engine
+    @Volatile
+    var config: GestureEngineConfig = initialConfig
+        private set
 
     private var scopeJob = SupervisorJob()
     private var scope = CoroutineScope(scopeJob + Dispatchers.Default)
 
-    private val poseClassifier = StaticPoseClassifier(config)
-    private val dynamicDetector = DynamicGestureDetector(config)
-    private val stateMachine = GestureStateMachine(config)
+    private val poseClassifier = StaticPoseClassifier(initialConfig)
+    private val dynamicDetector = DynamicGestureDetector(initialConfig)
+    private val stateMachine = GestureStateMachine(initialConfig)
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
         extraBufferCapacity = 16,
@@ -161,6 +165,24 @@ class GestureEngine(
     }
 
     /**
+     * H-06 Fix: Update the engine configuration (e.g., sensitivity change) without
+     * recreating the entire engine. This preserves all in-progress gesture state
+     * (arming, pinch, swipe detection) and avoids the UX disruption of losing
+     * gesture context when the user adjusts the sensitivity slider.
+     *
+     * @param sensitivity New sensitivity value (0-100)
+     */
+    fun updateSensitivity(sensitivity: Int) {
+        val newConfig = GestureEngineConfig(sensitivity = sensitivity)
+        config = newConfig
+        poseClassifier.updateConfig(newConfig)
+        dynamicDetector.updateConfig(newConfig)
+        stateMachine.updateConfig(newConfig)
+        // Note: No logging here — gesture-engine is a pure Kotlin module with no
+        // Android/Timber dependency. The app-layer GestureDetectorImpl logs this change.
+    }
+
+    /**
      * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
      * user-defined landmark templates that the classifier matches against live
      * hand frames.
@@ -183,36 +205,23 @@ class GestureEngine(
     }
 
     /**
-     * Starts processing hand input frames.
-     * Collects from the provided flow and emits gesture events.
-     * Cancels any previous collection before starting a new one.
+     * L-10 Fix: Removed the unused start(inputFlow: Flow<HandInput>) method.
+     * 
+     * The engine now has a single, clear API: processFrame(input: HandInput).
+     * This eliminates confusion about which method to use and prevents
+     * accidental double-processing if both APIs were somehow called.
+     * 
+     * The app layer (GestureDetectorImpl) calls processFrame() directly from
+     * its own coroutine that collects HandFrame events from HandTracker.
+     * 
+     * If you need flow-based collection in the future, implement it in the
+     * app layer, not in the engine. The engine should remain a pure state
+     * machine with no coroutine lifecycle management.
      */
-    fun start(inputFlow: Flow<HandInput>) {
-        stop() // Cancel any previous collection
-        scopeJob = SupervisorJob()
-        scope = CoroutineScope(scopeJob + Dispatchers.Default)
-        _engineState.value = GestureEngineState.DISARMED
-        wasPinching = false
-        currentPinchPhase = null
-        lastPinchEndMs = 0L
-        lastCustomGestureId = null
-        pinchHysteresisExtensionCount = 0
-        prevWristX = 0.5f
-        prevWristY = 0.5f
-        prevWristTimestampMs = 0L
-        lowConfidenceFrameCount = 0
-        // Restore default debounce in case a previous session raised it.
-        poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames
-        scope.launch {
-            inputFlow.collect { input ->
-                processFrame(input)
-            }
-        }
-    }
 
     /**
      * Processes a single hand input frame synchronously.
-     * Useful for testing or when manual frame processing is preferred.
+     * This is the primary API for feeding hand tracking data to the engine.
      */
     fun processFrame(input: HandInput) {
         val timestampMs = input.timestampMs
@@ -723,22 +732,15 @@ class GestureEngine(
     }
 
     companion object {
-        // Bug #10 Fix: Cooldown after a pinch END before the next pinch START is
-        // accepted. Prevents accidental double-tap glitches where the user's
-        // fingers briefly separate and re-pinch within a few frames, which the
-        // classifier can read as two separate pinches and dispatch two actions.
-        // 300ms is longer than a typical frame-to-frame gap (~33ms at 30fps) but
-        // shorter than an intentional re-pinch.
-        private const val PINCH_COOLDOWN_MS = 300L
+        // UG-01 Fix: Reduced from 300ms to 150ms for faster double-tap recognition
+        // 150ms is still long enough to filter accidental re-pinches (double-tap glitch)
+        // but short enough that intentional double-taps feel responsive
+        private const val PINCH_COOLDOWN_MS = 150L
 
-        // Bug #9 Fix: Duration after a pinch END during which horizontal swipe
-        // detections are suppressed. When the user releases a pinch, their
-        // fingers spread apart rapidly — the DynamicGestureDetector can
-        // misinterpret this finger-spreading motion as a horizontal swipe.
-        // 200ms is long enough to cover the finger-spread transient (typically
-        // 1-3 frames at 30fps) but short enough that an intentional swipe
-        // immediately after a pinch is still detected.
-        private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 200L
+        // UG-02 Fix: Reduced from 200ms to 100ms to allow quick swipes after pinch
+        // 100ms covers the finger-spread transient (1-3 frames at 30fps)
+        // but lets intentional swipes register almost immediately
+        private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 100L
 
         // Bug #13 Fix: Confidence threshold below which a frame is considered
         // "low confidence". MediaPipe's hand-landmarker confidence reflects how

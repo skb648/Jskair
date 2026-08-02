@@ -41,21 +41,30 @@ class MainActivity : ComponentActivity() {
             initial = null,
         )
 
-        if (preferences == null) {
-            // Show loading/splash screen while preferences load
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            return
-        }
-
-        val startDestination = if (preferences!!.onboardingCompleted) {
-            AirControlRoute.Home.route
-        } else {
-            AirControlRoute.Onboarding.route
-        }
-
+        // M-03 Fix: Wrap loading screen in AirControlTheme so users don't see a flash
+        // of the default light theme before the dark theme appears.
         AirControlTheme {
+            if (preferences == null) {
+                // Show loading/splash screen while preferences load
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            color = com.aircontrol.ui.theme.ElectricBlue,
+                        )
+                    }
+                }
+                return
+            }
+
+            val startDestination = if (preferences!!.onboardingCompleted) {
+                AirControlRoute.Home.route
+            } else {
+                AirControlRoute.Onboarding.route
+            }
+
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background,

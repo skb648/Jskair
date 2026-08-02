@@ -78,13 +78,16 @@
 -keep class * extends android.app.Application { *; }
 
 # ---------- Timber ----------
-# In release builds, strip debug logging calls for performance
+# In release builds, strip verbose and debug logging calls for performance.
+# L-09 Fix: Keep info-level logs (i()) for production diagnostics.
+# Previously stripped i() along with d() and v(), which meant we lost
+# informational logs that could help diagnose user-reported issues.
+# Now only d() and v() are stripped; i(), w(), and e() are kept.
 -assumenosideeffects class timber.log.Timber {
     public static *** d(...);
     public static *** v(...);
-    public static *** i(...);
 }
-# Keep error/warning logs for crash debugging
+# Keep error/warning/info logs for crash debugging
 -keep class timber.log.Timber { *; }
 -dontwarn timber.log.**
 

@@ -43,6 +43,14 @@ class AirControlServiceImpl @Inject constructor(
     override val currentGestureLabel: StateFlow<String> = _currentGestureLabel
 
     override suspend fun start() {
+        // H-05 Fix: Prevent conflict with CameraService (the production foreground service).
+        // If CameraService is already running, don't start AirControlService to avoid
+        // double-initializing MediaPipe and causing undefined behavior or crashes.
+        if (com.aircontrol.camera.CameraService.isRunning.value) {
+            Timber.w("CameraService is already running — skipping AirControlService start to avoid conflict")
+            return
+        }
+
         if (_isRunning.get()) {
             Timber.w("AirControl service already running")
             return

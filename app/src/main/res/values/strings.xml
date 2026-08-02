@@ -75,6 +75,19 @@
     <string name="onboarding_overlay_button">Allow Overlay</string>
     <string name="onboarding_overlay_button_desc">Open overlay permission settings for AirControl</string>
 
+    <!-- Onboarding - Step 5: Gesture Tutorial -->
+    <string name="onboarding_tutorial_title">Learn the Gestures</string>
+    <string name="onboarding_tutorial_subtitle">Master these simple hand gestures to control your device</string>
+    <string name="onboarding_tutorial_open_palm_title">Open Palm</string>
+    <string name="onboarding_tutorial_open_palm_desc">Activate control system</string>
+    <string name="onboarding_tutorial_pinch_title">Pinch</string>
+    <string name="onboarding_tutorial_pinch_desc">Tap or click</string>
+    <string name="onboarding_tutorial_swipe_title">Swipe</string>
+    <string name="onboarding_tutorial_swipe_desc">Scroll or navigate</string>
+    <string name="onboarding_tutorial_victory_title">Victory</string>
+    <string name="onboarding_tutorial_victory_desc">Media play/pause</string>
+    <string name="onboarding_tutorial_permissions_required">Please complete all permission steps first</string>
+
     <!-- Gesture Map -->
     <string name="gesture_map_title">Gesture Map</string>
     <string name="gesture_map_description">Tap any gesture to remap its action</string>
@@ -156,8 +169,10 @@
     <string name="notification_text_thermal">Performance reduced due to heat</string>
     <string name="notification_text_thermal_critical">Paused — device is overheating</string>
     <string name="thermal_severe_notification">AirControl performance reduced: Device is overheating. Frame rate lowered to 5 FPS; tracking stays active.</string>
-    <string name="boot_resume_notification_title">Resume AirControl tracking</string>
-    <string name="boot_resume_notification_text">Android requires you to open AirControl before camera tracking can resume after reboot.</string>
+    <string name="boot_resume_notification_title">AirControl tracking paused</string>
+    <string name="boot_resume_notification_text">Tap to resume gesture tracking</string>
+    <string name="boot_resume_notification_text_extended">AirControl was tracking before you restarted your device. Android requires you to confirm before camera tracking can resume. Tap the notification or the Resume button below to start tracking immediately.</string>
+    <string name="boot_resume_action_button">Resume Tracking</string>
 
     <!-- Debug Screen -->
     <string name="debug_title">Debug</string>

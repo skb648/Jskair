@@ -50,16 +50,28 @@ package com.aircontrol.gesture.config
  */
 data class GestureEngineConfig(
     val sensitivity: Int = 50,
-    val poseDebounceFrames: Int = 5,
+    // UG-03 Fix: Reduced from 5 to 3 frames (~125ms at 24fps) for snappier pose recognition
+    // 3 frames is still enough to filter noise while feeling responsive
+    val poseDebounceFrames: Int = 3,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 150f,
-    val pinchDistanceRatio: Float = 0.35f,
-    val swipeWindowMs: Long = 350L,
-    val swipeDisplacementRatio: Float = 0.15f,
+    // UG-08 Fix: Increased from 0.35 to 0.40 for easier pinch detection with large hands
+    // 40% of hand size is still precise enough to avoid accidental pinches
+    val pinchDistanceRatio: Float = 0.40f,
+    // UG-06 Fix: Increased from 350ms to 500ms for slower, more deliberate swipes
+    // Users with limited mobility or slower movements can now complete swipes
+    val swipeWindowMs: Long = 500L,
+    // UG-07 Fix: Reduced from 15% to 10% for easier swipe detection with small hands
+    // 10% is still enough to distinguish intentional swipes from tremor
+    val swipeDisplacementRatio: Float = 0.10f,
     val swipeVelocityThreshold: Float = 1.5f,
     val swipeAxisDominanceRatio: Float = 2.0f,
-    val armingDurationMs: Long = 400L,
-    val cooldownDurationMs: Long = 400L,
+    // UG-04 Fix: Reduced from 400ms to 200ms for faster arming
+    // 200ms is still long enough to avoid accidental arming while feeling instant
+    val armingDurationMs: Long = 200L,
+    // UG-05 Fix: Reduced from 400ms to 200ms for faster gesture recovery
+    // Users can now perform rapid sequences of gestures
+    val cooldownDurationMs: Long = 200L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 500L,

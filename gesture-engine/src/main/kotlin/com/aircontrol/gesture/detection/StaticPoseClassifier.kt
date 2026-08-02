@@ -7,6 +7,7 @@ import com.aircontrol.gesture.model.Landmark3D
 import com.aircontrol.gesture.model.LandmarkIndex
 import com.aircontrol.gesture.model.LandmarkTemplate
 import com.aircontrol.gesture.model.Pose
+import kotlin.concurrent.Volatile
 import kotlin.math.sqrt
 
 /**
@@ -27,7 +28,10 @@ import kotlin.math.sqrt
  * 8. THUMB_UP — only thumb extended, thumb tip above thumb MCP
  * 9. THUMB_DOWN — only thumb extended, thumb tip below thumb MCP
  */
-class StaticPoseClassifier(private val config: GestureEngineConfig) {
+class StaticPoseClassifier(config: GestureEngineConfig) {
+    // H-06 Fix: Make config mutable so sensitivity can be updated without recreating the engine
+    @Volatile
+    private var config: GestureEngineConfig = config
 
     private val fingerDetector = FingerExtensionDetector(config)
 
@@ -300,6 +304,16 @@ class StaticPoseClassifier(private val config: GestureEngineConfig) {
     fun reset() {
         poseHistory.clear()
         confirmedPose = Pose.NONE
+    }
+
+    /**
+     * H-06 Fix: Update the config (e.g., sensitivity change) without recreating the classifier.
+     * This preserves the current state and avoids losing in-progress gesture detection.
+     */
+    fun updateConfig(newConfig: GestureEngineConfig) {
+        this.config = newConfig
+        // Update debounce frames if it changed
+        effectiveDebounceFrames = newConfig.poseDebounceFrames
     }
 
     internal fun distance2D(a: Landmark3D, b: Landmark3D): Float {

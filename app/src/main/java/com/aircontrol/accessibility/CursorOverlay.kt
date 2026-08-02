@@ -122,8 +122,14 @@ class CursorOverlay(
             addView()
         }
         cursorView?.apply {
-            alpha = 1f
+            // UC-04 Fix: Added fade-in animation (200ms) to match fade-out
+            // This creates a smooth, polished feel instead of abrupt appearance
+            alpha = 0f
             visibility = View.VISIBLE
+            animate()
+                .alpha(1f)
+                .setDuration(hideDelayMs) // Use same duration as hide for symmetry
+                .start()
         }
         isVisible = true
     }
@@ -152,6 +158,31 @@ class CursorOverlay(
     fun updateScreenSize(width: Int, height: Int) {
         screenWidth = width
         screenHeight = height
+    }
+
+    /**
+     * UG-09/UG-10 Fix: Triggers a visual pulse effect on the cursor.
+     * Called when a gesture is successfully dispatched to provide clear visual
+     * confirmation to the user that their gesture was recognized.
+     * The pulse is a quick scale-up and scale-down animation (200ms).
+     */
+    fun pulse() {
+        val view = cursorView ?: return
+        if (!isVisible) return
+        
+        // Quick scale pulse animation: 1.0 → 1.3 → 1.0 over 200ms
+        view.animate()
+            .scaleX(1.3f)
+            .scaleY(1.3f)
+            .setDuration(100)
+            .withEndAction {
+                view.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .setDuration(100)
+                    .start()
+            }
+            .start()
     }
 
     /**
@@ -251,8 +282,10 @@ class CursorOverlay(
     }
 
     companion object {
-        private const val CURSOR_SIZE_DP = 24
-        private const val RING_SIZE_DP = 18
+        // UC-01 Fix: Increased from 24dp to 36dp for better visibility on modern phones
+        private const val CURSOR_SIZE_DP = 36
+        // UC-01 Fix: Increased ring from 18dp to 28dp for better visibility
+        private const val RING_SIZE_DP = 28
         // (Bug #6 & #7 Fix): Increased from 1dp to 3dp to eliminate the remaining
         // hand tremor that survives the (now consolidated) One Euro Filter in
         // CursorSmoother. With the landmark-level filter removed from HandTracker,
