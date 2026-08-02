@@ -56,20 +56,19 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                return
-            }
-
-            val startDestination = if (preferences!!.onboardingCompleted) {
-                AirControlRoute.Home.route
             } else {
-                AirControlRoute.Onboarding.route
-            }
+                val startDestination = if (preferences!!.onboardingCompleted) {
+                    AirControlRoute.Home.route
+                } else {
+                    AirControlRoute.Onboarding.route
+                }
 
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.background,
-            ) {
-                AirControlNavHost(startDestination = startDestination)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    AirControlNavHost(startDestination = startDestination)
+                }
             }
         }
     }

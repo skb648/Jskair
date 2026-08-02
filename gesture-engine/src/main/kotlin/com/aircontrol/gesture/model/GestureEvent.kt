@@ -5,11 +5,14 @@ package com.aircontrol.gesture.model
  * Each event represents a discrete, recognized user action or state change.
  */
 sealed class GestureEvent {
+    
+    /** Timestamp when this event occurred. */
+    abstract val timestampMs: Long
 
     /** A swipe gesture in the given direction. */
     data class Swipe(
         val direction: SwipeDirection,
-        val timestampMs: Long,
+        override val timestampMs: Long,
     ) : GestureEvent()
 
     /** A pinch gesture with phase tracking and normalized position.
@@ -26,7 +29,7 @@ sealed class GestureEvent {
         val phase: PinchPhase,
         val x: Float,
         val y: Float,
-        val timestampMs: Long,
+        override val timestampMs: Long,
         val anchoredX: Float = x,
         val anchoredY: Float = y,
     ) : GestureEvent()
@@ -34,7 +37,7 @@ sealed class GestureEvent {
     /** A static pose was confirmed after debounce. */
     data class PoseTriggered(
         val pose: Pose,
-        val timestampMs: Long,
+        override val timestampMs: Long,
     ) : GestureEvent()
 
     /**
@@ -54,17 +57,17 @@ sealed class GestureEvent {
     data class CustomGestureTriggered(
         val gestureId: String,
         val gestureName: String,
-        val timestampMs: Long,
+        override val timestampMs: Long,
     ) : GestureEvent()
 
     /** The state machine transitioned to ARMED. */
     data class Armed(
-        val timestampMs: Long,
+        override val timestampMs: Long,
     ) : GestureEvent()
 
     /** The state machine transitioned to DISARMED. */
     data class Disarmed(
-        val timestampMs: Long,
+        override val timestampMs: Long,
     ) : GestureEvent()
 
     /**
@@ -88,7 +91,7 @@ sealed class GestureEvent {
     data class CursorMoved(
         val x: Float,
         val y: Float,
-        val timestampMs: Long,
+        override val timestampMs: Long,
         val isSilent: Boolean = false,
         val minCutoffHint: Float? = null,
     ) : GestureEvent()

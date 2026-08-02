@@ -24,6 +24,7 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -210,7 +211,7 @@ class ActionDispatcher @Inject constructor(
         dragGraceFrameCount = 0
         dragLockUntilMs = 0L
         // H-08 Fix: Cancel settings collection jobs to prevent leaks
-        settingsJobs.forEach { it.cancel() }
+        settingsJobs.forEach { job: Job -> job.cancel() }
         settingsJobs.clear()
         Timber.i("ActionDispatcher detached from accessibility service")
     }
