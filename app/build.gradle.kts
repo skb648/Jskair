@@ -4,10 +4,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
-    // H-01 Fix: Firebase Crashlytics for production crash reporting and ANR detection
-    // Setup: Place google-services.json in app/ directory (download from Firebase Console)
-    id("com.google.gms.google-services") version "4.4.2"
-    id("com.google.firebase.crashlytics") version "3.0.2"
 }
 
 // Auto versionCode from git commit count
@@ -165,12 +161,6 @@ dependencies {
 
     // Timber
     implementation(libs.timber)
-
-    // H-01 Fix: Firebase Crashlytics for production crash reporting and ANR detection
-    // This provides visibility into real-world crashes that users experience
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-crashlytics-ktx")
-    implementation("com.google.firebase:firebase-analytics-ktx")
 
     // LeakCanary - debug only (auto-configures via ContentProvider)
     debugImplementation(libs.leakcanary.android)
