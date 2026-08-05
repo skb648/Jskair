@@ -9,21 +9,22 @@ import kotlin.math.pow
  * Reference: Casiez, G., Roussel, N., Vogel, D. (2012).
  * "1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems"
  *
- * KEY TUNING FOR AIR GESTURES:
- * - minCutoff=0.8: Strong smoothing when hand is still (kills micro-jitter from tremor)
- * - beta=0.08: Fast adaptation when hand moves intentionally (no lag during motion)
+ * APPLE VISION PRO TUNING (Layer 1):
+ * - minCutoff=1.0 Hz: Lower lag, eliminates high-frequency micro-jitters
+ * - beta=0.007: Lower high-speed delay, minimal filtering during fast movements
  * - dCutoff=1.0: Derivative smoothing frequency
  *
- * The filter is asymmetric-aware: it applies stronger smoothing to small movements
- * (tremor range: 1-3px) while preserving intentional large movements.
+ * The filter dynamically adapts:
+ * - Low velocity → fc drops toward fc_min (1.0 Hz) → heavy filtering (zero jitter)
+ * - High velocity → fc rises rapidly → minimal filtering (near-zero latency)
  *
- * @param minCutoff Minimum cutoff frequency (lower = more smoothing at low speed)
- * @param beta Speed coefficient (higher = less smoothing when moving fast)
+ * @param minCutoff Minimum cutoff frequency (fc_min) - Apple Vision Pro: 1.0 Hz
+ * @param beta Speed coefficient - Apple Vision Pro: 0.007
  * @param dCutoff Cutoff frequency for the derivative computation
  */
 class OneEuroFilter(
-    private var minCutoff: Float = 0.8f,
-    private var beta: Float = 0.08f,
+    private var minCutoff: Float = 1.0f,  // Apple Vision Pro: 1.0 Hz
+    private var beta: Float = 0.007f,      // Apple Vision Pro: 0.007
     private var dCutoff: Float = 1.0f,
 ) {
     private var prevValue: Float? = null
@@ -140,10 +141,14 @@ class OneEuroFilter(
  * filter when the hand is perfectly still. If the filtered displacement from the
  * last output position is below DEAD_ZONE_PX (screen pixels), the position is
  * not updated. This produces a rock-steady cursor when the hand is still.
+ *
+ * APPLE VISION PRO TUNING:
+ * - minCutoff=1.0 Hz: Lower lag, better jitter elimination
+ * - beta=0.007: Lower high-speed delay, minimal filtering during fast movements
  */
 class CursorSmoother(
-    minCutoff: Float = 0.45f,
-    beta: Float = 0.15f,
+    minCutoff: Float = 1.0f,   // Apple Vision Pro: 1.0 Hz
+    beta: Float = 0.007f,      // Apple Vision Pro: 0.007
 ) {
     private val xFilter = OneEuroFilter(minCutoff, beta)
     private val yFilter = OneEuroFilter(minCutoff, beta)

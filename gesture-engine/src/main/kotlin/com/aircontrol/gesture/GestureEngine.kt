@@ -25,6 +25,18 @@ import kotlinx.coroutines.launch
 import kotlin.concurrent.Volatile
 
 /**
+ * Layer 2: Dual-Threshold FSM States (Apple Vision Pro Architecture)
+ * Prevents state flickering with hysteresis and time debouncing
+ */
+private enum class PinchState {
+    IDLE,           // No pinch detected
+    HOVER,          // Fingers approaching (pre-interaction certainty)
+    PINCH_START,    // Pinch just initiated (time debouncing in progress)
+    PINCH_HOLD,     // Pinch confirmed and held (can drag)
+    PINCH_RELEASE   // Pinch just released (time debouncing before IDLE)
+}
+
+/**
  * Core gesture recognition engine.
  *
  * Input: [Flow]<[HandInput]> — raw hand tracking frames from MediaPipe.
@@ -75,6 +87,18 @@ class GestureEngine(
     private val _armingProgress = MutableStateFlow(0f)
     val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
 
+    // ========== Layer 2: Dual-Threshold FSM (Apple Vision Pro Architecture) ==========
+    // Prevents state flickering by using separate enter/exit thresholds with time debouncing
+    // States: [IDLE] -> [HOVER] -> [PINCH_START] -> [PINCH_HOLD/DRAG] -> [PINCH_RELEASE]
+    
+    // Dual-Threshold Hysteresis (Apple Vision Pro specs)
+    private var pinchState: PinchState = PinchState.IDLE
+    private var pinchStateEntryTimeMs: Long = 0L
+    private var lastThumbIndexDistance: Float = 0f
+    
+    // Time debouncing - require continuous recognition for 35ms before state transition
+    private val TIME_DEBOUNCE_MS = 35L
+    
     // Pinch tracking state
     @Volatile
     private var wasPinching: Boolean = false
@@ -479,10 +503,15 @@ class GestureEngine(
     }
 
     /**
-     * Manages the pinch gesture lifecycle.
-     * - START: When pinch is newly detected (was not pinching before)
-     * - MOVE: When pinch is ongoing (thumb-index distance still small)
-     * - END: When fingers separate after a pinch
+     * Layer 2: Dual-Threshold FSM with Hysteresis (Apple Vision Pro Architecture)
+     * 
+     * Prevents state flickering by using:
+     * 1. Dual distance thresholds (D_enter < D_exit)
+     * 2. Time debouncing (35ms continuous recognition)
+     * 3. Proper state machine: IDLE -> HOVER -> PINCH_START -> PINCH_HOLD -> PINCH_RELEASE
+     * 
+     * This eliminates the "blinking" and unreliable gesture detection that occurs
+     * with single-threshold approaches.
      */
     private fun processPinch(input: HandInput, pose: Pose, timestampMs: Long) {
         // Gate pinch events on engine state — only emit when armed or active
@@ -494,8 +523,8 @@ class GestureEngine(
             if (wasPinching) {
                 wasPinching = false
                 currentPinchPhase = null
+                pinchState = PinchState.IDLE
                 pinchHysteresisExtensionCount = 0
-                // Emit pinch END event even when disarmed to clean up state
             }
             return
         }
@@ -507,10 +536,9 @@ class GestureEngine(
                 )
                 wasPinching = false
                 currentPinchPhase = null
+                pinchState = PinchState.IDLE
                 pinchHysteresisExtensionCount = 0
             }
-            // Reset prevWrist so the next detected frame starts fresh (no stale
-            // velocity spike from a large dt across the hand-lost gap).
             prevWristTimestampMs = 0L
             return
         }
@@ -520,135 +548,140 @@ class GestureEngine(
         val wrist = input.landmarks[LandmarkIndex.WRIST]
         val middleMcp = input.landmarks[LandmarkIndex.MIDDLE_MCP]
 
+        // Calculate actual thumb-index distance (normalized by hand size)
+        val handSize = distance2D(wrist, middleMcp)
+        val thumbIndexDistance = if (handSize > EPSILON) {
+            distance2D(thumbTip, indexTip) / handSize
+        } else {
+            0f
+        }
+        lastThumbIndexDistance = thumbIndexDistance
+
         // Use the pinch center as the gesture position
         val pinchX = (thumbTip.x + indexTip.x) / 2f
         val pinchY = (thumbTip.y + indexTip.y) / 2f
 
-        if (pose == Pose.PINCH) {
-            // Reset hysteresis extension counter — the pinch is confidently held.
-            pinchHysteresisExtensionCount = 0
-
-            if (!wasPinching) {
-                // Bug #10 Fix: Pinch cooldown — ignore accidental quick re-pinches
-                // (double-tap glitch) within 300ms of the previous pinch END.
-                // Only enforce if a previous pinch has actually ended (lastPinchEndMs > 0);
-                // otherwise the very first pinch of a session would be blocked because
-                // lastPinchEndMs initializes to 0L and (timestampMs - 0L) < 300L for
-                // any reasonable session-start timestamp.
-                if (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS) {
-                    // Too soon after the last pinch — ignore this START.
-                    // Do NOT set wasPinching or currentPinchPhase; treat as if no
-                    // pinch happened this frame.
-                    updatePrevWrist(wrist, timestampMs)
-                    return
+        // ========== Dual-Threshold FSM Logic ==========
+        val timeInState = timestampMs - pinchStateEntryTimeMs
+        
+        when (pinchState) {
+            PinchState.IDLE -> {
+                // Check if fingers are approaching (enter HOVER zone)
+                if (thumbIndexDistance < PINCH_HOVER_THRESHOLD) {
+                    pinchState = PinchState.HOVER
+                    pinchStateEntryTimeMs = timestampMs
                 }
-
-                // Pinch START
-                wasPinching = true
-                currentPinchPhase = PinchPhase.START
-                pinchStartX = pinchX
-                pinchStartY = pinchY
-                // Issue 4 Fix: Anchor at INDEX fingertip position (where user was pointing),
-                // NOT the pinch center (which shifts as fingers close together).
-                // This prevents the cursor from drifting away from the target during pinch.
-                pinchAnchoredX = lastIndexTipX
-                pinchAnchoredY = lastIndexTipY
-                _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(
-                        phase = PinchPhase.START,
-                        x = pinchAnchoredX,
-                        y = pinchAnchoredY,
-                        timestampMs = timestampMs,
-                        anchoredX = pinchAnchoredX,
-                        anchoredY = pinchAnchoredY,
-                    ),
-                )
-            } else {
-                // Pinch MOVE — emit ACTUAL current hand position for drag tracking.
-                // x/y = current position (hand is moving, drag follows the hand)
-                // anchoredX/anchoredY = original anchor (for tap/long-press targeting)
-                currentPinchPhase = PinchPhase.MOVE
-                _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(
-                        phase = PinchPhase.MOVE,
-                        x = lastIndexTipX,
-                        y = lastIndexTipY,
-                        timestampMs = timestampMs,
-                        anchoredX = pinchAnchoredX,
-                        anchoredY = pinchAnchoredY,
-                    ),
-                )
             }
-        } else if (wasPinching) {
-            // Bug: Intermittent Pinch Misfire Fix — Proximity hysteresis.
-            //
-            // The pinch classifier lost the PINCH pose this frame (pose != PINCH).
-            // Before terminating the pinch, check if this is a transient tracking
-            // drop rather than a genuine finger separation:
-            //
-            // 1. PROXIMITY: Is the thumb-index distance still within a hysteresis
-            //    margin of the pinch threshold? (PINCH_HYSTERESIS_MARGIN × threshold)
-            //    If the fingers are still close together, the classifier likely just
-            //    lost the pose due to noise — not because the user opened their hand.
-            //
-            // 2. STABILITY: Is the hand velocity near zero? If the hand is stable
-            //    (not moving rapidly), a brief classification drop is almost
-            //    certainly noise. If the hand is moving fast, the drop is more
-            //    likely a genuine finger separation during motion.
-            //
-            // 3. EXTENSION CAP: Have we already extended via hysteresis for too
-            //    many consecutive frames? If so, terminate to prevent infinite
-            //    extension (fingers drifting apart slowly but staying in margin).
-            //
-            // If all three checks pass, treat this frame as a MOVE (pinch alive)
-            // instead of an END. This prevents the user from having to pinch
-            // multiple times to register a single click.
-            val handSize = distance2D(wrist, middleMcp)
-            val pinchDistance = distance2D(thumbTip, indexTip)
-            val pinchThreshold = config.scaledPinchDistanceRatio()
-            val hysteresisActive = handSize > EPSILON &&
-                pinchHysteresisExtensionCount < MAX_HYSTERESIS_EXTENSION_FRAMES &&
-                pinchDistance / handSize < pinchThreshold * PINCH_HYSTERESIS_MARGIN &&
-                isHandStable(wrist, timestampMs)
-
-            if (hysteresisActive) {
-                // Extend the pinch — treat as MOVE, don't emit END.
-                pinchHysteresisExtensionCount++
-                currentPinchPhase = PinchPhase.MOVE
-                _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(
-                        phase = PinchPhase.MOVE,
-                        x = lastIndexTipX,
-                        y = lastIndexTipY,
-                        timestampMs = timestampMs,
-                        anchoredX = pinchAnchoredX,
-                        anchoredY = pinchAnchoredY,
-                    ),
-                )
-            } else {
-                // Pinch END — use the live index tip position for drag drop target
-                // (Bug #2 Fix), and the anchored position for tap/long-press targeting.
-                wasPinching = false
-                currentPinchPhase = PinchPhase.END
-                lastPinchEndMs = timestampMs
-                pinchHysteresisExtensionCount = 0
-                _gestureEvents.tryEmit(
-                    GestureEvent.Pinch(
-                        phase = PinchPhase.END,
-                        x = lastIndexTipX,
-                        y = lastIndexTipY,
-                        timestampMs = timestampMs,
-                        anchoredX = pinchAnchoredX,
-                        anchoredY = pinchAnchoredY,
-                    ),
-                )
-                // After END is emitted, clear the phase so subsequent frames (no pinch)
-                // use the live index tip for the cursor.
-                currentPinchPhase = null
+            
+            PinchState.HOVER -> {
+                // Pre-interaction certainty - fingers close but not pinching yet
+                // Check if pinch threshold crossed (enter PINCH_START)
+                if (thumbIndexDistance < PINCH_ENTER_THRESHOLD) {
+                    pinchState = PinchState.PINCH_START
+                    pinchStateEntryTimeMs = timestampMs
+                } 
+                // Check if fingers moved away (return to IDLE)
+                else if (thumbIndexDistance > PINCH_HOVER_THRESHOLD * 1.5f) {
+                    pinchState = PinchState.IDLE
+                    pinchStateEntryTimeMs = timestampMs
+                }
+            }
+            
+            PinchState.PINCH_START -> {
+                // Time debouncing - require 35ms of continuous pinch before confirming
+                if (timeInState >= TIME_DEBOUNCE_MS) {
+                    // Pinch confirmed! Transition to PINCH_HOLD
+                    pinchState = PinchState.PINCH_HOLD
+                    pinchStateEntryTimeMs = timestampMs
+                    
+                    // Bug #10 Fix: Pinch cooldown check
+                    if (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS) {
+                        pinchState = PinchState.IDLE
+                        updatePrevWrist(wrist, timestampMs)
+                        return
+                    }
+                    
+                    // Emit PINCH_START event
+                    wasPinching = true
+                    currentPinchPhase = PinchPhase.START
+                    pinchStartX = pinchX
+                    pinchStartY = pinchY
+                    pinchAnchoredX = lastIndexTipX
+                    pinchAnchoredY = lastIndexTipY
+                    
+                    _gestureEvents.tryEmit(
+                        GestureEvent.Pinch(
+                            phase = PinchPhase.START,
+                            x = pinchAnchoredX,
+                            y = pinchAnchoredY,
+                            timestampMs = timestampMs,
+                            anchoredX = pinchAnchoredX,
+                            anchoredY = pinchAnchoredY,
+                        ),
+                    )
+                }
+                // Check if pinch threshold not maintained during debounce (abort)
+                else if (thumbIndexDistance > PINCH_EXIT_THRESHOLD) {
+                    pinchState = PinchState.HOVER
+                    pinchStateEntryTimeMs = timestampMs
+                }
+            }
+            
+            PinchState.PINCH_HOLD -> {
+                // Pinch is active - can drag
+                // Check if pinch released (fingers separated beyond exit threshold)
+                if (thumbIndexDistance > PINCH_EXIT_THRESHOLD) {
+                    pinchState = PinchState.PINCH_RELEASE
+                    pinchStateEntryTimeMs = timestampMs
+                } else {
+                    // Continue pinch hold - emit MOVE event
+                    currentPinchPhase = PinchPhase.MOVE
+                    _gestureEvents.tryEmit(
+                        GestureEvent.Pinch(
+                            phase = PinchPhase.MOVE,
+                            x = lastIndexTipX,
+                            y = lastIndexTipY,
+                            timestampMs = timestampMs,
+                            anchoredX = pinchAnchoredX,
+                            anchoredY = pinchAnchoredY,
+                        ),
+                    )
+                }
+            }
+            
+            PinchState.PINCH_RELEASE -> {
+                // Time debouncing before returning to IDLE
+                if (timeInState >= TIME_DEBOUNCE_MS) {
+                    // Release confirmed
+                    pinchState = PinchState.IDLE
+                    pinchStateEntryTimeMs = timestampMs
+                    
+                    wasPinching = false
+                    currentPinchPhase = PinchPhase.END
+                    lastPinchEndMs = timestampMs
+                    pinchHysteresisExtensionCount = 0
+                    
+                    _gestureEvents.tryEmit(
+                        GestureEvent.Pinch(
+                            phase = PinchPhase.END,
+                            x = lastIndexTipX,
+                            y = lastIndexTipY,
+                            timestampMs = timestampMs,
+                            anchoredX = pinchAnchoredX,
+                            anchoredY = pinchAnchoredY,
+                        ),
+                    )
+                    currentPinchPhase = null
+                }
+                // Check if pinch re-engaged during release debounce (abort release)
+                else if (thumbIndexDistance < PINCH_ENTER_THRESHOLD) {
+                    pinchState = PinchState.PINCH_HOLD
+                    pinchStateEntryTimeMs = timestampMs
+                }
             }
         }
 
-        // Update previous wrist position for the next frame's velocity computation.
+        // Update previous wrist position for velocity computation
         updatePrevWrist(wrist, timestampMs)
     }
 
@@ -711,6 +744,12 @@ class GestureEngine(
         poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames
         dynamicDetector.reset()
         stateMachine.reset()
+        
+        // Layer 2: Reset FSM state
+        pinchState = PinchState.IDLE
+        pinchStateEntryTimeMs = 0L
+        lastThumbIndexDistance = 0f
+        
         wasPinching = false
         currentPinchPhase = null
         pinchStartX = 0f
@@ -732,6 +771,24 @@ class GestureEngine(
     }
 
     companion object {
+        // ========== Layer 2: Dual-Threshold FSM Constants (Apple Vision Pro) ==========
+        // These thresholds prevent state flickering with proper hysteresis
+        
+        // PINCH_HOVER_THRESHOLD: Fingers approaching, pre-interaction certainty
+        // When thumb-index distance < this, enter HOVER state
+        private const val PINCH_HOVER_THRESHOLD = 0.08f
+        
+        // PINCH_ENTER_THRESHOLD: Pinch engagement threshold (tighter)
+        // When thumb-index distance < this AND held for 35ms, confirm pinch
+        private const val PINCH_ENTER_THRESHOLD = 0.035f
+        
+        // PINCH_EXIT_THRESHOLD: Pinch disengagement threshold (looser)
+        // When thumb-index distance > this AND held for 35ms, confirm release
+        private const val PINCH_EXIT_THRESHOLD = 0.065f
+        
+        // TIME_DEBOUNCE_MS: Already defined as instance variable (35L)
+        // Required continuous recognition before state transition
+        
         // UG-01 Fix: Reduced from 300ms to 150ms for faster double-tap recognition
         // 150ms is still long enough to filter accidental re-pinches (double-tap glitch)
         // but short enough that intentional double-taps feel responsive

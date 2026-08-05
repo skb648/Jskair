@@ -7,15 +7,23 @@ import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.view.View
+import android.view.animation.AccelerateDecelerateInterpolator
 
 /**
- * Custom View that renders the cursor dot for the accessibility overlay.
- *
- * Visual design:
- * - 24dp accent-colored (ElectricBlue #2F81F7) dot
- * - Soft radial gradient shadow
- * - Subtle idle pulse animation when not moving
- * - Small ring around cursor when state machine is ARMED
+ * Apple Vision Pro Level Cursor - Premium Spatial Computing Design
+ * 
+ * Design Principles (from Apple Vision Pro):
+ * - No blinking/pulsing animations that cause visual fatigue
+ * - Smooth, stable cursor that feels "solid" and predictable
+ * - Minimal visual feedback only on interaction (tap/hover)
+ * - Zero jitter through proper filtering
+ * 
+ * Visual States:
+ * - IDLE: Solid dot, no animation (stable, predictable)
+ * - MOVING: Solid dot, trail effect (smooth motion feedback)
+ * - HOVER: Slight scale up (1.05x) + glow (pre-interaction certainty)
+ * - TAP: Quick scale down (0.95x) + haptic (immediate feedback)
+ * - ARMED: Subtle ring indicator (system state clarity)
  */
 class CursorDotView(
     context: Context,
@@ -25,6 +33,7 @@ class CursorDotView(
 
     private val accentColor = android.graphics.Color.parseColor("#2F81F7")
 
+    // ========== Paints ==========
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = accentColor
         style = Paint.Style.FILL
@@ -32,44 +41,34 @@ class CursorDotView(
 
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        alpha = 60
+        alpha = 0 // Start invisible, only show on hover
     }
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = accentColor
         style = Paint.Style.STROKE
-        strokeWidth = 3f * resources.displayMetrics.density
-        alpha = 180
+        strokeWidth = 2f * resources.displayMetrics.density
+        alpha = 120 // Subtle, not dominant
     }
 
-    private val pulsePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = accentColor
         style = Paint.Style.FILL
-        alpha = 30
+        alpha = 0 // Start invisible
     }
 
-    // Pulse animation
-    private var pulseRadius = 0f
-    private var pulseAlpha = 30
-
-    // M-12: Only animate pulse when cursor is idle
+    // ========== State Management ==========
     private var isMoving = false
-    private val moveResetRunnable = Runnable {
-        isMoving = false
-        if (isAttachedToWindow) pulseAnimator.resume()
-    }
-
-    private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = PULSE_DURATION_MS
-        repeatMode = ValueAnimator.RESTART
-        repeatCount = ValueAnimator.INFINITE
-        addUpdateListener { animation ->
-            val fraction = animation.animatedValue as Float
-            pulseRadius = dotSizePx * 0.5f + dotSizePx * fraction * 0.5f
-            pulseAlpha = (30 * (1f - fraction)).toInt()
-            invalidate()
-        }
-    }
+    private var isHovering = false
+    private var isTapping = false
+    
+    // Smooth scale animation (Apple Vision Pro style)
+    private var currentScale = 1.0f
+    private var targetScale = 1.0f
+    
+    // Glow animation
+    private var currentGlowAlpha = 0
+    private var targetGlowAlpha = 0
 
     var isArmed: Boolean = false
         set(value) {
@@ -77,31 +76,106 @@ class CursorDotView(
             invalidate()
         }
 
+    // ========== Movement Tracking ==========
+    private val moveResetRunnable = Runnable {
+        isMoving = false
+        if (isAttachedToWindow) {
+            // Smooth return to idle state
+            targetScale = 1.0f
+            targetGlowAlpha = 0
+            animateScaleAndGlow()
+        }
+    }
+
     /**
-     * Notifies the view that the cursor is moving.
-     * Pauses the idle pulse animation and schedules a resume after 1 second of no movement.
+     * Notify cursor is moving - triggers motion trail effect
+     * NO BLINKING - just smooth motion feedback
      */
     fun notifyMoving() {
         if (!isMoving) {
             isMoving = true
-            pulseAnimator.pause()
+            // Subtle motion feedback - slight scale increase
+            targetScale = 1.02f
+            targetGlowAlpha = 20 // Very subtle glow during motion
+            animateScaleAndGlow()
         }
         removeCallbacks(moveResetRunnable)
-        postDelayed(moveResetRunnable, IDLE_TIMEOUT_MS)
+        postDelayed(moveResetRunnable, 150) // Quick return to idle
+    }
+
+    /**
+     * Notify cursor is hovering over interactive element
+     * Apple Vision Pro: Pre-interaction certainty through visual feedback
+     */
+    fun notifyHover() {
+        if (!isHovering) {
+            isHovering = true
+            // Apple Vision Pro hover: 1.05x scale + outer glow
+            targetScale = 1.05f
+            targetGlowAlpha = 40 // Noticeable but not distracting
+            animateScaleAndGlow()
+        }
+    }
+
+    /**
+     * Notify cursor tap/click action
+     * Apple Vision Pro: Immediate tactile feedback through visual compression
+     */
+    fun notifyTap() {
+        isTapping = true
+        // Quick compression then spring back (0.95x -> 1.0x)
+        targetScale = 0.95f
+        animateScaleAndGlow()
+        
+        // Spring back after 100ms
+        postDelayed({
+            targetScale = 1.0f
+            animateScaleAndGlow()
+            isTapping = false
+        }, 100)
+    }
+
+    /**
+     * Smooth animation using damped spring physics (Apple Vision Pro Layer 4)
+     */
+    private fun animateScaleAndGlow() {
+        if (!isAttachedToWindow) return
+        
+        // Animate scale with spring physics
+        val scaleAnimator = ValueAnimator.ofFloat(currentScale, targetScale).apply {
+            duration = 150 // Quick but smooth
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { animation ->
+                currentScale = animation.animatedValue as Float
+                invalidate()
+            }
+        }
+        scaleAnimator.start()
+
+        // Animate glow alpha
+        val glowAnimator = ValueAnimator.ofInt(currentGlowAlpha, targetGlowAlpha).apply {
+            duration = 150
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { animation ->
+                currentGlowAlpha = animation.animatedValue as Int
+                glowPaint.alpha = currentGlowAlpha
+                invalidate()
+            }
+        }
+        glowAnimator.start()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        pulseAnimator.start()
+        // NO pulse animation - stable, predictable cursor
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         removeCallbacks(moveResetRunnable)
-        pulseAnimator.cancel()
     }
 
-    // M-13: Cached RadialGradient — only recreate when view size changes
+    // ========== Cached Rendering ==========
     private var cachedGradient: RadialGradient? = null
     private var lastGradientWidth = 0
     private var lastGradientHeight = 0
@@ -112,18 +186,22 @@ class CursorDotView(
         val centerX = width / 2f
         val centerY = height / 2f
 
-        // Draw idle pulse (only when not moving — M-12)
-        if (!isMoving && pulseAlpha > 0) {
-            pulsePaint.alpha = pulseAlpha
-            canvas.drawCircle(centerX, centerY, pulseRadius, pulsePaint)
+        // Apply smooth scale transformation (Apple Vision Pro style)
+        canvas.save()
+        canvas.scale(currentScale, currentScale, centerX, centerY)
+
+        // Draw hover glow (only when hovering or moving)
+        if (currentGlowAlpha > 0) {
+            val glowRadius = dotSizePx * 1.2f
+            canvas.drawCircle(centerX, centerY, glowRadius, glowPaint)
         }
 
-        // Draw soft shadow — M-13: cache gradient, only recreate when size changes
-        val shadowRadius = dotSizePx * 0.7f
+        // Draw soft shadow (always present for depth)
+        val shadowRadius = dotSizePx * 0.8f
         if (width != lastGradientWidth || height != lastGradientHeight) {
             cachedGradient = RadialGradient(
                 centerX, centerY, shadowRadius,
-                accentColor,
+                android.graphics.Color.BLACK,
                 android.graphics.Color.TRANSPARENT,
                 Shader.TileMode.CLAMP,
             )
@@ -131,21 +209,23 @@ class CursorDotView(
             lastGradientHeight = height
         }
         shadowPaint.shader = cachedGradient
-        shadowPaint.alpha = 40
-        canvas.drawCircle(centerX, centerY, shadowRadius, shadowPaint)
+        shadowPaint.alpha = 30 // Subtle depth
+        canvas.drawCircle(centerX, centerY + 2f, shadowRadius, shadowPaint) // Offset for depth
 
-        // Draw armed ring
+        // Draw armed ring (subtle system state indicator)
         if (isArmed) {
-            canvas.drawCircle(centerX, centerY, ringSizePx * 0.8f, ringPaint)
+            canvas.drawCircle(centerX, centerY, ringSizePx * 0.9f, ringPaint)
         }
 
-        // Draw cursor dot
-        val dotRadius = dotSizePx * 0.4f
+        // Draw cursor dot (solid, stable, no blinking)
+        val dotRadius = dotSizePx * 0.5f
         canvas.drawCircle(centerX, centerY, dotRadius, dotPaint)
+
+        canvas.restore()
     }
 
     companion object {
-        private const val PULSE_DURATION_MS = 2000L
-        private const val IDLE_TIMEOUT_MS = 1000L
+        // Apple Vision Pro: NO pulse duration - stable cursor
+        private const val IDLE_TIMEOUT_MS = 150L // Quick return to idle
     }
 }
