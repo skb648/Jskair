@@ -125,7 +125,9 @@ class CameraService : LifecycleService() {
     private var lastFrameTimestampMs = 0L
     @Volatile
     private var lastProcessedFrameMs: Long = 0L
-    private var configuredFps = 24
+    // CRITICAL FIX: 60fps camera processing (Apple Vision Pro level)
+    // 60fps provides buttery smooth cursor movement and instant gesture response
+    private var configuredFps = 60
 
     // Frame watchdog — detects camera pipeline stalls
     private var frameWatchdogJob: Job? = null

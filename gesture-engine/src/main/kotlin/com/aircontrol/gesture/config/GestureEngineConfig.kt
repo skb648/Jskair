@@ -50,9 +50,9 @@ package com.aircontrol.gesture.config
  */
 data class GestureEngineConfig(
     val sensitivity: Int = 50,
-    // UG-03 Fix: Reduced from 5 to 3 frames (~125ms at 24fps) for snappier pose recognition
-    // 3 frames is still enough to filter noise while feeling responsive
-    val poseDebounceFrames: Int = 3,
+    // CRITICAL FIX: Reduced from 3 to 2 frames (~83ms at 24fps) for instant pose recognition
+    // Apple Vision Pro level responsiveness
+    val poseDebounceFrames: Int = 2,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 150f,
     // UG-08 Fix: Increased from 0.35 to 0.40 for easier pinch detection with large hands
@@ -66,12 +66,12 @@ data class GestureEngineConfig(
     val swipeDisplacementRatio: Float = 0.10f,
     val swipeVelocityThreshold: Float = 1.5f,
     val swipeAxisDominanceRatio: Float = 2.0f,
-    // UG-04 Fix: Reduced from 400ms to 200ms for faster arming
-    // 200ms is still long enough to avoid accidental arming while feeling instant
-    val armingDurationMs: Long = 200L,
-    // UG-05 Fix: Reduced from 400ms to 200ms for faster gesture recovery
-    // Users can now perform rapid sequences of gestures
-    val cooldownDurationMs: Long = 200L,
+    // CRITICAL FIX: Reduced from 200ms to 100ms for instant arming (Apple Vision Pro level)
+    // 100ms feels instantaneous while still preventing accidental arming
+    val armingDurationMs: Long = 100L,
+    // CRITICAL FIX: Reduced from 200ms to 100ms for rapid gesture recovery
+    // Apple Vision Pro level responsiveness
+    val cooldownDurationMs: Long = 100L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 500L,
