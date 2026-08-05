@@ -45,6 +45,7 @@ class CursorOverlay(
     // CRITICAL FIX: Remove throttle for 60fps cursor movement (Apple Vision Pro level)
     // Apple Vision Pro uses 60fps+ for buttery smooth cursor
     private val updateThrottleMs = 16L  // ✅ 60fps (16ms) instead of 33ms (30fps)
+    private var lastUpdateTimeMs = 0L   // ✅ Track last update time for throttling
 
     // Whether we've received the first position update
     private var hasInitialized = false
