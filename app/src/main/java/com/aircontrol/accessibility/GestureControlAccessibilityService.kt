@@ -798,12 +798,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // that the visual dot can follow the hand as soon as the drag begins.
         private const val CURSOR_FREEZE_MS_PINCH = 50L
 
-        // UL-01 Fix: Optimized cursor smoothing for lower latency
-        // Old values (0.45, 0.15) caused ~80ms lag. New values reduce to ~40ms
-        // while maintaining smoothness:
-        //   - minCutoff = 0.7 (was 0.45): Lighter smoothing, faster response
-        //   - beta      = 0.08 (was 0.15): Less lag during motion
-        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 0.7f
-        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.08f
+        // BUG #2 FIX: Aligned with Apple Vision Pro specs
+        // Old values (0.7, 0.08) were custom tweaks that didn't match Apple's tuning
+        // New values match the Apple Vision Pro architecture for optimal performance:
+        //   - minCutoff = 1.0 Hz: Lower lag, better jitter elimination (Apple spec)
+        //   - beta      = 0.007:  Lower high-speed delay, minimal filtering (Apple spec)
+        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.0f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.007f
     }
 }

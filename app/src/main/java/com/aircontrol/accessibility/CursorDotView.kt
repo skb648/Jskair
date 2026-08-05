@@ -69,6 +69,10 @@ class CursorDotView(
     // Glow animation
     private var currentGlowAlpha = 0
     private var targetGlowAlpha = 0
+    
+    // BUG #1 FIX: Track animators to prevent stacking
+    private var scaleAnimator: ValueAnimator? = null
+    private var glowAnimator: ValueAnimator? = null
 
     var isArmed: Boolean = false
         set(value) {
@@ -100,7 +104,7 @@ class CursorDotView(
             animateScaleAndGlow()
         }
         removeCallbacks(moveResetRunnable)
-        postDelayed(moveResetRunnable, 150) // Quick return to idle
+        postDelayed(moveResetRunnable, IDLE_TIMEOUT_MS)
     }
 
     /**
@@ -113,6 +117,19 @@ class CursorDotView(
             // Apple Vision Pro hover: 1.05x scale + outer glow
             targetScale = 1.05f
             targetGlowAlpha = 40 // Noticeable but not distracting
+            animateScaleAndGlow()
+        }
+    }
+
+    /**
+     * Reset hover state when cursor leaves interactive element
+     * BUG #9 FIX: Allows hover to be triggered again
+     */
+    fun resetHover() {
+        if (isHovering) {
+            isHovering = false
+            targetScale = 1.0f
+            targetGlowAlpha = 0
             animateScaleAndGlow()
         }
     }
@@ -136,24 +153,44 @@ class CursorDotView(
     }
 
     /**
+     * Visual pulse effect for gesture feedback
+     * BUG #5 FIX: Uses internal scale animation instead of View scaling
+     * to avoid conflicts with other animations
+     */
+    fun pulse() {
+        // Quick expansion then return (1.0x -> 1.15x -> 1.0x)
+        targetScale = 1.15f
+        animateScaleAndGlow()
+        
+        postDelayed({
+            targetScale = 1.0f
+            animateScaleAndGlow()
+        }, 150)
+    }
+
+    /**
      * Smooth animation using damped spring physics (Apple Vision Pro Layer 4)
+     * BUG #1 FIX: Cancel previous animators before starting new ones
      */
     private fun animateScaleAndGlow() {
         if (!isAttachedToWindow) return
         
+        // Cancel previous animators to prevent stacking
+        scaleAnimator?.cancel()
+        glowAnimator?.cancel()
+        
         // Animate scale with spring physics
-        val scaleAnimator = ValueAnimator.ofFloat(currentScale, targetScale).apply {
+        scaleAnimator = ValueAnimator.ofFloat(currentScale, targetScale).apply {
             duration = 150 // Quick but smooth
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animation ->
                 currentScale = animation.animatedValue as Float
                 invalidate()
             }
-        }
-        scaleAnimator.start()
+        }.also { it.start() }
 
         // Animate glow alpha
-        val glowAnimator = ValueAnimator.ofInt(currentGlowAlpha, targetGlowAlpha).apply {
+        glowAnimator = ValueAnimator.ofInt(currentGlowAlpha, targetGlowAlpha).apply {
             duration = 150
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animation ->
@@ -161,8 +198,7 @@ class CursorDotView(
                 glowPaint.alpha = currentGlowAlpha
                 invalidate()
             }
-        }
-        glowAnimator.start()
+        }.also { it.start() }
     }
 
     override fun onAttachedToWindow() {

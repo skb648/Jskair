@@ -557,9 +557,9 @@ class GestureEngine(
         }
         lastThumbIndexDistance = thumbIndexDistance
 
-        // Use the pinch center as the gesture position
-        val pinchX = (thumbTip.x + indexTip.x) / 2f
-        val pinchY = (thumbTip.y + indexTip.y) / 2f
+        // BUG #8 FIX: Removed redundant pinchX/pinchY calculation
+        // We use lastIndexTipX/Y for cursor position, not pinch center
+        // This eliminates unnecessary computation
 
         // ========== Dual-Threshold FSM Logic ==========
         val timeInState = timestampMs - pinchStateEntryTimeMs
@@ -574,9 +574,14 @@ class GestureEngine(
             }
             
             PinchState.HOVER -> {
+                // BUG #6 FIX: Check pinch cooldown BEFORE entering PINCH_START
+                // This prevents the user from wasting 35ms holding a pinch that will be rejected
+                // If we're still in the cooldown period (150ms after last release), stay in HOVER
+                val inCooldown = lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS
+                
                 // Pre-interaction certainty - fingers close but not pinching yet
                 // Check if pinch threshold crossed (enter PINCH_START)
-                if (thumbIndexDistance < PINCH_ENTER_THRESHOLD) {
+                if (thumbIndexDistance < PINCH_ENTER_THRESHOLD && !inCooldown) {
                     pinchState = PinchState.PINCH_START
                     pinchStateEntryTimeMs = timestampMs
                 } 
@@ -594,18 +599,15 @@ class GestureEngine(
                     pinchState = PinchState.PINCH_HOLD
                     pinchStateEntryTimeMs = timestampMs
                     
-                    // Bug #10 Fix: Pinch cooldown check
-                    if (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS) {
-                        pinchState = PinchState.IDLE
-                        updatePrevWrist(wrist, timestampMs)
-                        return
-                    }
+                    // BUG #6 FIX: Cooldown check moved to HOVER state (earlier check)
+                    // No need to check here since we already validated before entering PINCH_START
                     
                     // Emit PINCH_START event
                     wasPinching = true
                     currentPinchPhase = PinchPhase.START
-                    pinchStartX = pinchX
-                    pinchStartY = pinchY
+                    // BUG #8 FIX: Use lastIndexTipX/Y instead of pinch center
+                    pinchStartX = lastIndexTipX
+                    pinchStartY = lastIndexTipY
                     pinchAnchoredX = lastIndexTipX
                     pinchAnchoredY = lastIndexTipY
                     
@@ -820,15 +822,16 @@ class GestureEngine(
         // flips from noisy landmarks near camera boundaries.
         private const val LOW_CONFIDENCE_DEBOUNCE_FRAMES = 7
 
-        // Bug #13 Fix: minCutoff hint passed to the CursorSmoother via
+        // BUG #3 FIX: minCutoff hint passed to the CursorSmoother via
         // CursorMoved.minCutoffHint when low-confidence mitigations are active.
-        // The CursorSmoother's default minCutoff is 0.45 (set in
-        // GestureControlAccessibilityService). Raising it to 1.2 for low-
-        // confidence frames applies much heavier smoothing at rest, suppressing
-        // the erratic jumps that survive the in-engine cursor freeze. When
-        // confidence recovers, minCutoffHint is null, signaling the consumer to
-        // restore the 0.45 default.
-        private const val LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF = 1.2f
+        // The CursorSmoother's default minCutoff is 1.0 (Apple Vision Pro spec).
+        // Raising it to 2.0 for low-confidence frames applies 2x heavier smoothing
+        // at rest, suppressing the erratic jumps that survive the in-engine cursor
+        // freeze. When confidence recovers, minCutoffHint is null, signaling the
+        // consumer to restore the 1.0 default.
+        // Old value was 1.2f but with base 1.0 that was only +20% (ineffective).
+        // New value 2.0f provides +100% increase for effective jitter suppression.
+        private const val LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF = 2.0f
 
         // Bug: Intermittent Pinch Misfire Fix — Epsilon for float comparisons
         // in the pinch hysteresis distance check (prevents divide-by-zero when

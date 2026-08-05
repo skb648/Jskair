@@ -166,25 +166,34 @@ class CursorOverlay(
      * UG-09/UG-10 Fix: Triggers a visual pulse effect on the cursor.
      * Called when a gesture is successfully dispatched to provide clear visual
      * confirmation to the user that their gesture was recognized.
-     * The pulse is a quick scale-up and scale-down animation (200ms).
+     * BUG #5 FIX: Uses internal CursorDotView.pulse() instead of View scaling
      */
     fun pulse() {
-        val view = cursorView ?: return
-        if (!isVisible) return
-        
-        // Quick scale pulse animation: 1.0 → 1.3 → 1.0 over 200ms
-        view.animate()
-            .scaleX(1.3f)
-            .scaleY(1.3f)
-            .setDuration(100)
-            .withEndAction {
-                view.animate()
-                    .scaleX(1.0f)
-                    .scaleY(1.0f)
-                    .setDuration(100)
-                    .start()
-            }
-            .start()
+        (cursorView as? CursorDotView)?.pulse()
+    }
+
+    /**
+     * Notify cursor is hovering over interactive element.
+     * BUG #4 FIX: Exposes CursorDotView.notifyHover() for external triggering
+     */
+    fun notifyHover() {
+        (cursorView as? CursorDotView)?.notifyHover()
+    }
+
+    /**
+     * Reset hover state when cursor leaves interactive element.
+     * BUG #4 FIX: Exposes CursorDotView.resetHover() for external triggering
+     */
+    fun resetHover() {
+        (cursorView as? CursorDotView)?.resetHover()
+    }
+
+    /**
+     * Notify cursor tap/click action.
+     * BUG #4 FIX: Exposes CursorDotView.notifyTap() for external triggering
+     */
+    fun notifyTap() {
+        (cursorView as? CursorDotView)?.notifyTap()
     }
 
     /**
@@ -259,7 +268,7 @@ class CursorOverlay(
 
         val now = System.currentTimeMillis()
         if (now - lastUpdateTimeMs < updateThrottleMs) {
-            return // Throttle overlay updates to ~30fps
+            return // BUG #7 FIX: Throttle overlay updates to 60fps (16ms)
         }
         lastUpdateTimeMs = now
 
