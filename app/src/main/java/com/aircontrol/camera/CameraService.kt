@@ -110,6 +110,7 @@ class CameraService : LifecycleService() {
     }
 
     private lateinit var handTracker: HandTracker
+    private lateinit var faceTracker: com.aircontrol.tracking.FaceTracker
     private lateinit var settingsRepository: com.aircontrol.data.repository.SettingsRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -125,9 +126,10 @@ class CameraService : LifecycleService() {
     private var lastFrameTimestampMs = 0L
     @Volatile
     private var lastProcessedFrameMs: Long = 0L
-    // CRITICAL FIX: 60fps camera processing (Apple Vision Pro level)
-    // 60fps provides buttery smooth cursor movement and instant gesture response
-    private var configuredFps = 60
+    // Default analysis FPS. This is a transient default: it is replaced by the
+    // user's configured analysisFps (15/24/30) as soon as preferences flow in.
+    // (AdaptiveFpsController coerces to the supported set {5,10,15,24,30}.)
+    private var configuredFps = 30
 
     // Frame watchdog — detects camera pipeline stalls
     private var frameWatchdogJob: Job? = null
@@ -172,6 +174,7 @@ class CameraService : LifecycleService() {
         try {
             val entryPoint = com.aircontrol.di.AccessibilityServiceEntryPoint.getFromApplication(app)
             handTracker = entryPoint.handTracker()
+            faceTracker = entryPoint.faceTracker()
             settingsRepository = entryPoint.settingsRepository()
         } catch (e: Exception) {
             Timber.e(e, "Failed to inject dependencies via Hilt EntryPoint. Stopping service.")
@@ -271,6 +274,9 @@ class CameraService : LifecycleService() {
         updateState(isRunning = _state.get().isRunning, isPaused = false)
 
         handTracker.initialize()
+        // Face tracker runs in parallel for "eye is mouse" gaze tracking. It
+        // gracefully no-ops if the model file is missing or init fails.
+        faceTracker.initialize()
 
         // Subscribe to settings updates that affect the camera pipeline.
         trackingJobs.add(serviceScope.launch {
@@ -364,6 +370,7 @@ class CameraService : LifecycleService() {
         imageAnalysis = null
 
         handTracker.close()
+        faceTracker.close()
         adaptiveFpsController.reset()
         // M-02 Fix: Use updateState to atomically reset both flags
         updateState(isRunning = false, isPaused = false)
@@ -423,6 +430,11 @@ class CameraService : LifecycleService() {
             val mpImage = imageProxyToMPImage(imageProxy)
             if (mpImage != null) {
                 handTracker.processFrame(mpImage, currentTimestampMs)
+                // Gaze tracking (eye is mouse). Runs on every frame; the face
+                // landmarker handles its own async processing.
+                if (faceTracker.isInitialized()) {
+                    faceTracker.processFrame(mpImage, currentTimestampMs)
+                }
             }
         } catch (e: Exception) {
             Timber.e(e, "Error processing image frame")
@@ -636,6 +648,8 @@ class CameraService : LifecycleService() {
         // Reinitialize HandTracker in case it was the cause of the stall
         handTracker.close()
         handTracker.initialize()
+        faceTracker.close()
+        faceTracker.initialize()
 
         restartJob = serviceScope.launch {
             try {
@@ -650,7 +664,7 @@ class CameraService : LifecycleService() {
                         .build()
 
                     val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
+                        .setResolutionStrategy(ResolutionStrategy(android.util.Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
                         .build()
                     val analysis = ImageAnalysis.Builder()
                         .setResolutionSelector(resolutionSelector)

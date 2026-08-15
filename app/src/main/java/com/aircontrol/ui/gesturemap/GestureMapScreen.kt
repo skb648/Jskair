@@ -91,8 +91,8 @@ fun GestureMapScreen(
     LaunchedEffect(showResetSnackbar) {
         if (showResetSnackbar) {
             val result = snackbarHostState.showSnackbar(
-                message = "Gesture map reset to defaults",
-                actionLabel = "Undo",
+                message = stringResource(R.string.gesture_map_reset_snackbar),
+                actionLabel = stringResource(R.string.gesture_map_undo),
             )
             if (result == SnackbarResult.ActionPerformed) {
                 viewModel.undoReset()
@@ -127,7 +127,7 @@ fun GestureMapScreen(
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Text(
-                            text = "Reset",
+                            text = stringResource(R.string.gesture_map_reset),
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
@@ -151,7 +151,7 @@ fun GestureMapScreen(
             ) {
                 item {
                     Text(
-                        text = "Tap any gesture to remap its action",
+                        text = stringResource(R.string.gesture_map_description),
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary,
                         modifier = Modifier.padding(vertical = Dimens.spacing8),
@@ -319,7 +319,7 @@ private fun ActionSelectionSheet(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "Choose what this gesture does",
+                        text = stringResource(R.string.gesture_map_select_action),
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                     )
@@ -357,7 +357,7 @@ private fun ActionSelectionSheet(
                                 )
                                 Spacer(modifier = Modifier.width(Dimens.spacing8))
                                 Text(
-                                    text = "Conflict detected",
+                                    text = stringResource(R.string.gesture_map_conflict_title),
                                     style = MaterialTheme.typography.titleSmall,
                                     color = WarningOrange,
                                     fontWeight = FontWeight.SemiBold,
@@ -365,7 +365,11 @@ private fun ActionSelectionSheet(
                             }
                             Spacer(modifier = Modifier.height(Dimens.spacing4))
                             Text(
-                                text = "\"${conflictInfo.existingLabel}\" is already mapped to ${formatActionName(conflictInfo.existingAction)}",
+                                text = stringResource(
+                                    R.string.gesture_map_conflict_message,
+                                    conflictInfo.existingLabel,
+                                    formatActionName(conflictInfo.existingAction),
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -383,13 +387,13 @@ private fun ActionSelectionSheet(
                                         modifier = Modifier.size(16.dp),
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Swap")
+                                    Text(stringResource(R.string.gesture_map_swap))
                                 }
                                 OutlinedButton(
                                     onClick = onConflictCancel,
                                     shape = RoundedCornerShape(8.dp),
                                 ) {
-                                    Text("Cancel")
+                                    Text(stringResource(R.string.gesture_map_cancel))
                                 }
                             }
                         }
@@ -483,6 +487,7 @@ private fun formatActionName(action: GestureAction): String = when (action) {
     GestureAction.SCREENSHOT -> "Screenshot"
     GestureAction.LOCK_SCREEN -> "Lock Screen"
     GestureAction.TAP -> "Tap"
+    GestureAction.DOUBLE_TAP -> "Double Tap"
     GestureAction.LONG_PRESS -> "Long Press"
     GestureAction.DRAG -> "Drag"
 }
@@ -504,6 +509,7 @@ private fun actionIcon(action: GestureAction): ImageVector = when (action) {
     GestureAction.SCREENSHOT -> Icons.Default.Check
     GestureAction.LOCK_SCREEN -> Icons.Default.Close
     GestureAction.TAP -> Icons.Default.Check
+    GestureAction.DOUBLE_TAP -> Icons.Default.Check
     GestureAction.LONG_PRESS -> Icons.Default.Check
     GestureAction.DRAG -> Icons.Default.SwapHoriz
 }

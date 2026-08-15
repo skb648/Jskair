@@ -61,6 +61,22 @@ class CursorDotView(
     private var isMoving = false
     private var isHovering = false
     private var isTapping = false
+
+    // F1: Dwell progress ring (0..1), drawn as an arc around the cursor.
+    private var dwellProgress = 0f
+
+    // F11: Ripple feedback — an expanding ring on click.
+    private var rippleRadius = 0f
+    private var rippleAlpha = 0
+    private var rippleAnimator: ValueAnimator? = null
+    private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = accentColor
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * resources.displayMetrics.density
+    }
+
+    // F9: Reduced motion — disable pulse/glow/ripple animations.
+    private var reducedMotion = false
     
     // Smooth scale animation (Apple Vision Pro style)
     private var currentScale = 1.0f
@@ -158,14 +174,67 @@ class CursorDotView(
      * to avoid conflicts with other animations
      */
     fun pulse() {
+        if (reducedMotion) return
         // Quick expansion then return (1.0x -> 1.15x -> 1.0x)
-        targetScale = 1.15f
+        targetScale = 1.08f
         animateScaleAndGlow()
         
         postDelayed({
             targetScale = 1.0f
             animateScaleAndGlow()
         }, 150)
+    }
+
+    /**
+     * F11: Ripple feedback — an expanding ring on click (Vision Pro style).
+     * A softer, cleaner confirmation than the scale "pop".
+     */
+    fun ripple() {
+        if (reducedMotion) return
+        rippleAnimator?.cancel()
+        rippleRadius = dotSizePx * 0.6f
+        rippleAlpha = 140
+        rippleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 400
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { anim ->
+                val t = anim.animatedValue as Float
+                rippleRadius = dotSizePx * (0.6f + 1.6f * t)
+                rippleAlpha = (140 * (1f - t)).toInt()
+                invalidate()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    rippleAlpha = 0
+                    invalidate()
+                }
+            })
+        }.also { it.start() }
+    }
+
+    /**
+     * F1: Sets the dwell progress ring (0..1). 0 = hidden, 1 = click imminent.
+     */
+    fun setDwellProgress(progress: Float) {
+        dwellProgress = progress.coerceIn(0f, 1f)
+        invalidate()
+    }
+
+    /**
+     * F9: Reduced motion — disables pulse/glow/ripple animations.
+     */
+    fun setReducedMotion(reduced: Boolean) {
+        reducedMotion = reduced
+        if (reduced) {
+            rippleAnimator?.cancel()
+            scaleAnimator?.cancel()
+            glowAnimator?.cancel()
+            currentScale = 1.0f
+            currentGlowAlpha = 0
+            glowPaint.alpha = 0
+            rippleAlpha = 0
+        }
+        invalidate()
     }
 
     /**
@@ -256,6 +325,21 @@ class CursorDotView(
         // Draw cursor dot (solid, stable, no blinking)
         val dotRadius = dotSizePx * 0.5f
         canvas.drawCircle(centerX, centerY, dotRadius, dotPaint)
+
+        // F1: dwell progress ring (arc sweeping as the dwell click approaches).
+        if (dwellProgress > 0f) {
+            val r = dotSizePx * 0.9f
+            val rect = android.graphics.RectF(
+                centerX - r, centerY - r, centerX + r, centerY + r,
+            )
+            canvas.drawArc(rect, -90f, 360f * dwellProgress, false, ringPaint)
+        }
+
+        // F11: ripple ring (expanding on click).
+        if (rippleAlpha > 0) {
+            ripplePaint.alpha = rippleAlpha
+            canvas.drawCircle(centerX, centerY, rippleRadius, ripplePaint)
+        }
 
         canvas.restore()
     }

@@ -21,26 +21,26 @@ package com.aircontrol.gesture.config
  *
  * @param pinchDistanceRatio Threshold for pinch detection: thumb-tip
  *   to index-tip distance < this ratio * hand-size (wrist-to-middle-MCP).
- *   Default: 0.35 (about 1/3 of hand size).
+ *   Default: 0.40.
  *
  * @param swipeWindowMs Sliding window duration for swipe detection.
- *   Default: 350ms.
+ *   Default: 500ms.
  *
  * @param swipeDisplacementRatio Minimum wrist displacement as a fraction
- *   of frame dimension to qualify as a swipe. Default: 0.15 (15%).
+ *   of frame dimension to qualify as a swipe. Default: 0.08 (8%).
  *
  * @param swipeVelocityThreshold Minimum peak velocity in normalized
- *   units per second for a swipe. Default: 1.5.
+ *   units per second for a swipe. Default: 1.2.
  *
  * @param swipeAxisDominanceRatio Minimum ratio of dominant axis
  *   displacement to secondary axis displacement to reject diagonal
  *   ambiguity. Default: 2.0 (2:1 ratio required).
  *
  * @param armingDurationMs Duration the open palm must be held to
- *   transition from ARMING to ARMED. Default: 400ms.
+ *   transition from ARMING to ARMED. Default: 100ms.
  *
  * @param cooldownDurationMs Duration of the COOLDOWN state after
- *   a gesture is executed. Default: 350ms.
+ *   a gesture is executed. Default: 100ms.
  *
  * @param autoDisarmTimeoutMs Duration of no hand detection before
  *   auto-disarming. Default: 10_000ms (10 seconds).
@@ -50,9 +50,9 @@ package com.aircontrol.gesture.config
  */
 data class GestureEngineConfig(
     val sensitivity: Int = 50,
-    // CRITICAL FIX: Reduced from 3 to 2 frames (~83ms at 24fps) for instant pose recognition
-    // Apple Vision Pro level responsiveness
-    val poseDebounceFrames: Int = 2,
+    // 3 frames (~125ms @ 24fps): enough to debounce noisy landmarks without the
+    // DISARMED↔ARMING flapping that 2 frames caused (cursor/pill blinking).
+    val poseDebounceFrames: Int = 3,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 150f,
     // UG-08 Fix: Increased from 0.35 to 0.40 for easier pinch detection with large hands
@@ -61,10 +61,12 @@ data class GestureEngineConfig(
     // UG-06 Fix: Increased from 350ms to 500ms for slower, more deliberate swipes
     // Users with limited mobility or slower movements can now complete swipes
     val swipeWindowMs: Long = 500L,
-    // UG-07 Fix: Reduced from 15% to 10% for easier swipe detection with small hands
-    // 10% is still enough to distinguish intentional swipes from tremor
-    val swipeDisplacementRatio: Float = 0.10f,
-    val swipeVelocityThreshold: Float = 1.5f,
+    // UG-07 Fix: Reduced from 15% to 10% for easier swipe detection with small hands.
+    // Further reduced to 8% so swipes trigger more consistently ("swipe miss hota hai").
+    val swipeDisplacementRatio: Float = 0.08f,
+    val swipeVelocityThreshold: Float = 1.2f,
+    // Kept at 2.0: relaxing this would accept diagonal swipes and worsen the
+    // "kab kya swipe ho jata hai pata nahi" direction-confusion complaint.
     val swipeAxisDominanceRatio: Float = 2.0f,
     // CRITICAL FIX: Reduced from 200ms to 100ms for instant arming (Apple Vision Pro level)
     // 100ms feels instantaneous while still preventing accidental arming
@@ -75,6 +77,22 @@ data class GestureEngineConfig(
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 500L,
+
+    /**
+     * How long an open palm must be held (while ARMED) to trigger the PalmHome
+     * gesture. Default 2000ms — long enough to avoid accidental triggers during
+     * normal use (OPEN_PALM is the neutral ARMED pose).
+     */
+    val palmHomeHoldMs: Long = 2000L,
+
+    /**
+     * User-calibrated pinch ratio (thumb-tip to index-tip distance / hand size)
+     * measured during calibration. When non-null, it personalizes the pinch
+     * "enter" threshold so clicking feels tuned to the user's own hand. Null
+     * means "not calibrated" — the engine falls back to the sensitivity-scaled
+     * default threshold.
+     */
+    val calibratedPinchRatio: Float? = null,
 ) {
     init {
         require(sensitivity in 0..100) { "Sensitivity must be 0-100, got $sensitivity" }
@@ -91,6 +109,7 @@ data class GestureEngineConfig(
         require(autoDisarmTimeoutMs > 0) { "Auto-disarm timeout must be positive" }
         require(fistDisarmDurationMs > 0) { "Fist disarm duration must be positive" }
         require(swipeCooldownMs > 0) { "Swipe cooldown must be positive" }
+        require(palmHomeHoldMs > 0) { "Palm home hold must be positive" }
     }
 
     /**
@@ -140,6 +159,15 @@ data class GestureEngineConfig(
 
     fun scaledThumbExtensionAngleDeg(): Float =
         thumbExtensionAngleDeg / (0.5f + sensitivity / 100f)
+
+    /**
+     * Multiplier applied to the pinch FSM thresholds so the sensitivity slider
+     * actually influences click/drag pinch detection (it previously had no
+     * effect — the FSM used hardcoded constants). 1.0 at sensitivity=50, 1.5 at
+     * 100 (easier: pinch engages at a larger finger gap), 0.5 at 0 (harder).
+     */
+    val pinchSensitivityFactor: Float
+        get() = 0.5f + sensitivity / 100f
 
     companion object {
         // Bug #11 Fix: Absolute minimum pinch distance ratio. Even at sensitivity=100,

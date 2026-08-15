@@ -20,7 +20,7 @@ data class GestureMapConfig(
     val entries: List<GestureMapEntry> = defaultEntries(),
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 3
+        const val CURRENT_SCHEMA_VERSION = 4
 
         fun defaultEntries(): List<GestureMapEntry> = listOf(
             GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_LEFT),
@@ -33,6 +33,7 @@ data class GestureMapConfig(
             GestureMapEntry("pose_thumb_up", "Thumb Up", GestureAction.VOLUME_UP),
             GestureMapEntry("pose_thumb_down", "Thumb Down", GestureAction.VOLUME_DOWN),
             GestureMapEntry("pose_pinch_hold", "Pinch Hold (Drag)", GestureAction.DRAG),
+            GestureMapEntry("palm_home", "Palm (Hold)", GestureAction.HOME),
         )
 
         /**

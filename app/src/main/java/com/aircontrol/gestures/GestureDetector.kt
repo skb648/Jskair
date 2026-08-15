@@ -52,6 +52,12 @@ interface GestureDetector : AutoCloseable {
      */
     fun updateCustomTemplates(templates: List<LandmarkTemplate>)
 
+    /**
+     * Personalizes pinch detection using user-measured calibration data.
+     * Pass 0f (or handSizeMm <= 0) to clear calibration.
+     */
+    fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float)
+
     fun reset()
 
     override fun close() {
@@ -121,6 +127,10 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
      */
     override fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
         engine.updateCustomTemplates(templates)
+    }
+
+    override fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {
+        engine.updateCalibration(handSizeMm, pinchDistanceMm)
     }
 
     override fun reset() {

@@ -27,7 +27,7 @@ import timber.log.Timber
  * - Front camera mirroring applied via ActionDispatcher coordinate mapping
  */
 class CursorOverlay(
-    private val context: Context = context.applicationContext,
+    private val context: Context,
     private var screenWidth: Int,
     private var screenHeight: Int,
 ) {
@@ -88,7 +88,7 @@ class CursorOverlay(
         val targetX = ActionDispatcher.normalizeToScreenX(normX, screenW)
         val targetY = ActionDispatcher.normalizeToScreenY(normY, screenHeight)
 
-        // Apply minimal dead-zone: skip update if movement is too small
+        // Dead-zone: skip update if movement is too small (sub-pixel jitter).
         if (hasInitialized) {
             val dx = targetX - currentScreenX
             val dy = targetY - currentScreenY
@@ -100,11 +100,11 @@ class CursorOverlay(
             }
         }
 
-        // CRITICAL FIX: Add exponential interpolation for sub-pixel smoothness (Apple Vision Pro level)
-        // Smooth interpolation factor: 30% of distance per frame for buttery smooth movement
-        val interpolationFactor = 0.3f
-        currentScreenX += (targetX - currentScreenX) * interpolationFactor
-        currentScreenY += (targetY - currentScreenY) * interpolationFactor
+        // Set position directly. Smoothing is handled by the One Euro filter in
+        // GestureControlAccessibilityService (CursorSmoother); applying a second
+        // exponential interpolation here caused double-smoothing lag.
+        currentScreenX = targetX
+        currentScreenY = targetY
         hasInitialized = true
 
         // Update layout immediately for minimal latency
@@ -123,6 +123,10 @@ class CursorOverlay(
         if (!isAdded) {
             addView()
         }
+        // Fix: don't restart the fade-in if already visible. Previously every
+        // call (once per frame) reset alpha to 0 and re-ran the 200ms fade-in,
+        // so the cursor never reached full opacity → constant blinking.
+        if (isVisible && cursorView?.visibility == View.VISIBLE) return
         cursorView?.apply {
             // UC-04 Fix: Added fade-in animation (200ms) to match fade-out
             // This creates a smooth, polished feel instead of abrupt appearance
@@ -194,6 +198,28 @@ class CursorOverlay(
      */
     fun notifyTap() {
         (cursorView as? CursorDotView)?.notifyTap()
+    }
+
+    /**
+     * F11: Ripple feedback — an expanding ring on click (Vision Pro style). Replaces
+     * the scale "pop" pulse for gesture confirmation.
+     */
+    fun ripple() {
+        (cursorView as? CursorDotView)?.ripple()
+    }
+
+    /**
+     * F1: Sets the dwell progress (0..1) shown as a circular ring around the cursor.
+     */
+    fun setDwellProgress(progress: Float) {
+        (cursorView as? CursorDotView)?.setDwellProgress(progress)
+    }
+
+    /**
+     * F9: Reduced motion — disables pulse/glow/ripple animations.
+     */
+    fun setReducedMotion(reduced: Boolean) {
+        (cursorView as? CursorDotView)?.setReducedMotion(reduced)
     }
 
     /**

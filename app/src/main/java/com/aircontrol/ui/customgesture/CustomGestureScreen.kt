@@ -378,6 +378,7 @@ private fun GestureAction.displayName(): String = when (this) {
     GestureAction.SCREENSHOT -> "Screenshot"
     GestureAction.LOCK_SCREEN -> "Lock Screen"
     GestureAction.TAP -> "Tap"
+    GestureAction.DOUBLE_TAP -> "Double Tap"
     GestureAction.LONG_PRESS -> "Long Press"
     GestureAction.DRAG -> "Drag"
 }

@@ -314,6 +314,9 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
         this.config = newConfig
         // Update debounce frames if it changed
         effectiveDebounceFrames = newConfig.poseDebounceFrames
+        // Propagate to the finger detector so sensitivity changes actually affect
+        // finger/thumb extension detection (previously the detector kept a stale config).
+        fingerDetector.updateConfig(newConfig)
     }
 
     internal fun distance2D(a: Landmark3D, b: Landmark3D): Float {

@@ -110,4 +110,64 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.updateStatusPillEnabled(enabled)
         }
     }
+
+    fun updateDwellEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateDwellEnabled(enabled)
+        }
+    }
+
+    fun updateDwellDuration(durationMs: Int) {
+        viewModelScope.launch {
+            settingsRepository.updateDwellDuration(durationMs)
+        }
+    }
+
+    fun updateStationaryClickEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateStationaryClickEnabled(enabled)
+        }
+    }
+
+    fun updatePalmHomeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updatePalmHomeEnabled(enabled)
+        }
+    }
+
+    fun updateSitBackMode(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateSitBackMode(enabled)
+        }
+    }
+
+    fun updateReducedMotion(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateReducedMotion(enabled)
+        }
+    }
+
+    fun updateCursorGain(gain: Int) {
+        viewModelScope.launch {
+            settingsRepository.updateCursorGain(gain)
+        }
+    }
+
+    fun updateEyeTrackingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateEyeTrackingEnabled(enabled)
+        }
+    }
+
+    fun updateGazeSensitivity(sensitivity: Int) {
+        viewModelScope.launch {
+            settingsRepository.updateGazeSensitivity(sensitivity)
+        }
+    }
+
+    fun updateGazeInvertX(invert: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateGazeInvertX(invert)
+        }
+    }
 }

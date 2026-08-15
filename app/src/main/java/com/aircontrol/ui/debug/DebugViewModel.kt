@@ -154,6 +154,7 @@ class DebugViewModel @Inject constructor(
                     is GestureEvent.Armed -> "ARMED"
                     is GestureEvent.Disarmed -> "DISARMED"
                     is GestureEvent.CursorMoved -> "" // Don't update label
+                    is GestureEvent.PalmHome -> "Palm Home"
                 }
                 if (label.isNotEmpty()) {
                     _gestureLabel.value = label

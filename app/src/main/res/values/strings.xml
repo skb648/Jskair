@@ -91,17 +91,6 @@
     <!-- Gesture Map -->
     <string name="gesture_map_title">Gesture Map</string>
     <string name="gesture_map_description">Tap any gesture to remap its action</string>
-    <string name="gesture_map_swipe_left">Swipe Left</string>
-    <string name="gesture_map_swipe_right">Swipe Right</string>
-    <string name="gesture_map_swipe_up">Swipe Up</string>
-    <string name="gesture_map_swipe_down">Swipe Down</string>
-    <string name="gesture_map_pinch">Pinch</string>
-    <string name="gesture_map_fist">Fist</string>
-    <string name="gesture_map_open_palm">Open Palm</string>
-    <string name="gesture_map_pointing">Pointing</string>
-    <string name="gesture_map_victory">Victory</string>
-    <string name="gesture_map_thumb_up">Thumb Up</string>
-    <string name="gesture_map_thumb_down">Thumb Down</string>
     <string name="gesture_map_select_action">Choose what this gesture does</string>
     <string name="gesture_map_conflict_title">Conflict detected</string>
     <string name="gesture_map_conflict_message">\"%1$s\" is already mapped to %2$s</string>

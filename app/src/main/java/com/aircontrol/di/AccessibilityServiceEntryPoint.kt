@@ -4,6 +4,7 @@ import com.aircontrol.accessibility.ActionDispatcher
 import com.aircontrol.control.CursorController
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gestures.GestureDetector
+import com.aircontrol.tracking.FaceTracker
 import com.aircontrol.tracking.HandTracker
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -20,6 +21,7 @@ import dagger.hilt.components.SingletonComponent
 interface AccessibilityServiceEntryPoint {
 
     fun handTracker(): HandTracker
+    fun faceTracker(): FaceTracker
     fun gestureDetector(): GestureDetector
     fun actionDispatcher(): ActionDispatcher
     fun settingsRepository(): SettingsRepository

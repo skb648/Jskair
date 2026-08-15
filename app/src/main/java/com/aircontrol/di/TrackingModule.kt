@@ -6,6 +6,8 @@ import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.gestures.GestureDetectorImpl
 import com.aircontrol.service.AirControlService
 import com.aircontrol.service.AirControlServiceImpl
+import com.aircontrol.tracking.FaceTracker
+import com.aircontrol.tracking.FaceTrackerImpl
 import com.aircontrol.tracking.HandTracker
 import com.aircontrol.tracking.HandTrackerImpl
 import dagger.Binds
@@ -21,6 +23,10 @@ abstract class TrackingModule {
     @Binds
     @Singleton
     abstract fun bindHandTracker(impl: HandTrackerImpl): HandTracker
+
+    @Binds
+    @Singleton
+    abstract fun bindFaceTracker(impl: FaceTrackerImpl): FaceTracker
 
     @Binds
     @Singleton

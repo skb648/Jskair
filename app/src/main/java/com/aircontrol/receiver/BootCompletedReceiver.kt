@@ -92,10 +92,14 @@ class BootCompletedReceiver : BroadcastReceiver() {
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        if (manager.getNotificationChannel(CameraService.CHANNEL_ID) == null) {
+        // Use a DEDICATED channel for boot-resume, not CameraService.CHANNEL_ID.
+        // CameraService creates its channel at IMPORTANCE_LOW; Android never lowers
+        // an existing channel's importance, so reusing that channel would have made
+        // this resume notification silently non-audible.
+        if (manager.getNotificationChannel(BOOT_RESUME_CHANNEL_ID) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(
-                    CameraService.CHANNEL_ID,
+                    BOOT_RESUME_CHANNEL_ID,
                     context.getString(R.string.notification_channel_name),
                     // H-02 Fix: Use DEFAULT importance instead of LOW for boot recovery
                     // Users who enabled "Start on Boot" expect to be notified audibly
@@ -131,7 +135,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
         )
 
         // H-02 Fix: Improved notification with action button and better UX
-        val notification = NotificationCompat.Builder(context, CameraService.CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, BOOT_RESUME_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_tracking_notification)
             .setContentTitle(context.getString(R.string.boot_resume_notification_title))
             .setContentText(context.getString(R.string.boot_resume_notification_text))
@@ -157,5 +161,10 @@ class BootCompletedReceiver : BroadcastReceiver() {
         private const val BOOT_RESUME_NOTIFICATION_ID = 1002
         private const val BOOT_RESUME_REQUEST_CODE = 2002
         private const val BOOT_RESUME_ACTION_REQUEST_CODE = 2003
+        // Dedicated channel (see postResumeNotification) — separate from the
+        // camera foreground-service channel so the resume notification can be
+        // audible (IMPORTANCE_DEFAULT) without conflicting with the LOW-importance
+        // tracking channel.
+        private const val BOOT_RESUME_CHANNEL_ID = "aircontrol_boot_resume"
     }
 }

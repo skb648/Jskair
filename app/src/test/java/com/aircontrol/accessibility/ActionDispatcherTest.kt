@@ -32,150 +32,129 @@ class ActionDispatcherTest {
     }
 
     // ========== normalizeToScreenX ==========
+    // Dead-zone mapping: activePos = (normX - 0.10) / 0.80, clamped to [0,1].
+    // No mirror here — front-camera mirroring is applied upstream in CameraService.
 
     @Test
-    fun `normalizeToScreenX at center maps to roughly center of screen`() {
+    fun `normalizeToScreenX at center maps to center of screen`() {
         val screenWidth = 1080
         val result = actionDispatcher.normalizeToScreenX(0.5f, screenWidth)
-        // Mirrored: 1 - 0.5 = 0.5, then with margin: 0.1 + 0.5 * 0.8 = 0.5
-        // 0.5 * 1080 = 540
+        // (0.5 - 0.10) / 0.80 = 0.5 -> 540
         assertEquals(540f, result, 1f)
     }
 
     @Test
-    fun `normalizeToScreenX applies mirroring`() {
+    fun `normalizeToScreenX clamps dead zones to edges`() {
         val screenWidth = 1080
-        // normX = 0.0 -> mirrored = 1.0 -> expanded = 0.1 + 1.0 * 0.8 = 0.9 -> 972
-        val result0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        // normX = 1.0 -> mirrored = 0.0 -> expanded = 0.1 + 0.0 * 0.8 = 0.1 -> 108
-        val result1 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
-
-        // Mirroring means 0 maps to the right side and 1 maps to the left side
-        assertTrue("normX=0 should map to right side", result0 > screenWidth / 2f)
-        assertTrue("normX=1 should map to left side", result1 < screenWidth / 2f)
+        val leftEdge = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val rightEdge = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        // 0.0 is inside the left 10% dead zone -> clamps to left edge (0)
+        assertEquals(0f, leftEdge, 0.01f)
+        // 1.0 is inside the right 10% dead zone -> clamps to right edge (1080)
+        assertEquals(1080f, rightEdge, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenX edge values are within screen bounds`() {
         val screenWidth = 1080
-        val result0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        val result1 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
-
-        assertTrue("X result should be >= 0 for normX=0", result0 >= 0f)
-        assertTrue("X result should be <= screenWidth for normX=0", result0 <= screenWidth.toFloat())
-        assertTrue("X result should be >= 0 for normX=1", result1 >= 0f)
-        assertTrue("X result should be <= screenWidth for normX=1", result1 <= screenWidth.toFloat())
+        for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
+            val result = actionDispatcher.normalizeToScreenX(v, screenWidth)
+            assertTrue("X for $v should be in bounds", result >= 0f && result <= screenWidth.toFloat())
+        }
     }
 
     @Test
-    fun `normalizeToScreenX with margin expansion makes corners reachable`() {
+    fun `normalizeToScreenX is monotonically increasing`() {
         val screenWidth = 1080
-        // With margin fraction 0.1:
-        // normX = 0 -> mirrored = 1.0 -> expanded = 0.1 + 1.0 * 0.8 = 0.9 -> 972
-        val result0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        assertTrue("Edge should be within 10% margin", result0 > screenWidth * 0.8f)
-
-        // normX = 1 -> mirrored = 0.0 -> expanded = 0.1 + 0.0 * 0.8 = 0.1 -> 108
-        val result1 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
-        assertTrue("Edge should be within 10% margin", result1 < screenWidth * 0.2f)
-    }
-
-    @Test
-    fun `normalizeToScreenX is monotonic when accounting for mirror`() {
-        val screenWidth = 1080
-        // Due to mirroring, increasing normX decreases the screen position
-        val result0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        val result25 = actionDispatcher.normalizeToScreenX(0.25f, screenWidth)
-        val result50 = actionDispatcher.normalizeToScreenX(0.5f, screenWidth)
-        val result75 = actionDispatcher.normalizeToScreenX(0.75f, screenWidth)
-        val result100 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
-
-        assertTrue("Should be decreasing due to mirror", result0 > result25)
-        assertTrue("Should be decreasing due to mirror", result25 > result50)
-        assertTrue("Should be decreasing due to mirror", result50 > result75)
-        assertTrue("Should be decreasing due to mirror", result75 > result100)
+        val r0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val r25 = actionDispatcher.normalizeToScreenX(0.25f, screenWidth)
+        val r50 = actionDispatcher.normalizeToScreenX(0.5f, screenWidth)
+        val r75 = actionDispatcher.normalizeToScreenX(0.75f, screenWidth)
+        val r100 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        assertTrue(r0 <= r25)
+        assertTrue(r25 <= r50)
+        assertTrue(r50 <= r75)
+        assertTrue(r75 <= r100)
     }
 
     // ========== normalizeToScreenY ==========
+    // Dead-zone mapping: activePos = (normY - 0.40) / 0.60, clamped to [0,1].
+    // MediaPipe Y is 0 at the top of the image. The top 40% is a dead zone
+    // clamped to the screen top so the user does not have to raise their hand to
+    // the camera's top edge to reach the top of the screen.
 
     @Test
-    fun `normalizeToScreenY at center maps to roughly center of screen`() {
+    fun `normalizeToScreenY maps active zone center to screen center`() {
         val screenHeight = 2400
-        val result = actionDispatcher.normalizeToScreenY(0.5f, screenHeight)
-        // No mirror for Y: 0.1 + 0.5 * 0.8 = 0.5 -> 1200
+        val result = actionDispatcher.normalizeToScreenY(0.65f, screenHeight)
+        // (0.65 - 0.30) / 0.70 = 0.5 -> 1200
         assertEquals(1200f, result, 1f)
     }
 
     @Test
-    fun `normalizeToScreenY does NOT apply mirroring`() {
+    fun `normalizeToScreenY clamps top dead zone to top of screen`() {
         val screenHeight = 2400
-        // normY = 0.0 -> expanded = 0.1 + 0.0 * 0.8 = 0.1 -> 240
-        val result0 = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        // normY = 1.0 -> expanded = 0.1 + 1.0 * 0.8 = 0.9 -> 2160
-        val result1 = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        val top = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val deadZoneEdge = actionDispatcher.normalizeToScreenY(0.3f, screenHeight)
+        assertEquals(0f, top, 0.01f)
+        assertEquals(0f, deadZoneEdge, 0.01f)
+    }
 
-        // No mirroring: 0 maps to top, 1 maps to bottom
-        assertTrue("normY=0 should map to top", result0 < screenHeight / 2f)
-        assertTrue("normY=1 should map to bottom", result1 > screenHeight / 2f)
+    @Test
+    fun `normalizeToScreenY maps bottom to bottom of screen`() {
+        val screenHeight = 2400
+        val bottom = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        assertEquals(2400f, bottom, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenY edge values are within screen bounds`() {
         val screenHeight = 2400
-        val result0 = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val result1 = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
-
-        assertTrue("Y result should be >= 0 for normY=0", result0 >= 0f)
-        assertTrue("Y result should be <= screenHeight for normY=0", result0 <= screenHeight.toFloat())
-        assertTrue("Y result should be >= 0 for normY=1", result1 >= 0f)
-        assertTrue("Y result should be <= screenHeight for normY=1", result1 <= screenHeight.toFloat())
+        for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
+            val result = actionDispatcher.normalizeToScreenY(v, screenHeight)
+            assertTrue("Y for $v should be in bounds", result >= 0f && result <= screenHeight.toFloat())
+        }
     }
 
     @Test
     fun `normalizeToScreenY is monotonically increasing`() {
         val screenHeight = 2400
-        val result0 = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val result25 = actionDispatcher.normalizeToScreenY(0.25f, screenHeight)
-        val result50 = actionDispatcher.normalizeToScreenY(0.5f, screenHeight)
-        val result75 = actionDispatcher.normalizeToScreenY(0.75f, screenHeight)
-        val result100 = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
-
-        assertTrue("Y should be monotonically increasing", result0 < result25)
-        assertTrue("Y should be monotonically increasing", result25 < result50)
-        assertTrue("Y should be monotonically increasing", result50 < result75)
-        assertTrue("Y should be monotonically increasing", result75 < result100)
+        val r0 = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val r25 = actionDispatcher.normalizeToScreenY(0.25f, screenHeight)
+        val r50 = actionDispatcher.normalizeToScreenY(0.5f, screenHeight)
+        val r75 = actionDispatcher.normalizeToScreenY(0.75f, screenHeight)
+        val r100 = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        assertTrue(r0 <= r25)
+        assertTrue(r25 <= r50)
+        assertTrue(r50 <= r75)
+        assertTrue(r75 <= r100)
     }
 
     // ========== Coordinate mapping specific values ==========
 
     @Test
     fun `normalizeToScreenX 0,5 on 1080 screen gives 540`() {
-        // 1 - 0.5 = 0.5, 0.1 + 0.5 * 0.8 = 0.5, 0.5 * 1080 = 540
         val result = actionDispatcher.normalizeToScreenX(0.5f, 1080)
         assertEquals(540f, result, 0.01f)
     }
 
     @Test
-    fun `normalizeToScreenY 0,5 on 2400 screen gives 1200`() {
-        // 0.1 + 0.5 * 0.8 = 0.5, 0.5 * 2400 = 1200
-        val result = actionDispatcher.normalizeToScreenY(0.5f, 2400)
+    fun `normalizeToScreenY 0,65 on 2400 screen gives 1200`() {
+        // (0.65 - 0.3) / 0.7 = 0.5 -> 1200
+        val result = actionDispatcher.normalizeToScreenY(0.65f, 2400)
         assertEquals(1200f, result, 0.01f)
     }
 
     @Test
-    fun `normalizeToScreenX at 0 maps to 0_9 of screen width`() {
-        val screenWidth = 1080
-        // 1 - 0 = 1.0, 0.1 + 1.0 * 0.8 = 0.9, 0.9 * 1080 = 972
-        val result = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        assertEquals(972f, result, 0.01f)
+    fun `normalizeToScreenX at 0 maps to 0 left dead zone`() {
+        val result = actionDispatcher.normalizeToScreenX(0.0f, 1080)
+        assertEquals(0f, result, 0.01f)
     }
 
     @Test
-    fun `normalizeToScreenY at 0 maps to 0_1 of screen height`() {
-        val screenHeight = 2400
-        // 0.1 + 0.0 * 0.8 = 0.1, 0.1 * 2400 = 240
-        val result = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        assertEquals(240f, result, 0.01f)
+    fun `normalizeToScreenY at 0 maps to 0 top dead zone`() {
+        val result = actionDispatcher.normalizeToScreenY(0.0f, 2400)
+        assertEquals(0f, result, 0.01f)
     }
 
     // ========== dispatch() behavior without service attached ==========

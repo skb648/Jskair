@@ -9,8 +9,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -33,33 +31,29 @@ fun HandPresenceIndicator(
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "hand_pulse")
 
-    val pulseAlpha by if (handDetected) {
-        infiniteTransition.animateFloat(
-            initialValue = 0.3f,
-            targetValue = 0.8f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 800),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "pulse_alpha",
-        )
-    } else {
-        remember { mutableStateOf(0f) }
-    }
+    // Fix: invoke animateFloat unconditionally (rules-of-hooks). The values are
+    // only *used* when handDetected is true below, so no behavioral change. The
+    // previous conditional animateFloat/remember pattern violated Compose's
+    // rules-of-hooks and could crash when `handDetected` toggled.
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulse_alpha",
+    )
 
-    val pulseRadius by if (handDetected) {
-        infiniteTransition.animateFloat(
-            initialValue = 0.8f,
-            targetValue = 1.3f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 800),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "pulse_radius",
-        )
-    } else {
-        remember { mutableStateOf(1f) }
-    }
+    val pulseRadius by infiniteTransition.animateFloat(
+        initialValue = 0.8f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulse_radius",
+    )
 
     Canvas(
         modifier = modifier.size(size * 2),

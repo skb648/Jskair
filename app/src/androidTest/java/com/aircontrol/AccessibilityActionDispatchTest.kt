@@ -47,6 +47,8 @@ class AccessibilityActionDispatchTest {
     }
 
     // ========== Coordinate Mapping on Real Device ==========
+    // Dead-zone mapping (no mirror — front-camera mirroring happens upstream in
+    // CameraService): X = (x - 0.10)/0.80, Y = (y - 0.40)/0.60, both clamped.
 
     @Test
     fun normalizeToScreenX_centerOn1080Screen() {
@@ -56,26 +58,27 @@ class AccessibilityActionDispatchTest {
 
     @Test
     fun normalizeToScreenY_centerOn2400Screen() {
-        val result = actionDispatcher.normalizeToScreenY(0.5f, 2400)
+        // Center of the Y active zone is normY = 0.65: (0.65 - 0.3)/0.7 = 0.5 -> 1200
+        val result = actionDispatcher.normalizeToScreenY(0.65f, 2400)
         assertEquals(1200f, result, 1f)
     }
 
     @Test
-    fun normalizeToScreenX_mirrorsFrontCamera() {
-        // Front camera mirror: 1 - x
+    fun normalizeToScreenX_clampsDeadZonesToEdges() {
         val left = actionDispatcher.normalizeToScreenX(0.0f, 1080)
         val right = actionDispatcher.normalizeToScreenX(1.0f, 1080)
-        // normX=0 should map to the right side of screen (mirrored)
-        // normX=1 should map to the left side of screen (mirrored)
-        assert(left > right)
+        // 0.0 is in the left dead zone -> left edge; 1.0 in right dead zone -> right edge
+        assertEquals(0f, left, 1f)
+        assertEquals(1080f, right, 1f)
     }
 
     @Test
-    fun normalizeToScreenY_doesNotMirror() {
+    fun normalizeToScreenY_topDeadZoneClampsToTop() {
         val top = actionDispatcher.normalizeToScreenY(0.0f, 2400)
         val bottom = actionDispatcher.normalizeToScreenY(1.0f, 2400)
-        // Y increases downward, no mirror
-        assert(top < bottom)
+        // Top 40% dead zone clamps to screen top (0); bottom maps to full height
+        assertEquals(0f, top, 1f)
+        assertEquals(2400f, bottom, 1f)
     }
 
     @Test

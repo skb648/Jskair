@@ -84,6 +84,9 @@ fun SettingsScreen(
     var sensitivity by remember { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
     var cursorSpeed by remember { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
     var holdDuration by remember { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
+    var dwellDuration by remember { mutableFloatStateOf(preferences.dwellDurationMs.toFloat()) }
+    var cursorGain by remember { mutableFloatStateOf(preferences.cursorGain.toFloat()) }
+    var gazeSensitivity by remember { mutableFloatStateOf(preferences.gazeSensitivity.toFloat()) }
 
     Scaffold(
         topBar = {
@@ -251,6 +254,109 @@ fun SettingsScreen(
                 subtitle = "Auto-start tracking after device restart",
                 checked = preferences.startOnBoot,
                 onCheckedChange = { viewModel.updateStartOnBoot(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing24))
+
+            // ===== Accessibility (Vision Pro features) =====
+            SectionHeader(title = "Accessibility")
+
+            SettingSwitchRow(
+                title = "Dwell-to-click",
+                subtitle = "Hold the cursor still to auto-click",
+                checked = preferences.dwellEnabled,
+                onCheckedChange = { viewModel.updateDwellEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            SettingSliderCard(
+                title = "Dwell Duration",
+                valueLabel = "${dwellDuration.toInt()}ms",
+                value = dwellDuration,
+                onValueChange = { dwellDuration = it },
+                onValueChangeFinished = { viewModel.updateDwellDuration(dwellDuration.toInt()) },
+                valueRange = 400f..3000f,
+                steps = 12,
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Stationary Click",
+                subtitle = "Ignore pinches while the hand is moving",
+                checked = preferences.stationaryClickEnabled,
+                onCheckedChange = { viewModel.updateStationaryClickEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Palm → Home",
+                subtitle = "Hold an open palm to open Home",
+                checked = preferences.palmHomeEnabled,
+                onCheckedChange = { viewModel.updatePalmHomeEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Sit-back Mode",
+                subtitle = "Reach the whole screen without raising your hand",
+                checked = preferences.sitBackMode,
+                onCheckedChange = { viewModel.updateSitBackMode(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Reduced Motion",
+                subtitle = "Disable cursor pulse and glow animations",
+                checked = preferences.reducedMotion,
+                onCheckedChange = { viewModel.updateReducedMotion(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            SettingSliderCard(
+                title = "Cursor Gain",
+                valueLabel = "${cursorGain.toInt()}%",
+                value = cursorGain,
+                onValueChange = { cursorGain = it },
+                onValueChangeFinished = { viewModel.updateCursorGain(cursorGain.toInt()) },
+                valueRange = 0f..100f,
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing24))
+
+            // ===== Eye Tracking (Eye is Mouse) =====
+            SectionHeader(title = "Eye Tracking")
+
+            SettingSwitchRow(
+                title = "Eye is Mouse",
+                subtitle = "Cursor follows your gaze; pinch to click",
+                checked = preferences.eyeTrackingEnabled,
+                onCheckedChange = { viewModel.updateEyeTrackingEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            SettingSliderCard(
+                title = "Gaze Sensitivity",
+                valueLabel = "${gazeSensitivity.toInt()}%",
+                value = gazeSensitivity,
+                onValueChange = { gazeSensitivity = it },
+                onValueChangeFinished = { viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
+                valueRange = 0f..100f,
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Invert Horizontal Gaze",
+                subtitle = "Flip left/right if gaze direction feels reversed",
+                checked = preferences.gazeInvertX,
+                onCheckedChange = { viewModel.updateGazeInvertX(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing32))

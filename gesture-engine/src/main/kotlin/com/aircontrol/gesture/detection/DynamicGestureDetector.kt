@@ -439,5 +439,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
      */
     fun updateConfig(newConfig: GestureEngineConfig) {
         this.config = newConfig
+        // Keep the cached cooldown in sync (previously it was captured once at
+        // construction and never refreshed when the config changed).
+        swipeCooldownMs = newConfig.swipeCooldownMs
     }
 }

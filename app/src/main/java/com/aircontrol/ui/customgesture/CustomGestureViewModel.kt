@@ -29,6 +29,7 @@ data class CustomGestureCreatorState(
     val isEditing: Boolean = false,
     val editingGestureId: String? = null,
     val isEditingFingerCount: Boolean = false,
+    val isEditingLandmarkTemplate: Boolean = false,
     val isValid: Boolean = false,
     val isSaved: Boolean = false,
 )
@@ -88,6 +89,22 @@ class CustomGestureViewModel @Inject constructor(
                 )
                 return // Don't continue with PoseWithDirection flow
             }
+            is CustomGestureTrigger.LandmarkTemplateTrigger -> {
+                // Keep the recorded landmark template. Previously this fell through
+                // to the PoseWithDirection branch and silently replaced the recorded
+                // template with a PINCH pose, destroying the custom gesture.
+                _creatorState.value = CustomGestureCreatorState(
+                    name = gesture.name,
+                    description = gesture.description,
+                    selectedPose = CustomGesturePose.PINCH,
+                    selectedDirection = CustomGestureDirection.NONE,
+                    selectedAction = gesture.action,
+                    isEditing = true,
+                    editingGestureId = gesture.id,
+                    isEditingLandmarkTemplate = true,
+                    isValid = true,
+                )
+            }
             else -> {
                 val trigger = gesture.triggerPose as? CustomGestureTrigger.PoseWithDirection
                 _creatorState.value = CustomGestureCreatorState(
@@ -120,11 +137,15 @@ class CustomGestureViewModel @Inject constructor(
             null
         }
 
-        // Preserve FingerCount trigger if editing an existing FingerCount gesture
-        val triggerPose = if (state.isEditingFingerCount && originalGesture?.triggerPose is CustomGestureTrigger.FingerCount) {
-            originalGesture.triggerPose // Keep the original FingerCount trigger
-        } else {
-            CustomGestureTrigger.PoseWithDirection(
+        // Preserve the original trigger when editing FingerCount or recorded
+        // LandmarkTemplate gestures (neither is editable via this screen's
+        // pose/direction pickers, so rebuilding one would destroy it).
+        val triggerPose = when {
+            state.isEditingFingerCount && originalGesture?.triggerPose is CustomGestureTrigger.FingerCount ->
+                originalGesture.triggerPose
+            state.isEditingLandmarkTemplate && originalGesture?.triggerPose is CustomGestureTrigger.LandmarkTemplateTrigger ->
+                originalGesture.triggerPose
+            else -> CustomGestureTrigger.PoseWithDirection(
                 pose = state.selectedPose,
                 direction = state.selectedDirection,
             )

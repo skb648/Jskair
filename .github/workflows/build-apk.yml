@@ -21,6 +21,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history required: app/build.gradle.kts derives versionCode
+          # from `git rev-list --count HEAD`, which returns 1 on shallow clones.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

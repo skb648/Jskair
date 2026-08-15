@@ -94,8 +94,7 @@ class GestureEngine(
     // Dual-Threshold Hysteresis (Apple Vision Pro specs)
     private var pinchState: PinchState = PinchState.IDLE
     private var pinchStateEntryTimeMs: Long = 0L
-    private var lastThumbIndexDistance: Float = 0f
-    
+
     // Time debouncing - require continuous recognition for 35ms before state transition
     private val TIME_DEBOUNCE_MS = 35L
     
@@ -150,30 +149,29 @@ class GestureEngine(
     @Volatile
     private var lastCustomGestureId: String? = null
 
-    // Bug: Intermittent Pinch Misfire Fix — Proximity hysteresis state.
-    //
-    // When the pinch classifier loses the PINCH pose for a single frame (due to
-    // tracking noise, low confidence, or a brief finger jitter), we DON'T
-    // immediately terminate the pinch. Instead, if the thumb-index distance is
-    // still within a hysteresis margin (PINCH_HYSTERESIS_MARGIN × the pinch
-    // threshold) AND the hand is stable (low velocity), we treat the frame as a
-    // MOVE (pinch still alive). This prevents the user from having to pinch
-    // multiple times to register a single click.
-    //
-    // To prevent infinite extension (fingers drifting apart slowly but staying
-    // within the margin), we cap consecutive hysteresis-extended frames at
-    // MAX_HYSTERESIS_EXTENSION_FRAMES.
+    // F8 (Stationary-click / Midas prevention): index-tip velocity tracking.
+    // Re-introduced (wired this time) to detect whether the hand was moving fast
+    // when a pinch began — a moving-hand pinch is usually accidental.
     @Volatile
-    private var pinchHysteresisExtensionCount: Int = 0
+    private var prevIndexTipX: Float = 0.5f
+    @Volatile
+    private var prevIndexTipY: Float = 0.5f
+    @Volatile
+    private var prevIndexTipTimestampMs: Long = 0L
+    @Volatile
+    private var currentVelocity: Float = 0f
 
-    // Previous wrist position, used to compute hand velocity for the hysteresis
-    // "stable hand" check. Updated every frame in processPinch.
+    // F4 (Palm → Home): tracks how long an open palm has been held while ARMED.
+    // When it exceeds config.palmHomeHoldMs, a PalmHome event is emitted once per
+    // palm presentation (the pose must change away from OPEN_PALM before it can
+    // fire again — prevents repeated HOME while the user simply rests with an
+    // open palm).
     @Volatile
-    private var prevWristX: Float = 0.5f
+    private var palmHoldStartMs: Long = 0L
     @Volatile
-    private var prevWristY: Float = 0.5f
+    private var palmHolding: Boolean = false
     @Volatile
-    private var prevWristTimestampMs: Long = 0L
+    private var palmHomeFired: Boolean = false
 
     // Bug #13 Fix: Counter for consecutive low-confidence frames. Used to apply
     // hysteresis — a single bad frame shouldn't trigger the low-confidence path,
@@ -197,13 +195,40 @@ class GestureEngine(
      * @param sensitivity New sensitivity value (0-100)
      */
     fun updateSensitivity(sensitivity: Int) {
-        val newConfig = GestureEngineConfig(sensitivity = sensitivity)
+        // Preserve all other config (including any calibrated pinch ratio) instead
+        // of rebuilding from defaults — rebuilding silently dropped calibration.
+        val newConfig = config.copy(sensitivity = sensitivity)
         config = newConfig
         poseClassifier.updateConfig(newConfig)
         dynamicDetector.updateConfig(newConfig)
         stateMachine.updateConfig(newConfig)
         // Note: No logging here — gesture-engine is a pure Kotlin module with no
         // Android/Timber dependency. The app-layer GestureDetectorImpl logs this change.
+    }
+
+    /**
+     * Personalizes pinch detection using user-measured calibration data.
+     *
+     * @param handSizeMm The user's measured hand size (wrist-to-middle-MCP, mm).
+     * @param pinchDistanceMm The user's measured pinch distance (thumb-tip to
+     *   index-tip at the moment of a deliberate pinch, mm).
+     *
+     * The ratio pinchDistanceMm / handSizeMm is the user's natural "finger-touch"
+     * distance normalized by hand size — the ideal pinch-enter threshold for them.
+     * Pass 0f values (or a handSizeMm <= 0) to clear calibration and fall back to
+     * the default sensitivity-scaled threshold.
+     */
+    fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {
+        val ratio = if (handSizeMm > 0f && pinchDistanceMm > 0f) {
+            pinchDistanceMm / handSizeMm
+        } else {
+            null
+        }
+        val newConfig = config.copy(calibratedPinchRatio = ratio)
+        config = newConfig
+        poseClassifier.updateConfig(newConfig)
+        dynamicDetector.updateConfig(newConfig)
+        stateMachine.updateConfig(newConfig)
     }
 
     /**
@@ -292,13 +317,38 @@ class GestureEngine(
         // 2. Detect dynamic gestures (swipes)
         val swipeResult = dynamicDetector.process(input)
 
-        // 3. Process pinch lifecycle
-        processPinch(input, pose, timestampMs)
-
-        // 4. Process through state machine
+        // 3. Process through state machine FIRST so processPinch (step 4) gates on
+        //    the CURRENT frame's state — previously pinch read _engineState.value
+        //    before it was updated, causing a one-frame lag when entering ARMED.
         val transition = stateMachine.process(pose, input.isDetected, timestampMs)
         _engineState.value = transition.newState
         _armingProgress.value = stateMachine.armingProgress
+
+        // 4. Process pinch lifecycle (now sees the current frame's state)
+        processPinch(input, timestampMs)
+
+        // 4.5 F4 (Palm → Home): track open-palm hold while ARMED. OPEN_PALM is the
+        // neutral ARMED pose, so a sustained 2s hold is a deliberate "show me home"
+        // gesture. Emits a single PalmHome event per hold.
+        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {
+            if (pose == Pose.OPEN_PALM) {
+                if (!palmHolding) {
+                    palmHolding = true
+                    palmHoldStartMs = timestampMs
+                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {
+                    palmHomeFired = true
+                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
+                }
+            } else {
+                palmHolding = false
+                palmHoldStartMs = 0L
+                palmHomeFired = false
+            }
+        } else {
+            palmHolding = false
+            palmHoldStartMs = 0L
+            palmHomeFired = false
+        }
 
         // 5. Emit events based on state transitions and gesture detection
         if (transition.stateChanged) {
@@ -309,9 +359,6 @@ class GestureEngine(
                 GestureEngineState.DISARMED -> {
                     _gestureEvents.tryEmit(GestureEvent.Disarmed(timestampMs))
                     wasPinching = false
-                    // Bug: Intermittent Pinch Misfire Fix — clear hysteresis state
-                    // on disarm so the next arming session starts clean.
-                    pinchHysteresisExtensionCount = 0
                     // Bug: Custom Gestures Not Triggering Fix — clear the last
                     // matched custom gesture ID on disarm so it can re-fire after
                     // re-arming.
@@ -419,6 +466,18 @@ class GestureEngine(
         // source prevents the smoother from ever seeing the bad data.
         if (input.isDetected && !applyLowConfidenceMitigations) {
             val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
+            // F8 (Stationary-click): compute index-tip velocity (normalized units
+            // per second) so the app layer can reject accidental moving-hand taps.
+            if (prevIndexTipTimestampMs > 0L) {
+                val dtMs = (timestampMs - prevIndexTipTimestampMs).coerceAtLeast(1L)
+                val dx = indexTip.x - prevIndexTipX
+                val dy = indexTip.y - prevIndexTipY
+                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                currentVelocity = dist / (dtMs / 1000f)
+            }
+            prevIndexTipX = indexTip.x
+            prevIndexTipY = indexTip.y
+            prevIndexTipTimestampMs = timestampMs
             lastIndexTipX = indexTip.x
             lastIndexTipY = indexTip.y
         }
@@ -513,7 +572,7 @@ class GestureEngine(
      * This eliminates the "blinking" and unreliable gesture detection that occurs
      * with single-threshold approaches.
      */
-    private fun processPinch(input: HandInput, pose: Pose, timestampMs: Long) {
+    private fun processPinch(input: HandInput, timestampMs: Long) {
         // Gate pinch events on engine state — only emit when armed or active
         val currentState = _engineState.value
         if (currentState != GestureEngineState.ARMED &&
@@ -524,7 +583,6 @@ class GestureEngine(
                 wasPinching = false
                 currentPinchPhase = null
                 pinchState = PinchState.IDLE
-                pinchHysteresisExtensionCount = 0
             }
             return
         }
@@ -537,9 +595,7 @@ class GestureEngine(
                 wasPinching = false
                 currentPinchPhase = null
                 pinchState = PinchState.IDLE
-                pinchHysteresisExtensionCount = 0
             }
-            prevWristTimestampMs = 0L
             return
         }
 
@@ -555,7 +611,15 @@ class GestureEngine(
         } else {
             0f
         }
-        lastThumbIndexDistance = thumbIndexDistance
+
+        // Sensitivity- and calibration-aware pinch thresholds. All three are
+        // derived from a single "enter" base so the dual-threshold hysteresis
+        // relationships (hover > exit > enter) stay intact at every sensitivity.
+        val enterThreshold = config.calibratedPinchRatio
+            ?.let { (it * CALIBRATED_PINCH_ENTER_MARGIN).coerceIn(MIN_PINCH_ENTER, MAX_PINCH_ENTER) }
+            ?: (PINCH_ENTER_THRESHOLD * config.pinchSensitivityFactor)
+        val exitThreshold = enterThreshold * (PINCH_EXIT_THRESHOLD / PINCH_ENTER_THRESHOLD)
+        val hoverThreshold = enterThreshold * (PINCH_HOVER_THRESHOLD / PINCH_ENTER_THRESHOLD)
 
         // BUG #8 FIX: Removed redundant pinchX/pinchY calculation
         // We use lastIndexTipX/Y for cursor position, not pinch center
@@ -567,7 +631,7 @@ class GestureEngine(
         when (pinchState) {
             PinchState.IDLE -> {
                 // Check if fingers are approaching (enter HOVER zone)
-                if (thumbIndexDistance < PINCH_HOVER_THRESHOLD) {
+                if (thumbIndexDistance < hoverThreshold) {
                     pinchState = PinchState.HOVER
                     pinchStateEntryTimeMs = timestampMs
                 }
@@ -581,12 +645,12 @@ class GestureEngine(
                 
                 // Pre-interaction certainty - fingers close but not pinching yet
                 // Check if pinch threshold crossed (enter PINCH_START)
-                if (thumbIndexDistance < PINCH_ENTER_THRESHOLD && !inCooldown) {
+                if (thumbIndexDistance < enterThreshold && !inCooldown) {
                     pinchState = PinchState.PINCH_START
                     pinchStateEntryTimeMs = timestampMs
                 } 
                 // Check if fingers moved away (return to IDLE)
-                else if (thumbIndexDistance > PINCH_HOVER_THRESHOLD * 1.5f) {
+                else if (thumbIndexDistance > hoverThreshold * 1.5f) {
                     pinchState = PinchState.IDLE
                     pinchStateEntryTimeMs = timestampMs
                 }
@@ -619,11 +683,12 @@ class GestureEngine(
                             timestampMs = timestampMs,
                             anchoredX = pinchAnchoredX,
                             anchoredY = pinchAnchoredY,
+                            velocity = currentVelocity,
                         ),
                     )
                 }
                 // Check if pinch threshold not maintained during debounce (abort)
-                else if (thumbIndexDistance > PINCH_EXIT_THRESHOLD) {
+                else if (thumbIndexDistance > exitThreshold) {
                     pinchState = PinchState.HOVER
                     pinchStateEntryTimeMs = timestampMs
                 }
@@ -632,7 +697,7 @@ class GestureEngine(
             PinchState.PINCH_HOLD -> {
                 // Pinch is active - can drag
                 // Check if pinch released (fingers separated beyond exit threshold)
-                if (thumbIndexDistance > PINCH_EXIT_THRESHOLD) {
+                if (thumbIndexDistance > exitThreshold) {
                     pinchState = PinchState.PINCH_RELEASE
                     pinchStateEntryTimeMs = timestampMs
                 } else {
@@ -646,6 +711,7 @@ class GestureEngine(
                             timestampMs = timestampMs,
                             anchoredX = pinchAnchoredX,
                             anchoredY = pinchAnchoredY,
+                            velocity = currentVelocity,
                         ),
                     )
                 }
@@ -661,8 +727,7 @@ class GestureEngine(
                     wasPinching = false
                     currentPinchPhase = PinchPhase.END
                     lastPinchEndMs = timestampMs
-                    pinchHysteresisExtensionCount = 0
-                    
+
                     _gestureEvents.tryEmit(
                         GestureEvent.Pinch(
                             phase = PinchPhase.END,
@@ -671,26 +736,28 @@ class GestureEngine(
                             timestampMs = timestampMs,
                             anchoredX = pinchAnchoredX,
                             anchoredY = pinchAnchoredY,
+                            velocity = currentVelocity,
                         ),
                     )
                     currentPinchPhase = null
                 }
                 // Check if pinch re-engaged during release debounce (abort release)
-                else if (thumbIndexDistance < PINCH_ENTER_THRESHOLD) {
+                else if (thumbIndexDistance < enterThreshold) {
                     pinchState = PinchState.PINCH_HOLD
                     pinchStateEntryTimeMs = timestampMs
                 }
             }
         }
 
-        // Update previous wrist position for velocity computation
-        updatePrevWrist(wrist, timestampMs)
+        // (Dead-code cleanup) The formerly documented "Intermittent Pinch Misfire"
+        // hysteresis subsystem (isHandStable / updatePrevWrist / pinchHysteresis-
+        // ExtensionCount) was never wired in — this closing brace now just ends
+        // processPinch. The dual-threshold FSM above provides the actual hysteresis.
     }
 
     /**
-     * Bug: Intermittent Pinch Misfire Fix — Computes the Euclidean distance
-     * between two landmarks in 2D (X/Y only, ignoring Z). Used for the pinch
-     * hysteresis proximity check.
+     * Computes the Euclidean distance between two landmarks in 2D (X/Y only,
+     * ignoring Z). Used to normalize thumb-index distance by hand size.
      */
     private fun distance2D(
         a: com.aircontrol.gesture.model.Landmark3D,
@@ -699,44 +766,6 @@ class GestureEngine(
         val dx = a.x - b.x
         val dy = a.y - b.y
         return kotlin.math.sqrt(dx * dx + dy * dy)
-    }
-
-    /**
-     * Bug: Intermittent Pinch Misfire Fix — Checks if the hand is "stable"
-     * (low velocity) for the pinch hysteresis check.
-     *
-     * Computes the wrist velocity (normalized units per second) between the
-     * previous frame and the current frame. If the velocity is below
-     * [STABLE_HAND_VELOCITY_THRESHOLD], the hand is considered stable.
-     *
-     * A stable hand means a brief pinch-classification drop is almost certainly
-     * tracking noise, not a genuine finger separation (which typically involves
-     * hand motion). This prevents false pinch-END emissions during steady holds.
-     */
-    private fun isHandStable(
-        wrist: com.aircontrol.gesture.model.Landmark3D,
-        timestampMs: Long,
-    ): Boolean {
-        if (prevWristTimestampMs <= 0L) return false
-        val dtMs = (timestampMs - prevWristTimestampMs).coerceAtLeast(1L)
-        val dx = wrist.x - prevWristX
-        val dy = wrist.y - prevWristY
-        val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-        val velocity = distance / (dtMs / 1000f) // normalized units per second
-        return velocity < STABLE_HAND_VELOCITY_THRESHOLD
-    }
-
-    /**
-     * Bug: Intermittent Pinch Misfire Fix — Updates the previous wrist position
-     * and timestamp for the next frame's velocity computation.
-     */
-    private fun updatePrevWrist(
-        wrist: com.aircontrol.gesture.model.Landmark3D,
-        timestampMs: Long,
-    ) {
-        prevWristX = wrist.x
-        prevWristY = wrist.y
-        prevWristTimestampMs = timestampMs
     }
 
     /** Resets all gesture engine state. */
@@ -750,8 +779,7 @@ class GestureEngine(
         // Layer 2: Reset FSM state
         pinchState = PinchState.IDLE
         pinchStateEntryTimeMs = 0L
-        lastThumbIndexDistance = 0f
-        
+
         wasPinching = false
         currentPinchPhase = null
         pinchStartX = 0f
@@ -762,11 +790,14 @@ class GestureEngine(
         lastIndexTipY = 0.5f
         lastPinchEndMs = 0L
         lastCustomGestureId = null
-        pinchHysteresisExtensionCount = 0
-        prevWristX = 0.5f
-        prevWristY = 0.5f
-        prevWristTimestampMs = 0L
         lowConfidenceFrameCount = 0
+        prevIndexTipX = 0.5f
+        prevIndexTipY = 0.5f
+        prevIndexTipTimestampMs = 0L
+        currentVelocity = 0f
+        palmHoldStartMs = 0L
+        palmHolding = false
+        palmHomeFired = false
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
         _armingProgress.value = 0f
@@ -781,25 +812,33 @@ class GestureEngine(
         private const val PINCH_HOVER_THRESHOLD = 0.08f
         
         // PINCH_ENTER_THRESHOLD: Pinch engagement threshold (tighter)
-        // When thumb-index distance < this AND held for 35ms, confirm pinch
-        private const val PINCH_ENTER_THRESHOLD = 0.035f
+        // When thumb-index distance < this AND held for 35ms, confirm pinch.
+        // Raised from 0.035 to 0.05 — 0.035 required fingers to practically touch,
+        // making clicks unreliable ("pinch click kaam nahi karta").
+        private const val PINCH_ENTER_THRESHOLD = 0.05f
         
         // PINCH_EXIT_THRESHOLD: Pinch disengagement threshold (looser)
         // When thumb-index distance > this AND held for 35ms, confirm release
         private const val PINCH_EXIT_THRESHOLD = 0.065f
+
+        // Calibration-aware pinch threshold bounds. When the user has completed
+        // calibration, the calibrated pinch ratio (scaled by a small margin) is
+        // used as the pinch-enter threshold, clamped to these safe bounds so a
+        // bad/outlier calibration can never make pinch unusable.
+        private const val CALIBRATED_PINCH_ENTER_MARGIN = 1.2f
+        private const val MIN_PINCH_ENTER = 0.015f
+        private const val MAX_PINCH_ENTER = 0.08f
         
         // TIME_DEBOUNCE_MS: Already defined as instance variable (35L)
         // Required continuous recognition before state transition
         
-        // UG-01 Fix: Reduced from 300ms to 150ms for faster double-tap recognition
-        // 150ms is still long enough to filter accidental re-pinches (double-tap glitch)
-        // but short enough that intentional double-taps feel responsive
-        private const val PINCH_COOLDOWN_MS = 150L
+        // UG-01 Fix: Reduced from 300ms to 150ms for faster double-tap recognition.
+        // Further reduced to 80ms — 150ms still dropped rapid re-pinches.
+        private const val PINCH_COOLDOWN_MS = 80L
 
-        // UG-02 Fix: Reduced from 200ms to 100ms to allow quick swipes after pinch
-        // 100ms covers the finger-spread transient (1-3 frames at 30fps)
-        // but lets intentional swipes register almost immediately
-        private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 100L
+        // UG-02 Fix: Reduced from 200ms to 100ms to allow quick swipes after pinch.
+        // Further reduced to 60ms — 100ms still suppressed intentional quick swipes.
+        private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 60L
 
         // Bug #13 Fix: Confidence threshold below which a frame is considered
         // "low confidence". MediaPipe's hand-landmarker confidence reflects how
@@ -833,34 +872,8 @@ class GestureEngine(
         // New value 2.0f provides +100% increase for effective jitter suppression.
         private const val LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF = 2.0f
 
-        // Bug: Intermittent Pinch Misfire Fix — Epsilon for float comparisons
-        // in the pinch hysteresis distance check (prevents divide-by-zero when
-        // hand size is degenerate).
+        // Epsilon for float comparisons (prevents divide-by-zero when the hand
+        // size is degenerate).
         private const val EPSILON = 1e-6f
-
-        // Bug: Intermittent Pinch Misfire Fix — Hysteresis margin for the pinch
-        // proximity check. When the classifier loses the PINCH pose but the
-        // thumb-index distance ratio is still below (threshold × this margin),
-        // the pinch is kept alive. 1.5× means the fingers can drift apart up to
-        // 50% beyond the normal pinch threshold before the pinch terminates.
-        // This tolerates the natural finger jitter that causes single-frame
-        // classification drops without letting a genuine finger-separation
-        // (which rapidly exceeds 1.5×) go undetected.
-        private const val PINCH_HYSTERESIS_MARGIN = 1.5f
-
-        // Bug: Intermittent Pinch Misfire Fix — Maximum consecutive frames the
-        // pinch can be extended via hysteresis. Prevents infinite extension when
-        // fingers drift apart slowly but stay within the hysteresis margin.
-        // 3 frames ≈ 100ms at 30fps — long enough to bridge a transient tracking
-        // drop, short enough that a genuine finger separation terminates promptly.
-        private const val MAX_HYSTERESIS_EXTENSION_FRAMES = 3
-
-        // Bug: Intermittent Pinch Misfire Fix — Velocity threshold (normalized
-        // units per second) below which the hand is considered "stable" for the
-        // hysteresis check. 0.15 norm/sec means the wrist is moving less than
-        // 15% of the frame width per second — essentially a held-still hand.
-        // A stable hand means a pinch-classification drop is almost certainly
-        // noise, not a genuine finger separation (which usually involves motion).
-        private const val STABLE_HAND_VELOCITY_THRESHOLD = 0.15f
     }
 }

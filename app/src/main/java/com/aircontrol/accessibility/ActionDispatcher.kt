@@ -26,6 +26,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -55,6 +58,7 @@ enum class GestureAction {
     SCREENSHOT,
     LOCK_SCREEN,
     TAP,
+    DOUBLE_TAP,
     LONG_PRESS,
     DRAG,
 }
@@ -82,6 +86,15 @@ class ActionDispatcher @Inject constructor(
     // UG-09/UG-10 Fix: Callback for visual feedback when gesture is successfully dispatched
     // The accessibility service will listen to this and trigger cursor pulse animation
     var onGestureDispatched: ((String) -> Unit)? = null
+
+    // Emits an event every time a gesture action is successfully dispatched.
+    // HomeViewModel collects this to drive the "Gestures" session counter
+    // (previously incrementGestureCount() was never called, so the count was always 0).
+    private val _dispatchedEvents = MutableSharedFlow<String>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val dispatchedEvents: SharedFlow<String> = _dispatchedEvents.asSharedFlow()
     // H-08 Fix: Use a scope that can be properly cancelled when the service is destroyed.
     // Previously this scope was never cancelled, which meant the three collect blocks
     // in init{} could never be cleaned up. As a @Singleton this is technically fine
@@ -137,6 +150,11 @@ class ActionDispatcher @Inject constructor(
     private var dragGraceFrameCount: Int = 0
     private var lastDragMoveMs: Long = 0L
 
+    // F3 (Double-pinch): timestamp of the last dispatched tap, used to detect a
+    // quick second tap within DOUBLE_TAP_WINDOW_MS and upgrade it to DOUBLE_TAP.
+    @Volatile
+    private var lastTapTimeMs: Long = 0L
+
     // Keyguard state caching to avoid IPC on every check (m-04)
     private var cachedKeyguardLocked = false
     private var keyguardReceiver: BroadcastReceiver? = null
@@ -155,6 +173,7 @@ class ActionDispatcher @Inject constructor(
         defaultMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
         defaultMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
         defaultMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
+        defaultMap[KEY_PALM_HOME] = GestureAction.HOME
         gestureMapRef.set(defaultMap)
 
         // H-08 Fix: Track settings collection jobs so they can be cancelled in detachService()
@@ -222,6 +241,22 @@ class ActionDispatcher @Inject constructor(
     fun getGestureMap(): Map<String, GestureAction> = gestureMap.toMap()
 
     /**
+     * F1 (Dwell-to-click): fires a tap at the given cursor position. Called by the
+     * accessibility service when the cursor has been held still for the configured
+     * dwell duration.
+     */
+    fun dispatchDwellTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        if (!currentPreferences.dwellEnabled) return false
+        val ok = dispatchTap(cursorX, cursorY, screenWidth, screenHeight)
+        if (ok) {
+            performHapticFeedback()
+            onGestureDispatched?.invoke("dwell_tap")
+            _dispatchedEvents.tryEmit("dwell_tap")
+        }
+        return ok
+    }
+
+    /**
      * Updates the action for a specific gesture key.
      */
     fun updateGestureAction(key: String, action: GestureAction) {
@@ -268,11 +303,12 @@ class ActionDispatcher @Inject constructor(
         }
 
         val dispatched = when (event) {
-            is GestureEvent.Swipe -> dispatchSwipe(event, screenWidth, screenHeight)
+            is GestureEvent.Swipe -> dispatchSwipe(event, cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.Pinch -> dispatchPinch(event, cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.PoseTriggered -> dispatchPose(event, cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.CustomGestureTriggered ->
                 dispatchCustomGesture(event, cursorX, cursorY, screenWidth, screenHeight)
+            is GestureEvent.PalmHome -> dispatchPalmHome(cursorX, cursorY, screenWidth, screenHeight)
             is GestureEvent.Armed,
             is GestureEvent.Disarmed,
             is GestureEvent.CursorMoved -> false
@@ -285,6 +321,7 @@ class ActionDispatcher @Inject constructor(
             // clear confirmation that their gesture was recognized and executed
             val actionName = getActionName(event)
             onGestureDispatched?.invoke(actionName)
+            _dispatchedEvents.tryEmit(actionName)
         }
 
         return dispatched
@@ -292,7 +329,13 @@ class ActionDispatcher @Inject constructor(
 
     // ========== Swipe dispatching ==========
 
-    private fun dispatchSwipe(event: GestureEvent.Swipe, screenWidth: Int, screenHeight: Int): Boolean {
+    private fun dispatchSwipe(
+        event: GestureEvent.Swipe,
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): Boolean {
         // Check custom gestures with direction first
         val customDirection = when (event.direction) {
             SwipeDirection.LEFT -> CustomGestureDirection.LEFT
@@ -321,7 +364,10 @@ class ActionDispatcher @Inject constructor(
                 (customPose == null || trigger.pose == customPose)
         }?.action
         if (customAction != null && customAction != GestureAction.NONE) {
-            return executeAction(customAction, 0.5f, 0.5f, screenWidth, screenHeight)
+            // Use the actual cursor position rather than hardcoded screen center,
+            // so a custom swipe mapped to TAP/DRAG/LONG_PRESS targets where the
+            // user is actually pointing.
+            return executeAction(customAction, cursorX, cursorY, screenWidth, screenHeight)
         }
 
         val action = when (event.direction) {
@@ -416,6 +462,9 @@ class ActionDispatcher @Inject constructor(
                 pinchStartTimeMs = System.currentTimeMillis()
                 pinchStartX = cursorX
                 pinchStartY = cursorY
+                // F8: capture the hand velocity at pinch start (the END event's
+                // velocity reflects finger separation, not the approach).
+                pinchStartVelocity = event.velocity
                 dragStartX = normalizeToScreenX(cursorX, screenWidth)
                 dragStartY = normalizeToScreenY(cursorY, screenHeight)
                 dragCurrentX = dragStartX
@@ -430,7 +479,7 @@ class ActionDispatcher @Inject constructor(
             PinchPhase.MOVE -> {
                 // Determine action based on hold duration
                 val holdDurationMs = System.currentTimeMillis() - pinchStartTimeMs
-                val effectiveAction = if (holdDurationMs >= LONG_PRESS_THRESHOLD_MS) {
+                val effectiveAction = if (holdDurationMs >= currentPreferences.holdDuration.toLong()) {
                     gestureMap[KEY_POSE_PINCH_HOLD] ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
                 } else {
                     gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
@@ -448,17 +497,45 @@ class ActionDispatcher @Inject constructor(
             PinchPhase.END -> {
                 val holdDurationMs = System.currentTimeMillis() - pinchStartTimeMs
 
+                // F8 Stationary-click (Midas prevention): if the hand was moving
+                // fast when the pinch began, treat it as accidental and do not fire
+                // a tap/click. DRAG still proceeds (dragging by nature involves motion).
+                val movingFast = pinchStartVelocity > STATIONARY_CLICK_VELOCITY_THRESHOLD
+
                 // Check custom PINCH gestures (PINCH + NONE direction) first
                 val customPinchAction = matchCustomGesture(Pose.PINCH)
 
-                val effectiveAction = if (holdDurationMs >= LONG_PRESS_THRESHOLD_MS) {
+                val effectiveAction = if (holdDurationMs >= currentPreferences.holdDuration.toLong()) {
                     gestureMap[KEY_POSE_PINCH_HOLD] ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
                 } else {
                     gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
                 }
 
                 // Custom gesture action takes priority if present
-                val finalAction = customPinchAction ?: effectiveAction
+                var finalAction = customPinchAction ?: effectiveAction
+
+                // F3 Double-pinch: upgrade a quick second tap to DOUBLE_TAP.
+                val now = System.currentTimeMillis()
+                if (finalAction == GestureAction.TAP) {
+                    val isDoubleTap = lastTapTimeMs > 0L &&
+                        (now - lastTapTimeMs) <= DOUBLE_TAP_WINDOW_MS
+                    if (isDoubleTap) {
+                        finalAction = GestureAction.DOUBLE_TAP
+                        // Reset so the next tap starts a fresh single/double cycle.
+                        lastTapTimeMs = 0L
+                    } else {
+                        lastTapTimeMs = now
+                    }
+                }
+
+                // Apply stationary-click gate to discrete click actions (not DRAG).
+                if (currentPreferences.stationaryClickEnabled &&
+                    movingFast &&
+                    finalAction != GestureAction.DRAG
+                ) {
+                    Timber.v("Stationary-click: suppressed moving-hand %s", finalAction)
+                    return false
+                }
 
                 // Issue 7 Fix: Reset drag state tracking on END
                 dragGraceFrameCount = 0
@@ -488,9 +565,14 @@ class ActionDispatcher @Inject constructor(
 
                 when {
                     finalAction == GestureAction.DRAG -> dispatchDragEnd(dropX, dropY, screenWidth, screenHeight)
-                    holdDurationMs >= LONG_PRESS_THRESHOLD_MS && finalAction == effectiveAction ->
+                    holdDurationMs >= currentPreferences.holdDuration.toLong() && finalAction == effectiveAction ->
                         dispatchLongPress(pinchStartX, pinchStartY, screenWidth, screenHeight)
-                    finalAction != GestureAction.DRAG && finalAction != GestureAction.NONE ->
+                    finalAction == GestureAction.NONE -> {
+                        // Pinch mapped to NONE must NOT dispatch anything. Previously
+                        // this fell through to the else branch and fired a spurious TAP.
+                        false
+                    }
+                    finalAction != GestureAction.DRAG ->
                         executeAction(finalAction, pinchStartX, pinchStartY, screenWidth, screenHeight)
                     else -> dispatchTap(pinchStartX, pinchStartY, screenWidth, screenHeight)
                 }
@@ -520,6 +602,28 @@ class ActionDispatcher @Inject constructor(
             .build()
 
         return dispatchGestureWithRetry(gesture, "tap")
+    }
+
+    /**
+     * Dispatches a double-tap at the cursor position (two quick taps).
+     * Used by the F3 double-pinch gesture (Vision Pro double-tap equivalent).
+     */
+    private fun dispatchDoubleTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        val x = normalizeToScreenX(normX, screenWidth)
+        val y = normalizeToScreenY(normY, screenHeight)
+
+        val path = Path().apply {
+            moveTo(x, y)
+            lineTo(x + TAP_PATH_DISPLACEMENT_PX, y)
+        }
+
+        val gesture = GestureDescription.Builder()
+            // Two taps with a short gap between them.
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+            .addStroke(GestureDescription.StrokeDescription(path, DOUBLE_TAP_GAP_MS, TAP_DURATION_MS))
+            .build()
+
+        return dispatchGestureWithRetry(gesture, "double_tap")
     }
 
     /**
@@ -615,6 +719,21 @@ class ActionDispatcher @Inject constructor(
     }
 
     // ========== Pose dispatching ==========
+
+    /**
+     * F4 (Palm → Home): dispatches the action mapped to the palm-hold gesture.
+     * Gated on the palmHomeEnabled setting; defaults to HOME (visionOS 2 style).
+     */
+    private fun dispatchPalmHome(
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): Boolean {
+        if (!currentPreferences.palmHomeEnabled) return false
+        val action = gestureMap[KEY_PALM_HOME] ?: GestureAction.HOME
+        return executeAction(action, cursorX, cursorY, screenWidth, screenHeight)
+    }
 
     private fun dispatchPose(
         event: GestureEvent.PoseTriggered,
@@ -751,6 +870,7 @@ class ActionDispatcher @Inject constructor(
             GestureAction.SCREENSHOT -> takeScreenshot()
             GestureAction.LOCK_SCREEN -> lockScreen()
             GestureAction.TAP -> dispatchTap(cursorX, cursorY, screenWidth, screenHeight)
+            GestureAction.DOUBLE_TAP -> dispatchDoubleTap(cursorX, cursorY, screenWidth, screenHeight)
             GestureAction.LONG_PRESS -> dispatchLongPress(cursorX, cursorY, screenWidth, screenHeight)
             GestureAction.SCROLL_UP -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = true)
             GestureAction.SCROLL_DOWN -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = false)
@@ -972,7 +1092,15 @@ class ActionDispatcher @Inject constructor(
         // icons that were silently swallowing 50ms taps.
         private const val TAP_DURATION_MS = 90L
         private const val LONG_PRESS_DURATION_MS = 500L
-        private const val LONG_PRESS_THRESHOLD_MS = 600L
+        // F3 Double-pinch: gap between the two taps in a DOUBLE_TAP gesture.
+        private const val DOUBLE_TAP_GAP_MS = 80L
+        // F3 Double-pinch: max time between two pinch taps to count as a double-tap.
+        private const val DOUBLE_TAP_WINDOW_MS = 350L
+        // F8 Stationary-click: normalized velocity (units/sec) above which a pinch
+        // is treated as accidental (hand moving) and the tap is suppressed.
+        private const val STATIONARY_CLICK_VELOCITY_THRESHOLD = 0.25f
+        // Long-press hold threshold is user-configurable (settings "Hold Duration");
+        // see currentPreferences.holdDuration — the constant has been removed.
         // Bug #15 Fix: Minimum touch-path displacement in pixels. Android's gesture
         // detector may ignore a tap whose touch path has zero or sub-pixel
         // displacement (it can't distinguish a tap from a touch-and-hold with no
@@ -992,14 +1120,16 @@ class ActionDispatcher @Inject constructor(
         // alive longer than the inter-frame interval, so Android sees a single
         // uninterrupted drag gesture.
         //
-        // 50ms also gives Android's gesture detector enough time to register
+        // 80ms gives Android's gesture detector enough time to register
         // motion before the next continueStroke replaces the active stroke.
-        private const val DRAG_STEP_DURATION_MS = 50L
+        // (Raised from 50ms: at 24fps the 42ms frame gap left only an 8ms margin,
+        // so any delayed frame broke the drag into a tap series.)
+        private const val DRAG_STEP_DURATION_MS = 80L
         // Bug #14 Fix: Final "drop" stroke duration. Proportional to the step
         // duration (2× ratio, matching the old hardcoded 32L vs 16L step).
         // Long enough for Android to register the final position before the
         // stroke ends with willContinue=false.
-        private const val DRAG_END_DURATION_MS = 100L
+        private const val DRAG_END_DURATION_MS = 120L
         private const val HAPTIC_TICK_MS = 15L
 
         // ---- Virtual Box / Dead Zone viewport mapping (Bug #1 & #12 Fix) ----
@@ -1024,10 +1154,20 @@ class ActionDispatcher @Inject constructor(
         // dead zone (clamped to the top of the screen). This means a hand held
         // at chest/lower-face height already covers the entire screen.
         //
-        //   yDeadZoneStart    = 0.0  (no bottom margin — bottom of camera = bottom of screen)
-        //   yActiveZoneHeight = 0.6  (top 40% of camera clamps to top of screen)
-        private const val Y_DEAD_ZONE_START = 0.0f
-        private const val Y_ACTIVE_ZONE_HEIGHT = 0.6f
+        // FIX: MediaPipe Y is 0 at the TOP of the image and 1 at the BOTTOM. To
+        // place the dead zone at the TOP (so the user doesn't have to raise
+        // their hand to the camera's top edge to reach the screen top), the dead
+        // zone must start at a value > 0. The previous value (0.0) put the dead
+        // zone at the BOTTOM, inverting the cursor vertically.
+        //
+        // Precision fix: the active zone was 0.6 (1.67× vertical gain), which made
+        // fine pointing hard (small hand moves = large cursor moves). Widened to
+        // 0.7 (1.43× gain) and moved the dead zone to the top 30%.
+        //
+        //   yDeadZoneStart    = 0.3  (top 30% of camera clamps to top of screen)
+        //   yActiveZoneHeight = 0.7  (bottom 70% of camera maps to full screen)
+        private const val Y_DEAD_ZONE_START = 0.3f
+        private const val Y_ACTIVE_ZONE_HEIGHT = 0.7f
 
         // Issue 7 Fix: Drag grace period — once drag starts, keep it alive
         // for at least this duration even if tracking flickers. This prevents
@@ -1048,6 +1188,7 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_THUMB_UP = "pose_thumb_up"
         const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
+        const val KEY_PALM_HOME = "palm_home"
 
         /**
          * Maps normalized X coordinate [0,1] to screen pixel using a Virtual Box
@@ -1076,7 +1217,7 @@ class ActionDispatcher @Inject constructor(
          */
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             // No mirror — camera already provides selfie-view coordinates
-            val activePos = (normX - X_DEAD_ZONE_START) / X_ACTIVE_ZONE_WIDTH
+            val activePos = (normX - dynamicXDeadZoneStart) / dynamicXActiveWidth
             val clamped = activePos.coerceIn(0f, 1f)
             return clamped * screenWidth
         }
@@ -1095,22 +1236,55 @@ class ActionDispatcher @Inject constructor(
          * Formula:
          *   screenPos = clamp((handPos - Y_DEAD_ZONE_START) / Y_ACTIVE_ZONE_HEIGHT, 0, 1) * screenHeight
          *
-         * Mapping table (with Y_DEAD_ZONE_START=0.0, Y_ACTIVE_ZONE_HEIGHT=0.6):
-         *   handPos=0.00 → screen 0.00 (bottom of camera → bottom of screen)
-         *   handPos=0.30 → screen 0.50 (mid active zone → center of screen)
-         *   handPos=0.60 → screen 1.00 (top of active zone → top of screen)
-         *   handPos=1.00 → screen 1.00 (clamped, top edge)
+         * Mapping table (with Y_DEAD_ZONE_START=0.3, Y_ACTIVE_ZONE_HEIGHT=0.7):
+         *   handPos=0.00 → screen 0.00 (top of camera → clamps to top of screen)
+         *   handPos=0.30 → screen 0.00 (start of active zone → top of screen)
+         *   handPos=0.65 → screen 0.50 (mid active zone → center of screen)
+         *   handPos=1.00 → screen 1.00 (bottom of camera → bottom of screen)
          */
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
-            val activePos = (normY - Y_DEAD_ZONE_START) / Y_ACTIVE_ZONE_HEIGHT
+            val activePos = (normY - dynamicYDeadZoneStart) / dynamicYActiveHeight
             val clamped = activePos.coerceIn(0f, 1f)
             return clamped * screenHeight
+        }
+
+        // F7 (Cursor gain) + F6 (Sit-back): dynamic dead-zone values, initialized to
+        // the defaults above and adjusted at runtime from user settings.
+        @Volatile
+        private var dynamicXDeadZoneStart: Float = X_DEAD_ZONE_START
+        @Volatile
+        private var dynamicXActiveWidth: Float = X_ACTIVE_ZONE_WIDTH
+        @Volatile
+        private var dynamicYDeadZoneStart: Float = Y_DEAD_ZONE_START
+        @Volatile
+        private var dynamicYActiveHeight: Float = Y_ACTIVE_ZONE_HEIGHT
+
+        /**
+         * Applies the user's cursor gain (0..100) and sit-back mode to the
+         * dead-zone mapping. Higher gain = wider active zone = less amplification
+         * (slower, more precise cursor). Sit-back reduces the Y dead zone so the
+         * user can reach the whole screen without raising their hand.
+         */
+        fun setCursorMapping(cursorGain: Int, sitBackMode: Boolean) {
+            val g = cursorGain.coerceIn(0, 100) / 100f
+            // X: active width 0.60..1.00 (default 0.80 at gain 50)
+            dynamicXActiveWidth = 0.60f + g * 0.40f
+            dynamicXDeadZoneStart = ((1f - dynamicXActiveWidth) / 2f).coerceAtLeast(0f)
+            // Y: active height 0.50..0.90 (default 0.70 at gain 50)
+            dynamicYActiveHeight = if (sitBackMode) {
+                0.85f
+            } else {
+                0.50f + g * 0.40f
+            }
+            // Y dead zone = top of frame (clamped to screen top).
+            dynamicYDeadZoneStart = (1f - dynamicYActiveHeight).coerceAtLeast(0f)
         }
     }
 
     // Pinch state tracking
     private var pinchStartTimeMs = 0L
     private var pinchStartX = 0f
+    private var pinchStartVelocity = 0f
     private var pinchStartY = 0f
 
     // Drag state tracking
@@ -1130,6 +1304,7 @@ class ActionDispatcher @Inject constructor(
             is GestureEvent.CursorMoved -> "cursor_moved"
             is GestureEvent.Armed -> "armed"
             is GestureEvent.Disarmed -> "disarmed"
+            is GestureEvent.PalmHome -> "palm_home"
         }
     }
 }

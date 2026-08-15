@@ -326,7 +326,7 @@ class DynamicGestureDetectorTest {
     @Test
     fun `computePeakVelocity returns 0 for insufficient samples`() {
         val emptyDetector = DynamicGestureDetector(config)
-        assertEquals(0f, emptyDetector.computePeakVelocity(), 0.001f)
+        assertEquals(0f, emptyDetector.computePeakVelocity(ArrayDeque<DynamicGestureDetector.PositionSample>()), 0.001f)
     }
 
     // ========== Reset ==========

@@ -95,6 +95,8 @@ class AirControlServiceImpl @Inject constructor(
                             "Disarmed"
                         is com.aircontrol.gesture.model.GestureEvent.CursorMoved ->
                             "" // Don't update label for cursor moves
+                        is com.aircontrol.gesture.model.GestureEvent.PalmHome ->
+                            "Palm Home"
                     }
                     if (label.isNotEmpty()) {
                         _currentGestureLabel.value = label

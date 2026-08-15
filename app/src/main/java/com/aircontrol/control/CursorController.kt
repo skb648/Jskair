@@ -42,7 +42,12 @@ class CursorControllerImpl @Inject constructor() : CursorController {
             hide()
             return
         }
-        val indexTip = handFrame.landmarks.getOrNull(8)
+        // Landmark 8 is the index-fingertip for real MediaPipe frames. Synthetic
+        // cursor frames (built by the accessibility service) carry a single
+        // landmark at index 0, so fall back to the first landmark when index 8
+        // is absent — previously getOrNull(8) always returned null for those
+        // frames and cursorState never updated.
+        val indexTip = handFrame.landmarks.getOrNull(8) ?: handFrame.landmarks.firstOrNull()
         if (indexTip != null) {
             _cursorState.update { it.copy(
                 x = indexTip.x,

@@ -32,11 +32,25 @@ sealed class GestureEvent {
         override val timestampMs: Long,
         val anchoredX: Float = x,
         val anchoredY: Float = y,
+        // Normalized hand/cursor velocity (0..1 units per second) at the moment of
+        // this event. Used by the app layer for "stationary-click" (Midas-touch
+        // prevention): a pinch that starts while the hand is moving fast is likely
+        // accidental and should not fire a tap.
+        val velocity: Float = 0f,
     ) : GestureEvent()
 
     /** A static pose was confirmed after debounce. */
     data class PoseTriggered(
         val pose: Pose,
+        override val timestampMs: Long,
+    ) : GestureEvent()
+
+    /**
+     * Emitted when the user holds an open palm in the ARMED state for the
+     * configured duration. Maps to the "Palm → Home" system gesture (visionOS 2
+     * style): a deliberate open-palm hold brings up the Home View / app launcher.
+     */
+    data class PalmHome(
         override val timestampMs: Long,
     ) : GestureEvent()
 

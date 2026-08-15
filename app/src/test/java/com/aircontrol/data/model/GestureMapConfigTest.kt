@@ -11,9 +11,9 @@ class GestureMapConfigTest {
     // ========== defaultEntries() ==========
 
     @Test
-    fun `defaultEntries returns all 10 expected gesture entries`() {
+    fun `defaultEntries returns all 11 expected gesture entries`() {
         val entries = GestureMapConfig.defaultEntries()
-        assertEquals(10, entries.size)
+        assertEquals(11, entries.size)
     }
 
     @Test
@@ -31,6 +31,7 @@ class GestureMapConfigTest {
             "pose_thumb_up",
             "pose_thumb_down",
             "pose_pinch_hold",
+            "palm_home",
         )
         assertEquals(expectedKeys, keys)
     }
@@ -62,8 +63,8 @@ class GestureMapConfigTest {
     // ========== CURRENT_SCHEMA_VERSION ==========
 
     @Test
-    fun `current schema version is 3`() {
-        assertEquals(3, GestureMapConfig.CURRENT_SCHEMA_VERSION)
+    fun `current schema version is 4`() {
+        assertEquals(4, GestureMapConfig.CURRENT_SCHEMA_VERSION)
     }
 
     // ========== Default constructor ==========

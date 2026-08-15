@@ -36,6 +36,26 @@ interface SettingsRepository {
 
     suspend fun updateCalibrationData(handSizeMm: Float, pinchDistanceMm: Float)
 
+    suspend fun updateDwellEnabled(enabled: Boolean)
+
+    suspend fun updateDwellDuration(durationMs: Int)
+
+    suspend fun updateStationaryClickEnabled(enabled: Boolean)
+
+    suspend fun updatePalmHomeEnabled(enabled: Boolean)
+
+    suspend fun updateSitBackMode(enabled: Boolean)
+
+    suspend fun updateReducedMotion(enabled: Boolean)
+
+    suspend fun updateCursorGain(gain: Int)
+
+    suspend fun updateEyeTrackingEnabled(enabled: Boolean)
+
+    suspend fun updateGazeSensitivity(sensitivity: Int)
+
+    suspend fun updateGazeInvertX(invert: Boolean)
+
     // Gesture map
     val gestureMapConfig: Flow<GestureMapConfig>
 

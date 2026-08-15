@@ -15,9 +15,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -62,19 +59,20 @@ fun AnimatedPowerButton(
 
     val infiniteTransition = rememberInfiniteTransition(label = "power_rotation")
 
-    val rotation by if (shouldRotate) {
-        infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 2000, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "power_ring_rotation",
-        )
-    } else {
-        remember { mutableStateOf(0f) }
-    }
+    // Fix: always invoke animateFloat unconditionally (rules-of-hooks). The value
+    // is only *used* inside `if (shouldRotate)` below, so no behavioral change.
+    // The previous conditional `if (...) animateFloat(...) else remember { ... }`
+    // violated Compose's rules-of-hooks and crashed at runtime when `shouldRotate`
+    // toggled between compositions.
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "power_ring_rotation",
+    )
 
     val ringColor = when {
         isActive && !isPaused -> SuccessGreen

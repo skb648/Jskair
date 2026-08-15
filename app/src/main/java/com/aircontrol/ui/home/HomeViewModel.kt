@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aircontrol.accessibility.ActionDispatcher
 import com.aircontrol.camera.CameraService
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
@@ -43,6 +44,7 @@ class HomeViewModel @Inject constructor(
     // M-01 Fix: Use centralized CameraServiceManager instead of duplicated start/stop logic
     private val serviceManager: com.aircontrol.service.CameraServiceManager,
     @ApplicationContext private val appContext: Context,
+    private val actionDispatcher: ActionDispatcher,
 ) : ViewModel() {
 
     val userPreferences: StateFlow<UserPreferences> = settingsRepository.userPreferences
@@ -94,6 +96,16 @@ class HomeViewModel @Inject constructor(
                     stopUptimeTimer()
                     _sessionStats.value = SessionStats()
                 }
+            }
+        }
+
+        // Count gestures as they are dispatched (previously incrementGestureCount()
+        // was never called, so the "Gestures" stat was always 0).
+        viewModelScope.launch {
+            actionDispatcher.dispatchedEvents.collect {
+                _sessionStats.value = _sessionStats.value.copy(
+                    gesturesExecuted = _sessionStats.value.gesturesExecuted + 1,
+                )
             }
         }
     }
@@ -170,12 +182,6 @@ class HomeViewModel @Inject constructor(
     fun refreshPermissions() {
         permissionsManager.refreshAllPermissions()
         syncTrackingServiceWithSettings()
-    }
-
-    fun incrementGestureCount() {
-        _sessionStats.value = _sessionStats.value.copy(
-            gesturesExecuted = _sessionStats.value.gesturesExecuted + 1,
-        )
     }
 
     override fun onCleared() {

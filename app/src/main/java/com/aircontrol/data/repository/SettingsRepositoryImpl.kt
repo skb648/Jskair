@@ -51,6 +51,16 @@ private object PreferencesKeys {
     val CALIBRATED_PINCH_DISTANCE_MM = floatPreferencesKey("calibrated_pinch_distance_mm")
     val IS_CALIBRATED = booleanPreferencesKey("is_calibrated")
     val CUSTOM_GESTURES_JSON = stringPreferencesKey("custom_gestures_json")
+    val DWELL_ENABLED = booleanPreferencesKey("dwell_enabled")
+    val DWELL_DURATION_MS = intPreferencesKey("dwell_duration_ms")
+    val STATIONARY_CLICK_ENABLED = booleanPreferencesKey("stationary_click_enabled")
+    val PALM_HOME_ENABLED = booleanPreferencesKey("palm_home_enabled")
+    val SIT_BACK_MODE = booleanPreferencesKey("sit_back_mode")
+    val REDUCED_MOTION = booleanPreferencesKey("reduced_motion")
+    val CURSOR_GAIN = intPreferencesKey("cursor_gain")
+    val EYE_TRACKING_ENABLED = booleanPreferencesKey("eye_tracking_enabled")
+    val GAZE_SENSITIVITY = intPreferencesKey("gaze_sensitivity")
+    val GAZE_INVERT_X = booleanPreferencesKey("gaze_invert_x")
 }
 
 @Singleton
@@ -191,6 +201,79 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Updated calibration data: handSize=%.1fmm, pinchDist=%.1fmm", handSizeMm, pinchDistanceMm)
     }
 
+    override suspend fun updateDwellEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DWELL_ENABLED] = enabled
+        }
+        Timber.d("Updated dwellEnabled: %s", enabled)
+    }
+
+    override suspend fun updateDwellDuration(durationMs: Int) {
+        val clamped = durationMs.coerceIn(400, 3000)
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DWELL_DURATION_MS] = clamped
+        }
+        Timber.d("Updated dwellDuration: %d", clamped)
+    }
+
+    override suspend fun updateStationaryClickEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.STATIONARY_CLICK_ENABLED] = enabled
+        }
+        Timber.d("Updated stationaryClickEnabled: %s", enabled)
+    }
+
+    override suspend fun updatePalmHomeEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PALM_HOME_ENABLED] = enabled
+        }
+        Timber.d("Updated palmHomeEnabled: %s", enabled)
+    }
+
+    override suspend fun updateSitBackMode(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SIT_BACK_MODE] = enabled
+        }
+        Timber.d("Updated sitBackMode: %s", enabled)
+    }
+
+    override suspend fun updateReducedMotion(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.REDUCED_MOTION] = enabled
+        }
+        Timber.d("Updated reducedMotion: %s", enabled)
+    }
+
+    override suspend fun updateCursorGain(gain: Int) {
+        val clamped = gain.coerceIn(0, 100)
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CURSOR_GAIN] = clamped
+        }
+        Timber.d("Updated cursorGain: %d", clamped)
+    }
+
+    override suspend fun updateEyeTrackingEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.EYE_TRACKING_ENABLED] = enabled
+        }
+        Timber.d("Updated eyeTrackingEnabled: %s", enabled)
+    }
+
+    override suspend fun updateGazeSensitivity(sensitivity: Int) {
+        val clamped = sensitivity.coerceIn(0, 100)
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GAZE_SENSITIVITY] = clamped
+        }
+        Timber.d("Updated gazeSensitivity: %d", clamped)
+    }
+
+    override suspend fun updateGazeInvertX(invert: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GAZE_INVERT_X] = invert
+        }
+        Timber.d("Updated gazeInvertX: %s", invert)
+    }
+
     override suspend fun updateGestureAction(key: String, action: String) {
         val parsedAction = runCatching { GestureAction.valueOf(action) }
             .getOrElse { exception ->
@@ -314,6 +397,16 @@ class SettingsRepositoryImpl @Inject constructor(
         calibratedHandSizeMm = preferences[PreferencesKeys.CALIBRATED_HAND_SIZE_MM] ?: 0f,
         calibratedPinchDistanceMm = preferences[PreferencesKeys.CALIBRATED_PINCH_DISTANCE_MM] ?: 0f,
         isCalibrated = preferences[PreferencesKeys.IS_CALIBRATED] ?: false,
+        dwellEnabled = preferences[PreferencesKeys.DWELL_ENABLED] ?: false,
+        dwellDurationMs = preferences[PreferencesKeys.DWELL_DURATION_MS] ?: 800,
+        stationaryClickEnabled = preferences[PreferencesKeys.STATIONARY_CLICK_ENABLED] ?: true,
+        palmHomeEnabled = preferences[PreferencesKeys.PALM_HOME_ENABLED] ?: true,
+        sitBackMode = preferences[PreferencesKeys.SIT_BACK_MODE] ?: false,
+        reducedMotion = preferences[PreferencesKeys.REDUCED_MOTION] ?: false,
+        cursorGain = preferences[PreferencesKeys.CURSOR_GAIN] ?: 50,
+        eyeTrackingEnabled = preferences[PreferencesKeys.EYE_TRACKING_ENABLED] ?: false,
+        gazeSensitivity = preferences[PreferencesKeys.GAZE_SENSITIVITY] ?: 50,
+        gazeInvertX = preferences[PreferencesKeys.GAZE_INVERT_X] ?: true,
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {

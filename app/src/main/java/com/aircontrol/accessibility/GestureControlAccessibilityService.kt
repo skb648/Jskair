@@ -1,7 +1,6 @@
 package com.aircontrol.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -50,6 +49,7 @@ import timber.log.Timber
 class GestureControlAccessibilityService : AccessibilityService() {
 
     private var handTracker: HandTracker? = null
+    private var faceTracker: com.aircontrol.tracking.FaceTracker? = null
     private var gestureDetector: GestureDetector? = null
     private var actionDispatcher: ActionDispatcher? = null
     private var settingsRepository: SettingsRepository? = null
@@ -92,6 +92,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var currentPreferences = UserPreferences()
     private var lastAppliedSensitivity: Int? = null
 
+    // Tracks the last-applied calibration values so we only push a calibration
+    // update to the gesture engine when they actually change (avoids rebuilding
+    // the engine config on every unrelated preference change).
+    private var lastAppliedCalibrationHandSize: Float? = null
+    private var lastAppliedCalibrationPinchDist: Float? = null
+
     // Cursor freeze during gesture execution for better accuracy
     private var isCursorFrozen = false
     private var cursorFreezeJob: Job? = null
@@ -109,6 +115,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
         beta = DEFAULT_CURSOR_SMOOTHER_BETA,
     )
 
+    // Gaze smoothing ("eye is mouse") — a dedicated OneEuroFilter pair for gaze
+    // X/Y. Eye tracking is noisier than fingertip tracking, so it gets stronger
+    // smoothing than the hand cursor.
+    private val gazeSmoother = com.aircontrol.tracking.CursorSmoother(
+        minCutoff = GAZE_MIN_CUTOFF,
+        beta = GAZE_BETA,
+    )
+
     // Bug #13 Fix: Track the current beta so we can call cursorSmoother.updateParams
     // with the correct beta when only the minCutoff changes (via minCutoffHint).
     // Also track the last applied minCutoffHint to avoid redundant updateParams
@@ -117,6 +131,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var currentCursorBeta: Float = DEFAULT_CURSOR_SMOOTHER_BETA
     @Volatile
     private var lastAppliedMinCutoffHint: Float? = null
+
+    // The user's "Cursor Speed" setting (1..100) now drives the CursorSmoother's
+    // minCutoff: higher speed = lower minCutoff = less smoothing = faster cursor.
+    // This replaces the removed second interpolation layer in CursorOverlay.
+    @Volatile
+    private var baseMinCutoff: Float = DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF
+
+    // F1 (Dwell-to-click) + F2 (Hover): track how long the cursor has been
+    // stationary so we can show a hover highlight and fire a dwell click.
+    @Volatile
+    private var lastCursorX: Float = 0.5f
+    @Volatile
+    private var lastCursorY: Float = 0.5f
+    @Volatile
+    private var stationarySinceMs: Long = 0L
+    private var dwellFired: Boolean = false
+    private var hoverActive: Boolean = false
+
+    // F12 (Gesture hints): timestamp of the last frame where a hand was detected.
+    @Volatile
+    private var lastHandDetectedMs: Long = 0L
 
     // Broadcast receiver for screen state
     private val screenReceiver = object : BroadcastReceiver() {
@@ -159,6 +194,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     val entryPoint = com.aircontrol.di.AccessibilityServiceEntryPoint
                         .getFromApplication(app)
                     handTracker = entryPoint.handTracker()
+                    faceTracker = entryPoint.faceTracker()
                     gestureDetector = entryPoint.gestureDetector()
                     actionDispatcher = entryPoint.actionDispatcher()
                     settingsRepository = entryPoint.settingsRepository()
@@ -178,11 +214,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
         actionDispatcher?.attachService(this)
         
         // UG-09/UG-10 Fix: Register visual feedback callback
-        // When a gesture is successfully dispatched, pulse the cursor to give
-        // users clear visual confirmation that their gesture was recognized
+        // When a gesture is successfully dispatched, show a ripple on the cursor
+        // (F11) to give clear visual confirmation. Gated on reduced-motion.
         actionDispatcher?.onGestureDispatched = { actionName ->
-            cursorOverlay?.pulse()
-            Timber.d("Gesture dispatched: %s — cursor pulsed", actionName)
+            serviceScope.launch(Dispatchers.Main) {
+                cursorOverlay?.ripple()
+            }
+            Timber.d("Gesture dispatched: %s — cursor ripple", actionName)
         }
 
         // Update screen metrics
@@ -211,11 +249,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         isRunning = true
 
-        // Update service info to ensure capabilities are declared
-        serviceInfo = serviceInfo.apply {
-            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-            notificationTimeout = 100
-        }
+        // Capabilities are declared in accessibility_service_config.xml
+        // (canRetrieveWindowContent=false, canPerformGestures=true). Setting
+        // FLAG_REPORT_VIEW_IDS here would contradict canRetrieveWindowContent=false,
+        // so we no longer mutate serviceInfo at runtime.
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -274,6 +311,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     lastAppliedSensitivity = prefs.sensitivity
                 }
 
+                // Push calibration data so pinch detection is personalized to the
+                // user's measured hand size / pinch distance (previously measured
+                // but never used).
+                if (lastAppliedCalibrationHandSize != prefs.calibratedHandSizeMm ||
+                    lastAppliedCalibrationPinchDist != prefs.calibratedPinchDistanceMm
+                ) {
+                    gestureDetector?.updateCalibration(
+                        prefs.calibratedHandSizeMm,
+                        prefs.calibratedPinchDistanceMm,
+                    )
+                    lastAppliedCalibrationHandSize = prefs.calibratedHandSizeMm
+                    lastAppliedCalibrationPinchDist = prefs.calibratedPinchDistanceMm
+                }
+
+                // F6/F7: apply cursor gain + sit-back mode to the dead-zone mapping.
+                com.aircontrol.accessibility.ActionDispatcher.setCursorMapping(
+                    cursorGain = prefs.cursorGain,
+                    sitBackMode = prefs.sitBackMode,
+                )
+
                 withContext(Dispatchers.Main) {
                     if (prefs.statusPillEnabled && statusOverlay == null) {
                         statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
@@ -289,6 +346,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         cursorOverlay = null
                         cursorController?.hide()
                     }
+
+                    // Apply the user's cursor-speed setting to the smoother.
+                    applyCursorSpeed(prefs.cursorSpeed)
+
+                    // F9: reduced motion disables pulse/glow/ripple animations.
+                    cursorOverlay?.setReducedMotion(prefs.reducedMotion)
                 }
             }
         })
@@ -332,6 +395,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
             handTracker?.handFrames?.collect { frame ->
                 try {
                     lastFrameReceivedMs = System.currentTimeMillis()
+                    if (frame.isDetected) {
+                        lastHandDetectedMs = System.currentTimeMillis()
+                    }
 
                     // Issue 5 Fix: Thermal frame skipping — instead of pausing the
                     // entire service, we skip frames progressively to reduce thermal load.
@@ -373,17 +439,39 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
-        // Collect cursor state → overlay
+        // Collect engine state → overlays. Cursor show/hide is driven HERE (on
+        // state transitions) rather than per-gesture-event, so show() is not
+        // called every frame (which caused the cursor fade-in to restart and
+        // blink). Also resets the cursor smoother on DISARMED so a stale filter
+        // state doesn't make the cursor jump when the hand returns.
         pipelineJobs.add(serviceScope.launch {
             gestureDetector?.engineState?.collect { state ->
                 try {
-                    if (currentPreferences.statusPillEnabled) {
-                        withContext(Dispatchers.Main) {
+                    withContext(Dispatchers.Main) {
+                        if (currentPreferences.statusPillEnabled) {
                             statusOverlay?.updateState(state)
+                        }
+                        when (state) {
+                            GestureEngineState.ARMED,
+                            GestureEngineState.EXECUTING,
+                            GestureEngineState.COOLDOWN -> {
+                                if (currentPreferences.cursorEnabled) {
+                                    cursorOverlay?.show()
+                                    cursorController?.show()
+                                }
+                            }
+                            GestureEngineState.DISARMED -> {
+                                cursorOverlay?.hide()
+                                cursorController?.hide()
+                                // Reset smoother so the cursor re-stabilizes from a
+                                // clean state when the hand returns (prevents a jump).
+                                cursorSmoother.reset()
+                            }
+                            GestureEngineState.ARMING -> { /* cursor stays hidden */ }
                         }
                     }
                 } catch (e: Exception) {
-                    Timber.e(e, "Error updating status overlay — skipping")
+                    Timber.e(e, "Error updating overlays from engine state — skipping")
                 }
             }
         })
@@ -392,7 +480,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             gestureDetector?.gestureEvents?.collect { event ->
                 try {
-                    if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled && !isCursorFrozen) {
+                    if (event is GestureEvent.CursorMoved && currentPreferences.cursorEnabled &&
+                        !currentPreferences.eyeTrackingEnabled && !isCursorFrozen
+                    ) {
                         // Bug #13 Fix: Adaptive smoothing for low-confidence frames.
                         // If the engine provides a minCutoffHint, dynamically update
                         // the CursorSmoother's minCutoff. Only call updateParams when
@@ -400,7 +490,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // When the hint is null (confidence recovered), restore the
                         // default minCutoff.
                         if (event.minCutoffHint != lastAppliedMinCutoffHint) {
-                            val newMinCutoff = event.minCutoffHint ?: DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF
+                            // Restore the cursor-speed-derived base minCutoff when
+                            // confidence recovers (hint == null); otherwise apply the
+                            // low-confidence hint.
+                            val newMinCutoff = event.minCutoffHint ?: baseMinCutoff
                             cursorSmoother.updateParams(
                                 minCutoff = newMinCutoff,
                                 beta = currentCursorBeta,
@@ -431,6 +524,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             return@collect
                         }
 
+                        // F1 (Dwell) + F2 (Hover): detect cursor stillness.
+                        handleCursorStillness(smoothX, smoothY, event.timestampMs)
+
                         withContext(Dispatchers.Main) {
                             cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                         }
@@ -451,6 +547,60 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         })
 
+        // "Eye is mouse": collect gaze points from the face tracker and drive the
+        // cursor when eye tracking is enabled. Hand tracking still runs for pinch
+        // (click) and other gestures.
+        pipelineJobs.add(serviceScope.launch {
+            faceTracker?.gazePoints?.collect { gaze ->
+                try {
+                    if (!currentPreferences.eyeTrackingEnabled ||
+                        !currentPreferences.cursorEnabled
+                    ) {
+                        return@collect
+                    }
+                    if (!gaze.isDetected) {
+                        // No face — hide the cursor (same as losing the hand).
+                        withContext(Dispatchers.Main) { cursorOverlay?.hide() }
+                        cursorController?.hide()
+                        gazeSmoother.reset()
+                        return@collect
+                    }
+
+                    // Map gaze (0..1, 0.5 = center) to screen-normalized with a
+                    // sensitivity-driven gain that expands the eye's limited range
+                    // to the full screen.
+                    val gain = 1.5f + (currentPreferences.gazeSensitivity / 100f) * 2.0f
+                    var screenX = 0.5f + (gaze.x - 0.5f) * gain
+                    if (currentPreferences.gazeInvertX) screenX = 1f - screenX
+                    val screenY = 0.5f + (gaze.y - 0.5f) * gain
+                    val clampedX = screenX.coerceIn(0f, 1f)
+                    val clampedY = screenY.coerceIn(0f, 1f)
+
+                    // Smooth with the gaze-specific OneEuro filter.
+                    val (smoothX, smoothY) = gazeSmoother.filter(
+                        clampedX, clampedY, System.currentTimeMillis(),
+                    )
+
+                    withContext(Dispatchers.Main) {
+                        cursorOverlay?.show()
+                        cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
+                    }
+                    cursorController?.updatePosition(
+                        com.aircontrol.tracking.HandFrame(
+                            landmarks = listOf(
+                                com.aircontrol.tracking.Landmark3D(smoothX, smoothY, 0f),
+                            ),
+                            handedness = com.aircontrol.tracking.Handedness.UNKNOWN,
+                            timestampMs = System.currentTimeMillis(),
+                            confidence = 1f,
+                        ),
+                    )
+                } catch (e: Exception) {
+                    Timber.e(e, "Error updating gaze cursor — skipping")
+                }
+            }
+        })
+
         // Frame watchdog — detect pipeline stalls
         frameWatchdogJob = serviceScope.launch {
             while (true) {
@@ -465,13 +615,43 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Start thermal monitoring
         startThermalMonitoring()
+
+        // F12 (Gesture hints): if the user has a hand in view but the engine stays
+        // DISARMED for a while (they likely don't know to show an open palm), show
+        // a one-time Toast hint.
+        pipelineJobs.add(serviceScope.launch {
+            var hintShown = false
+            while (true) {
+                delay(4000L)
+                val now = System.currentTimeMillis()
+                val armed = gestureDetector?.engineState?.value != GestureEngineState.DISARMED
+                if (armed) {
+                    hintShown = false
+                } else if (!hintShown &&
+                    lastHandDetectedMs > 0L &&
+                    now - lastHandDetectedMs < 1500L
+                ) {
+                    hintShown = true
+                    withContext(Dispatchers.Main) {
+                        android.widget.Toast.makeText(
+                            this@GestureControlAccessibilityService,
+                            "Show an open palm to activate gestures",
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            }
+        })
     }
 
     private fun restartTrackingPipeline() {
         Timber.i("Restarting tracking pipeline and camera service")
         stopTrackingPipeline()
-        handTracker?.close()
-        handTracker?.initialize()
+        // NOTE: Do NOT close/reinitialize HandTracker here. It is a shared
+        // singleton owned by CameraService, which manages its lifecycle. Calling
+        // close()/initialize() from this service raced with CameraService's own
+        // processing and could leave the tracker in a half-initialized state.
+        // Restarting the camera service re-binds and reinitializes it safely.
         startTrackingPipeline()
         startCameraService()
     }
@@ -561,42 +741,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) event.y else event.anchoredY
             } else cursorState?.y ?: 0f
 
-            // H-04 Fix: Properly integrate CursorController state with CursorOverlay.
-            // The CursorController provides state that can be observed by other components
-            // (e.g., UI screens, debug tools). Keep both in sync for consistency.
-            when (engineState) {
-                GestureEngineState.ARMED,
-                GestureEngineState.EXECUTING,
-                GestureEngineState.COOLDOWN -> {
-                    if (currentPreferences.cursorEnabled) {
-                        cursorOverlay?.show()
-                        cursorController?.show()
-                        // Update CursorController state for observers
-                        cursorController?.let { controller ->
-                            if (cursorState != null && !isCursorFrozen) {
-                                val handFrame = com.aircontrol.tracking.HandFrame(
-                                    landmarks = cursorState?.let { state ->
-                                        listOf(
-                                            com.aircontrol.tracking.Landmark3D(state.x, state.y, 0f)
-                                        )
-                                    } ?: emptyList(),
-                                    handedness = com.aircontrol.tracking.Handedness.UNKNOWN,
-                                    timestampMs = event.timestampMs,
-                                    confidence = 1f,
-                                )
-                                controller.updatePosition(handFrame)
-                            }
-                        }
-                    }
-                }
-                GestureEngineState.DISARMED -> {
-                    cursorOverlay?.hide()
-                    cursorController?.hide()
-                }
-                GestureEngineState.ARMING -> {
-                    // Keep cursor visible during arming
-                }
-            }
+            // Cursor show/hide is now driven by the engineState collector (see
+            // startTrackingPipeline) so it only runs on state transitions, not per
+            // event. This avoids re-triggering the fade-in every frame.
 
             // Freeze cursor during gesture execution for better accuracy
             // When any gesture is recognized (swipe, pose, pinch start), freeze the cursor
@@ -636,7 +783,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 }
                 is GestureEvent.Armed,
                 is GestureEvent.Disarmed,
-                is GestureEvent.CursorMoved -> { /* No freeze */ }
+                is GestureEvent.CursorMoved,
+                is GestureEvent.PalmHome -> { /* No freeze */ }
             }
 
             // Dispatch action
@@ -720,6 +868,68 @@ class GestureControlAccessibilityService : AccessibilityService() {
         if (prefs.statusPillEnabled) {
             statusOverlay = StatusOverlay(this)
         }
+        applyCursorSpeed(prefs.cursorSpeed)
+    }
+
+    /**
+     * Maps the user's "Cursor Speed" setting (1..100) to the CursorSmoother's
+     * minCutoff. Higher speed → lower minCutoff → less smoothing → faster cursor.
+     */
+    private fun applyCursorSpeed(speed: Int) {
+        val s = speed.coerceIn(1, 100)
+        baseMinCutoff = (1.6f - (s / 100f) * 1.2f).coerceIn(0.4f, 1.6f)
+        // Only apply if no low-confidence hint is currently overriding.
+        if (lastAppliedMinCutoffHint == null) {
+            cursorSmoother.updateParams(minCutoff = baseMinCutoff, beta = currentCursorBeta)
+        }
+    }
+
+    /**
+     * F1 (Dwell-to-click) + F2 (Hover): called on every non-silent CursorMoved.
+     * Tracks how long the cursor has stayed put:
+     *  - after HOVER_AFTER_MS, show the hover highlight (pre-interaction certainty)
+     *  - after dwellDurationMs (if dwell enabled), fire a single dwell click.
+     */
+    private suspend fun handleCursorStillness(x: Float, y: Float, timestampMs: Long) {
+        val dx = x - lastCursorX
+        val dy = y - lastCursorY
+        val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+        val now = System.currentTimeMillis()
+
+        lastCursorX = x
+        lastCursorY = y
+
+        if (dist > STATIONARY_THRESHOLD) {
+            // Cursor moved — reset hover and dwell.
+            if (hoverActive) {
+                hoverActive = false
+                withContext(Dispatchers.Main) { cursorOverlay?.resetHover() }
+            }
+            stationarySinceMs = now
+            dwellFired = false
+            withContext(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
+            return
+        }
+
+        if (stationarySinceMs == 0L) stationarySinceMs = now
+        val stillMs = now - stationarySinceMs
+
+        // F2: hover highlight once the cursor has been still briefly.
+        if (!hoverActive && stillMs >= HOVER_AFTER_MS) {
+            hoverActive = true
+            withContext(Dispatchers.Main) { cursorOverlay?.notifyHover() }
+        }
+
+        // F1: dwell click once the configured duration has elapsed.
+        if (currentPreferences.dwellEnabled && !dwellFired && stillMs >= currentPreferences.dwellDurationMs) {
+            dwellFired = true
+            actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight)
+            withContext(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
+        } else if (currentPreferences.dwellEnabled && !dwellFired) {
+            // Visual dwell progress ring.
+            val progress = (stillMs.toFloat() / currentPreferences.dwellDurationMs).coerceIn(0f, 1f)
+            withContext(Dispatchers.Main) { cursorOverlay?.setDwellProgress(progress) }
+        }
     }
 
     private fun removeOverlays() {
@@ -782,6 +992,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         preference: com.aircontrol.data.model.HandPreference,
     ): Boolean {
         if (!isDetected || preference == com.aircontrol.data.model.HandPreference.ANY) return true
+        // If MediaPipe couldn't determine handedness (UNKNOWN — common in poor
+        // light/blur), don't drop the frame. Dropping UNKNOWN frames caused all
+        // gestures to silently stop working for hand-preference users.
+        if (handedness == com.aircontrol.tracking.Handedness.UNKNOWN) return true
         return when (preference) {
             com.aircontrol.data.model.HandPreference.LEFT -> handedness == com.aircontrol.tracking.Handedness.LEFT
             com.aircontrol.data.model.HandPreference.RIGHT -> handedness == com.aircontrol.tracking.Handedness.RIGHT
@@ -805,5 +1019,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
         //   - beta      = 0.007:  Lower high-speed delay, minimal filtering (Apple spec)
         private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.0f
         private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.007f
+
+        // F1/F2: cursor displacement (normalized) below this counts as "stationary".
+        private const val STATIONARY_THRESHOLD = 0.008f
+        // F2: how long the cursor must be still before the hover highlight shows.
+        private const val HOVER_AFTER_MS = 150L
+
+        // Gaze smoother tuning (stronger smoothing for noisy eye tracking).
+        private const val GAZE_MIN_CUTOFF = 1.4f
+        private const val GAZE_BETA = 0.004f
     }
 }

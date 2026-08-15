@@ -6,6 +6,7 @@ import com.aircontrol.gesture.model.HandInput
 import com.aircontrol.gesture.model.Landmark3D
 import com.aircontrol.gesture.model.LandmarkIndex
 import kotlin.math.sqrt
+import kotlin.concurrent.Volatile
 
 /**
  * Detects whether each finger is extended or curled based on landmark positions.
@@ -23,6 +24,19 @@ import kotlin.math.sqrt
  *   An angle above the configured threshold indicates extension.
  */
 class FingerExtensionDetector(private val config: GestureEngineConfig) {
+    // H-06 Fix: Make config mutable so sensitivity updates propagate without
+    // recreating the detector. Previously this held the initial config forever,
+    // so the sensitivity slider had NO effect on finger/thumb extension detection.
+    @Volatile
+    private var currentConfig: GestureEngineConfig = config
+
+    /**
+     * Updates the detector's config (e.g., sensitivity change) without recreating
+     * the detector, preserving any in-progress state.
+     */
+    fun updateConfig(newConfig: GestureEngineConfig) {
+        currentConfig = newConfig
+    }
 
     /**
      * Detects the extension state of all five fingers from a hand input frame.
@@ -34,7 +48,7 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
 
         val landmarks = input.landmarks
         val wrist = landmarks[LandmarkIndex.WRIST]
-        val threshold = config.scaledFingerExtensionThreshold()
+        val threshold = currentConfig.scaledFingerExtensionThreshold()
 
         return FingerExtensionState(
             thumb = isThumbExtended(landmarks),
@@ -103,7 +117,7 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
         val tip = landmarks[LandmarkIndex.THUMB_TIP]
 
         val angleDeg = angleAtVertex(ip, mcp, tip)
-        return angleDeg > config.scaledThumbExtensionAngleDeg()
+        return angleDeg > currentConfig.scaledThumbExtensionAngleDeg()
     }
 
     /**
