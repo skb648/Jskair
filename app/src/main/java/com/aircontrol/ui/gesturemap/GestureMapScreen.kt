@@ -87,12 +87,17 @@ fun GestureMapScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    // Resolve string resources in the composable scope (stringResource can't be
+    // called inside LaunchedEffect, which is a suspend lambda).
+    val resetSnackbarMessage = stringResource(R.string.gesture_map_reset_snackbar)
+    val resetSnackbarUndoLabel = stringResource(R.string.gesture_map_undo)
+
     // Show undo snackbar after reset
     LaunchedEffect(showResetSnackbar) {
         if (showResetSnackbar) {
             val result = snackbarHostState.showSnackbar(
-                message = stringResource(R.string.gesture_map_reset_snackbar),
-                actionLabel = stringResource(R.string.gesture_map_undo),
+                message = resetSnackbarMessage,
+                actionLabel = resetSnackbarUndoLabel,
             )
             if (result == SnackbarResult.ActionPerformed) {
                 viewModel.undoReset()
