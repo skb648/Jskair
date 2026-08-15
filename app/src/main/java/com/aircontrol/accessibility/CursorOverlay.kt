@@ -17,7 +17,7 @@ import timber.log.Timber
  *
  * Cursor rendering:
  * - 24dp accent-colored dot with soft shadow
- * - Subtle idle pulse animation when not moving
+ * - State-aware scale/glow feedback for movement and interaction
  * - Small ring around cursor when state machine is ARMED
  * - 200ms fade-out when hand is lost
  * - Minimal dead-zone to prevent drift at tiny movements
@@ -42,10 +42,9 @@ class CursorOverlay(
     private var currentScreenX = 0f
     private var currentScreenY = 0f
 
-    // CRITICAL FIX: Remove throttle for 60fps cursor movement (Apple Vision Pro level)
-    // Apple Vision Pro uses 60fps+ for buttery smooth cursor
-    private val updateThrottleMs = 16L  // ✅ 60fps (16ms) instead of 33ms (30fps)
-    private var lastUpdateTimeMs = 0L   // ✅ Track last update time for throttling
+    // Cursor updates are capped near display refresh timing.
+    private val updateThrottleMs = 16L
+    private var lastUpdateTimeMs = 0L
 
     // Whether we've received the first position update
     private var hasInitialized = false
@@ -64,7 +63,7 @@ class CursorOverlay(
     private val hideDelayMs = 200L
 
     /**
-     * Sets the armed state on the cursor view (m-12).
+     * Sets the armed state on the cursor view.
      */
     fun setArmed(armed: Boolean) {
         isArmed = armed
@@ -74,14 +73,10 @@ class CursorOverlay(
     /**
      * Updates the cursor position from normalized hand coordinates.
      * Applies front camera mirroring, full screen mapping, and minimal dead-zone filtering.
-     * 
-     * CRITICAL FIX: Added exponential interpolation for sub-pixel smoothness (Apple Vision Pro level)
-     * This provides buttery smooth cursor movement without visible jumps or stuttering.
      */
     fun updatePosition(normX: Float, normY: Float, screenW: Int, screenHeight: Int) {
         if (!isAdded) return
 
-        // Cancel pending hide
         cancelPendingHide()
 
         // Map normalized coords to screen pixels (with mirroring and full coverage)
@@ -94,56 +89,43 @@ class CursorOverlay(
             val dy = targetY - currentScreenY
             val distance = kotlin.math.sqrt(dx * dx + dy * dy)
             if (distance < deadZonePx) {
-                // Within dead-zone — don't update
                 if (!isVisible) show()
                 return
             }
         }
 
-        // CRITICAL FIX: Add exponential interpolation for sub-pixel smoothness (Apple Vision Pro level)
-        // Smooth interpolation factor: 30% of distance per frame for buttery smooth movement
+        // Sub-pixel interpolation keeps motion visually smooth without a second
+        // heavyweight filter on top of CursorSmoother.
         val interpolationFactor = 0.3f
         currentScreenX += (targetX - currentScreenX) * interpolationFactor
         currentScreenY += (targetY - currentScreenY) * interpolationFactor
         hasInitialized = true
 
-        // Update layout immediately for minimal latency
         updateViewLayout()
-
-        // M-12: Notify the cursor dot view that movement is happening
         (cursorView as? CursorDotView)?.notifyMoving()
 
         if (!isVisible) show()
     }
 
-    /**
-     * Shows the cursor overlay.
-     */
     fun show() {
         if (!isAdded) {
             addView()
         }
         cursorView?.apply {
-            // UC-04 Fix: Added fade-in animation (200ms) to match fade-out
-            // This creates a smooth, polished feel instead of abrupt appearance
             alpha = 0f
             visibility = View.VISIBLE
             animate()
                 .alpha(1f)
-                .setDuration(hideDelayMs) // Use same duration as hide for symmetry
+                .setDuration(hideDelayMs)
                 .start()
         }
         isVisible = true
     }
 
-    /**
-     * Hides the cursor with a 200ms fade-out.
-     */
     fun hide() {
         if (!isVisible) return
         val view = cursorView ?: return
 
-        // Animate alpha to 0 over 200ms
         view.animate()
             .alpha(0f)
             .setDuration(hideDelayMs)
@@ -154,51 +136,31 @@ class CursorOverlay(
             .start()
     }
 
-    /**
-     * Updates the screen size after rotation.
-     */
     fun updateScreenSize(width: Int, height: Int) {
         screenWidth = width
         screenHeight = height
     }
 
-    /**
-     * UG-09/UG-10 Fix: Triggers a visual pulse effect on the cursor.
-     * Called when a gesture is successfully dispatched to provide clear visual
-     * confirmation to the user that their gesture was recognized.
-     * BUG #5 FIX: Uses internal CursorDotView.pulse() instead of View scaling
-     */
+    /** Visual confirmation that a gesture was successfully dispatched. */
     fun pulse() {
         (cursorView as? CursorDotView)?.pulse()
     }
 
-    /**
-     * Notify cursor is hovering over interactive element.
-     * BUG #4 FIX: Exposes CursorDotView.notifyHover() for external triggering
-     */
+    /** Notify that the cursor is over an interactive target. */
     fun notifyHover() {
         (cursorView as? CursorDotView)?.notifyHover()
     }
 
-    /**
-     * Reset hover state when cursor leaves interactive element.
-     * BUG #4 FIX: Exposes CursorDotView.resetHover() for external triggering
-     */
+    /** Clear interactive-target hover feedback. */
     fun resetHover() {
         (cursorView as? CursorDotView)?.resetHover()
     }
 
-    /**
-     * Notify cursor tap/click action.
-     * BUG #4 FIX: Exposes CursorDotView.notifyTap() for external triggering
-     */
+    /** Notify that a click/tap action was accepted. */
     fun notifyTap() {
         (cursorView as? CursorDotView)?.notifyTap()
     }
 
-    /**
-     * Removes the overlay from the window manager.
-     */
     fun remove() {
         try {
             cursorView?.let { windowManager.removeView(it) }
@@ -210,14 +172,11 @@ class CursorOverlay(
         isVisible = false
     }
 
-    // ========== Private implementation ==========
-
     @SuppressLint("ClickableViewAccessibility")
     private fun addView() {
         if (isAdded) return
 
         cursorView = createCursorView()
-
         val params = createLayoutParams()
 
         try {
@@ -230,16 +189,13 @@ class CursorOverlay(
 
     private fun createCursorView(): View {
         val view = CursorDotView(context, cursorSizePx, ringSizePx)
-
-        val size = ringSizePx * 2 + dpToPx(4) // Extra padding for ring
+        val size = ringSizePx * 2 + dpToPx(4)
         view.layoutParams = FrameLayout.LayoutParams(size, size)
-
         return view
     }
 
     private fun createLayoutParams(): WindowManager.LayoutParams {
         val size = ringSizePx * 2 + dpToPx(4)
-
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         } else {
@@ -268,7 +224,7 @@ class CursorOverlay(
 
         val now = System.currentTimeMillis()
         if (now - lastUpdateTimeMs < updateThrottleMs) {
-            return // BUG #7 FIX: Throttle overlay updates to 60fps (16ms)
+            return
         }
         lastUpdateTimeMs = now
 
@@ -293,13 +249,8 @@ class CursorOverlay(
     }
 
     companion object {
-        // CRITICAL FIX: Smaller cursor for precision work (Apple Vision Pro level)
-        // Apple Vision Pro uses a small, elegant cursor
-        private const val CURSOR_SIZE_DP = 28  // ✅ Reduced from 36dp to 28dp
-        private const val RING_SIZE_DP = 20    // ✅ Reduced from 28dp to 20dp
-        
-        // CRITICAL FIX: Larger dead zone for rock-solid stability
-        // Eliminates micro-tremor completely
-        private const val DEAD_ZONE_DP = 8  // ✅ Increased from 3dp to 8dp
+        private const val CURSOR_SIZE_DP = 28
+        private const val RING_SIZE_DP = 20
+        private const val DEAD_ZONE_DP = 1
     }
 }
