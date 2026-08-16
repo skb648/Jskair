@@ -56,6 +56,10 @@ interface SettingsRepository {
 
     suspend fun updateGazeInvertX(invert: Boolean)
 
+    suspend fun updateBlinkClickEnabled(enabled: Boolean)
+
+    suspend fun updateGazeCalibration(coeffs: String)
+
     // Gesture map
     val gestureMapConfig: Flow<GestureMapConfig>
 

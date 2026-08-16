@@ -61,6 +61,8 @@ private object PreferencesKeys {
     val EYE_TRACKING_ENABLED = booleanPreferencesKey("eye_tracking_enabled")
     val GAZE_SENSITIVITY = intPreferencesKey("gaze_sensitivity")
     val GAZE_INVERT_X = booleanPreferencesKey("gaze_invert_x")
+    val BLINK_CLICK_ENABLED = booleanPreferencesKey("blink_click_enabled")
+    val GAZE_CALIBRATION = stringPreferencesKey("gaze_calibration")
 }
 
 @Singleton
@@ -274,6 +276,20 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Updated gazeInvertX: %s", invert)
     }
 
+    override suspend fun updateBlinkClickEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BLINK_CLICK_ENABLED] = enabled
+        }
+        Timber.d("Updated blinkClickEnabled: %s", enabled)
+    }
+
+    override suspend fun updateGazeCalibration(coeffs: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GAZE_CALIBRATION] = coeffs
+        }
+        Timber.d("Updated gazeCalibration")
+    }
+
     override suspend fun updateGestureAction(key: String, action: String) {
         val parsedAction = runCatching { GestureAction.valueOf(action) }
             .getOrElse { exception ->
@@ -407,6 +423,8 @@ class SettingsRepositoryImpl @Inject constructor(
         eyeTrackingEnabled = preferences[PreferencesKeys.EYE_TRACKING_ENABLED] ?: false,
         gazeSensitivity = preferences[PreferencesKeys.GAZE_SENSITIVITY] ?: 50,
         gazeInvertX = preferences[PreferencesKeys.GAZE_INVERT_X] ?: true,
+        blinkClickEnabled = preferences[PreferencesKeys.BLINK_CLICK_ENABLED] ?: false,
+        gazeCalibration = preferences[PreferencesKeys.GAZE_CALIBRATION] ?: "",
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {

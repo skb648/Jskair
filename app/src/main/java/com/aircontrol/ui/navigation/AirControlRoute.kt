@@ -8,4 +8,5 @@ sealed class AirControlRoute(val route: String) {
     data object Calibration : AirControlRoute("calibration")
     data object Debug : AirControlRoute("debug")
     data object CustomGesture : AirControlRoute("custom_gesture")
+    data object GazeCalibration : AirControlRoute("gaze_calibration")
 }

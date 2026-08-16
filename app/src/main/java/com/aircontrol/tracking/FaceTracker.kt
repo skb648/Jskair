@@ -21,17 +21,19 @@ import kotlin.concurrent.Volatile
  *
  * @param x Normalized horizontal gaze [0,1] where 0.5 = looking straight ahead.
  * @param y Normalized vertical gaze [0,1] where 0.5 = looking straight ahead.
+ * @param ear Average Eye Aspect Ratio of both eyes (blink signal). 1f when unknown.
  * @param confidence 1f when a face with iris landmarks was detected, else 0f.
  */
 data class GazePoint(
     val x: Float,
     val y: Float,
+    val ear: Float = 1f,
     val confidence: Float,
 ) {
     val isDetected: Boolean get() = confidence > 0f
 
     companion object {
-        val EMPTY = GazePoint(x = 0.5f, y = 0.5f, confidence = 0f)
+        val EMPTY = GazePoint(x = 0.5f, y = 0.5f, ear = 1f, confidence = 0f)
     }
 }
 
@@ -169,7 +171,7 @@ class FaceTrackerImpl @Inject constructor(
 
         val faceLandmarks = result.faceLandmarks()
         if (faceLandmarks.isEmpty()) {
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, 0f))
+            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f))
             return
         }
 
@@ -177,7 +179,7 @@ class FaceTrackerImpl @Inject constructor(
         if (gaze != null) {
             _gazePoints.tryEmit(gaze)
         } else {
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, 0f))
+            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f))
         }
     }
 
@@ -220,7 +222,39 @@ class FaceTrackerImpl @Inject constructor(
         val h = ((leftH + rightH) / 2f).coerceIn(0f, 1f)
         val v = ((leftV + rightV) / 2f).coerceIn(0f, 1f)
 
-        return GazePoint(x = h, y = v, confidence = 1f)
+        // Average Eye Aspect Ratio for blink detection.
+        val ear = computeAverageEar(landmarks)
+
+        return GazePoint(x = h, y = v, ear = ear, confidence = 1f)
+    }
+
+    /**
+     * Eye Aspect Ratio averaged over both eyes.
+     *
+     * Left eye contour:  [33, 160, 158, 133, 153, 144]
+     * Right eye contour: [263, 387, 385, 362, 380, 373]
+     */
+    private fun computeAverageEar(
+        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+    ): Float {
+        val left = ear(landmarks, 33, 160, 158, 133, 153, 144)
+        val right = ear(landmarks, 263, 387, 385, 362, 380, 373)
+        return (left + right) / 2f
+    }
+
+    private fun ear(
+        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int,
+    ): Float {
+        fun dist(a: Int, b: Int): Float {
+            val dx = landmarks[a].x() - landmarks[b].x()
+            val dy = landmarks[a].y() - landmarks[b].y()
+            return kotlin.math.sqrt(dx * dx + dy * dy)
+        }
+        val vertical = dist(p2, p6) + dist(p3, p5)
+        val horizontal = 2f * dist(p1, p4)
+        if (horizontal < 1e-6f) return 1f
+        return vertical / horizontal
     }
 
     /**

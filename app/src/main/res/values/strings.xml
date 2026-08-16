@@ -146,6 +146,18 @@
     <string name="calibration_hand_size">Hand Size</string>
     <string name="calibration_pinch_distance">Pinch Distance</string>
 
+    <!-- Gaze calibration -->
+    <string name="calibration_error_hint">Could not detect your face. Ensure your face is well-lit and eye tracking is enabled, then retry.</string>
+    <string name="gaze_calibration_title">Gaze Calibration</string>
+    <string name="gaze_calibration_complete">Calibration complete!</string>
+    <string name="gaze_calibration_look_at">Look at the highlighted dot (%1$d/%2$d)</string>
+    <string name="gaze_calibration_retry">Retry</string>
+    <string name="gaze_calibration_restart">Restart Calibration</string>
+    <string name="gaze_calibration_need_eye_tracking">Eye tracking is not enabled. Turn on "Eye is Mouse" in Settings, then run calibration.</string>
+    <string name="gaze_calibration_go_back">Go Back</string>
+    <string name="gaze_calibration_calibrated">Calibrated ✓ — tap to re-run</string>
+    <string name="gaze_calibration_run">Run the 5-point gaze calibration</string>
+
     <!-- Notification -->
     <string name="notification_channel_name">Hand Tracking</string>
     <string name="notification_channel_description">Controls for the hand tracking foreground service</string>

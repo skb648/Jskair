@@ -170,4 +170,16 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.updateGazeInvertX(invert)
         }
     }
+
+    fun updateBlinkClickEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateBlinkClickEnabled(enabled)
+        }
+    }
+
+    fun updateGazeCalibration(coeffs: String) {
+        viewModelScope.launch {
+            settingsRepository.updateGazeCalibration(coeffs)
+        }
+    }
 }

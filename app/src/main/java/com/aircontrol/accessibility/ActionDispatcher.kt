@@ -247,11 +247,32 @@ class ActionDispatcher @Inject constructor(
      */
     fun dispatchDwellTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.dwellEnabled) return false
+        return performFeedbackTap(cursorX, cursorY, screenWidth, screenHeight, "dwell_tap")
+    }
+
+    /**
+     * F-blink (Blink-to-click): fires a tap at the given cursor position. Gated on
+     * blinkClickEnabled (NOT dwellEnabled) — blink is an independent alternative
+     * to dwell, so enabling "Blink to Click" alone must work.
+     */
+    fun dispatchBlinkTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        if (!currentPreferences.blinkClickEnabled) return false
+        return performFeedbackTap(cursorX, cursorY, screenWidth, screenHeight, "blink_tap")
+    }
+
+    /** Shared tap dispatcher + haptic + feedback for dwell/blink clicks. */
+    private fun performFeedbackTap(
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        label: String,
+    ): Boolean {
         val ok = dispatchTap(cursorX, cursorY, screenWidth, screenHeight)
         if (ok) {
             performHapticFeedback()
-            onGestureDispatched?.invoke("dwell_tap")
-            _dispatchedEvents.tryEmit("dwell_tap")
+            onGestureDispatched?.invoke(label)
+            _dispatchedEvents.tryEmit(label)
         }
         return ok
     }

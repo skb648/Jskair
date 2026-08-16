@@ -40,4 +40,9 @@ data class UserPreferences(
     val gazeSensitivity: Int = 50,
     // Inverts the horizontal gaze axis (front-camera mirroring varies by device).
     val gazeInvertX: Boolean = true,
+
+    // Blink-to-click (Eye Aspect Ratio): both eyes closed 300–800ms → click.
+    val blinkClickEnabled: Boolean = false,
+    // Persisted 5-point gaze calibration coefficients (comma-separated, 6 floats).
+    val gazeCalibration: String = "",
 )

@@ -1,6 +1,7 @@
 package com.aircontrol.ui.settings
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.Vibration
@@ -54,6 +56,7 @@ import com.aircontrol.ui.theme.TextSecondary
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToGazeCalibration: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     // Bug: Settings Sliders Resetting Fix — Use collectAsStateWithLifecycle() instead
@@ -358,6 +361,53 @@ fun SettingsScreen(
                 checked = preferences.gazeInvertX,
                 onCheckedChange = { viewModel.updateGazeInvertX(it) },
             )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
+                title = "Blink to Click",
+                subtitle = "Blink (300–800ms) to click where you are looking",
+                checked = preferences.blinkClickEnabled,
+                onCheckedChange = { viewModel.updateBlinkClickEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            // 5-point gaze calibration entry.
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(Dimens.cardCornerRadius),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNavigateToGazeCalibration() }
+                        .padding(horizontal = Dimens.paddingMedium, vertical = Dimens.paddingSmall),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.gaze_calibration_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = if (preferences.gazeCalibration.isNotBlank())
+                                stringResource(R.string.gaze_calibration_calibrated)
+                            else stringResource(R.string.gaze_calibration_run),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = ElectricBlue,
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(Dimens.spacing32))
 

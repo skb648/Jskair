@@ -115,13 +115,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
         beta = DEFAULT_CURSOR_SMOOTHER_BETA,
     )
 
-    // Gaze smoothing ("eye is mouse") — a dedicated OneEuroFilter pair for gaze
-    // X/Y. Eye tracking is noisier than fingertip tracking, so it gets stronger
-    // smoothing than the hand cursor.
-    private val gazeSmoother = com.aircontrol.tracking.CursorSmoother(
-        minCutoff = GAZE_MIN_CUTOFF,
-        beta = GAZE_BETA,
-    )
+    // Gaze smoothing ("eye is mouse") — a dedicated EMA filter for gaze X/Y.
+    // Eye tracking is noisier than fingertip tracking, so EMA (alpha 0.2) removes
+    // saccadic jitter (the recommended 0.15–0.25 range from the gaze literature).
+    private val gazeEmaFilter = com.aircontrol.tracking.EmaFilter(alpha = GAZE_EMA_ALPHA)
+
+    // Blink-to-click: Eye Aspect Ratio based blink detector.
+    private val blinkDetector = com.aircontrol.tracking.BlinkDetector()
+
+    // 5-point gaze calibration (2D affine transform).
+    @Volatile
+    private var gazeCalibration = com.aircontrol.tracking.GazeCalibration.UNAVAILABLE
 
     // Bug #13 Fix: Track the current beta so we can call cursorSmoother.updateParams
     // with the correct beta when only the minCutoff changes (via minCutoffHint).
@@ -329,6 +333,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 com.aircontrol.accessibility.ActionDispatcher.setCursorMapping(
                     cursorGain = prefs.cursorGain,
                     sitBackMode = prefs.sitBackMode,
+                )
+
+                // Reload the persisted 5-point gaze calibration when it changes.
+                gazeCalibration = com.aircontrol.tracking.GazeCalibration.fromString(
+                    prefs.gazeCalibration,
                 )
 
                 withContext(Dispatchers.Main) {
@@ -550,6 +559,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // "Eye is mouse": collect gaze points from the face tracker and drive the
         // cursor when eye tracking is enabled. Hand tracking still runs for pinch
         // (click) and other gestures.
+        //
+        // Pipeline: raw gaze → blink detect (EAR) → 5-point affine calibration →
+        // EMA smoothing → cursor. Blink and dwell both trigger clicks.
         pipelineJobs.add(serviceScope.launch {
             faceTracker?.gazePoints?.collect { gaze ->
                 try {
@@ -562,24 +574,49 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // No face — hide the cursor (same as losing the hand).
                         withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                         cursorController?.hide()
-                        gazeSmoother.reset()
+                        gazeEmaFilter.reset()
+                        blinkDetector.reset()
                         return@collect
                     }
 
-                    // Map gaze (0..1, 0.5 = center) to screen-normalized with a
-                    // sensitivity-driven gain that expands the eye's limited range
-                    // to the full screen.
-                    val gain = 1.5f + (currentPreferences.gazeSensitivity / 100f) * 2.0f
-                    var screenX = 0.5f + (gaze.x - 0.5f) * gain
-                    if (currentPreferences.gazeInvertX) screenX = 1f - screenX
-                    val screenY = 0.5f + (gaze.y - 0.5f) * gain
-                    val clampedX = screenX.coerceIn(0f, 1f)
-                    val clampedY = screenY.coerceIn(0f, 1f)
+                    // Blink-to-click: EAR-based blink (300–800ms) → immediate click.
+                    // While the eyes are closed the iris landmarks are unreliable
+                    // (eyelids cover the iris), so we do NOT move the cursor during
+                    // a blink — this prevents the cursor from jumping off-target and
+                    // clicking the wrong spot.
+                    if (currentPreferences.blinkClickEnabled) {
+                        val blinkResult = blinkDetector.update(gaze.ear, System.currentTimeMillis())
+                        if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
+                            // Click at the last good cursor position (before the blink).
+                            val cursor = cursorController?.cursorState?.value
+                            val cx = cursor?.x ?: gaze.x
+                            val cy = cursor?.y ?: gaze.y
+                            actionDispatcher?.dispatchBlinkTap(cx, cy, screenWidth, screenHeight)
+                            // Reset dwell so a blink doesn't double-fire with a pending dwell.
+                            resetDwellState()
+                            return@collect
+                        } else if (blinkResult != com.aircontrol.tracking.BlinkResult.NONE) {
+                            // TOO_SHORT / TOO_LONG: keep the cursor where it is (no movement),
+                            // but do not click. Reset dwell to avoid a stale dwell click.
+                            resetDwellState()
+                            return@collect
+                        }
+                    }
 
-                    // Smooth with the gaze-specific OneEuro filter.
-                    val (smoothX, smoothY) = gazeSmoother.filter(
-                        clampedX, clampedY, System.currentTimeMillis(),
-                    )
+                    // Freeze the cursor while the eyes are closed (blink in progress):
+                    // iris landmarks are unreliable under the eyelids and moving the
+                    // cursor here causes the "blink cursor jump" (off-target clicks).
+                    if (currentPreferences.blinkClickEnabled && blinkDetector.isClosed()) {
+                        return@collect
+                    }
+
+                    // Map raw gaze → normalized display via the 5-point affine
+                    // calibration (falls back to a sensitivity-driven gain + invert
+                    // when uncalibrated).
+                    val (nx, ny) = mapGazeToDisplay(gaze.x, gaze.y)
+
+                    // Smooth with the gaze EMA filter (saccadic jitter removal).
+                    val (smoothX, smoothY) = gazeEmaFilter.filter(nx, ny)
 
                     withContext(Dispatchers.Main) {
                         cursorOverlay?.show()
@@ -885,6 +922,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Maps raw gaze (0..1, 0.5 = center) to normalized display coordinates (0..1).
+     *
+     * Uses the 5-point affine [gazeCalibration] when available; otherwise falls
+     * back to a sensitivity-driven gain + horizontal invert (uncalibrated mode).
+     */
+    private fun mapGazeToDisplay(gx: Float, gy: Float): Pair<Float, Float> {
+        if (gazeCalibration.isCalibrated) {
+            return gazeCalibration.map(gx, gy)
+        }
+        val gain = 1.5f + (currentPreferences.gazeSensitivity / 100f) * 2.0f
+        var screenX = 0.5f + (gx - 0.5f) * gain
+        if (currentPreferences.gazeInvertX) screenX = 1f - screenX
+        val screenY = 0.5f + (gy - 0.5f) * gain
+        return screenX.coerceIn(0f, 1f) to screenY.coerceIn(0f, 1f)
+    }
+
+    /**
+     * Resets the dwell timer/flag so a blink click doesn't double-fire with a
+     * pending dwell click (and vice-versa). Also clears any dwell progress ring.
+     */
+    private fun resetDwellState() {
+        dwellFired = true
+        stationarySinceMs = System.currentTimeMillis()
+        cursorOverlay?.setDwellProgress(0f)
+    }
+
+    /**
      * F1 (Dwell-to-click) + F2 (Hover): called on every non-silent CursorMoved.
      * Tracks how long the cursor has stayed put:
      *  - after HOVER_AFTER_MS, show the hover highlight (pre-interaction certainty)
@@ -1025,8 +1089,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // F2: how long the cursor must be still before the hover highlight shows.
         private const val HOVER_AFTER_MS = 150L
 
-        // Gaze smoother tuning (stronger smoothing for noisy eye tracking).
-        private const val GAZE_MIN_CUTOFF = 1.4f
-        private const val GAZE_BETA = 0.004f
+        // Gaze EMA tuning (saccadic jitter removal).
+        private const val GAZE_EMA_ALPHA = 0.2f
     }
 }
