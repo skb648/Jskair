@@ -96,6 +96,10 @@ class PermissionsManager @javax.inject.Inject constructor(
         )
     }
 
+    fun requestCameraPermission() {
+        Timber.d("Camera permission request initiated")
+    }
+
     fun updateCameraGranted(granted: Boolean) {
         _cameraGranted.value = granted
         Timber.d("Camera permission updated: %s", granted)
