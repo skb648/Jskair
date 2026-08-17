@@ -109,7 +109,7 @@ fun HomeScreen(
                 actions = {
                     IconButton(
                         onClick = {
-                            haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             onNavigateToSettings()
                         },
                         modifier = Modifier.semantics {
@@ -170,7 +170,7 @@ fun HomeScreen(
                                 }
                             },
                             onReRunOnboarding = {
-                                haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onNavigateToOnboarding()
                             },
                         )
@@ -314,7 +314,7 @@ fun HomeScreen(
             // === Action Buttons ===
             FilledTonalButton(
                 onClick = {
-                    haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     onNavigateToGestureMap()
                 },
                 modifier = Modifier
@@ -344,7 +344,7 @@ fun HomeScreen(
 
             FilledTonalButton(
                 onClick = {
-                    haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     onNavigateToCalibration()
                 },
                 modifier = Modifier

@@ -86,9 +86,6 @@ fun OnboardingScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
 
     // Android 13+ POST_NOTIFICATIONS for boot resume notification
     val notificationLauncher = rememberLauncherForActivityResult(
@@ -114,6 +111,10 @@ fun OnboardingScreen(
 
     LaunchedEffect(Unit) {
         viewModel.refreshPermissions()
+    }
+
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
     }
 
     Column(
@@ -277,9 +278,6 @@ private fun CameraPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -343,9 +341,6 @@ private fun AccessibilityPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -407,9 +402,6 @@ private fun OverlayPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -460,9 +452,6 @@ private fun OverlayPermissionStep(
 private fun PermissionGrantedBadge() {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
     val scale = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -510,9 +499,6 @@ private fun PageIndicator(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-    }
 
     Row(
         modifier = modifier.semantics {

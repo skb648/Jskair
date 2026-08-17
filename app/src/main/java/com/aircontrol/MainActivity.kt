@@ -18,6 +18,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -47,12 +49,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         // Keep splash on screen until preferences are loaded
-        var keepSplash by androidx.compose.runtime.mutableStateOf(true)
-        splashScreen.setKeepOnScreenCondition { keepSplash }
+        val keepSplash = androidx.compose.runtime.mutableStateOf(true)
+        splashScreen.setKeepOnScreenCondition { keepSplash.value }
 
         setContent {
             AirControlContent(
-                onPreferencesLoaded = { keepSplash = false }
+                onPreferencesLoaded = { keepSplash.value = false }
             )
         }
     }
