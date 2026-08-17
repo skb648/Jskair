@@ -54,7 +54,7 @@ data class GestureEngineConfig(
     // DISARMED↔ARMING flapping that 2 frames caused (cursor/pill blinking).
     val poseDebounceFrames: Int = 3,
     val fingerExtensionThreshold: Float = 1.0f,
-    val thumbExtensionAngleDeg: Float = 140f // Thumb-up 140 now triggers (was 150 too strict, 140 bent thumb),
+    val thumbExtensionAngleDeg: Float = 140f, // Thumb-up 140 now triggers (was 150 too strict, 140 bent thumb)
     // UG-08 Fix: Increased from 0.35 to 0.40 for easier pinch detection with large hands
     // 40% of hand size is still precise enough to avoid accidental pinches
     val pinchDistanceRatio: Float = 0.40f,
@@ -63,7 +63,7 @@ data class GestureEngineConfig(
     val swipeWindowMs: Long = 500L,
     // UG-07 Fix: Reduced from 15% to 10% for easier swipe detection with small hands.
     // Further reduced to 8% so swipes trigger more consistently ("swipe miss hota hai").
-    val swipeDisplacementRatio: Float = 0.06f // Small hand: 6% =65px vs 8%=86px, 65px reachable,
+    val swipeDisplacementRatio: Float = 0.06f, // Small hand: 6% =65px vs 8%=86px, 65px reachable
     val swipeVelocityThreshold: Float = 1.2f,
     // Kept at 2.0: relaxing this would accept diagonal swipes and worsen the
     // "kab kya swipe ho jata hai pata nahi" direction-confusion complaint.
@@ -76,7 +76,7 @@ data class GestureEngineConfig(
     val cooldownDurationMs: Long = 100L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
-    val swipeCooldownMs: Long = 300L // Fast left-right 300ms now 2 swipes, was 500ms ignored second,
+    val swipeCooldownMs: Long = 300L, // Fast left-right 300ms now 2 swipes, was 500ms ignored second
 
     /**
      * How long an open palm must be held (while ARMED) to trigger the PalmHome
@@ -150,7 +150,7 @@ data class GestureEngineConfig(
      *   distance — a deliberate finger-touch, not a relaxed hand.
      */
     fun scaledPinchDistanceRatio(): Float {
-        val scaled = pinchDistanceRatio / (0.7f + sensitivity / 200f // Narrow 0.29-0.5 intentional: wider causes resting hand false pinch (see #11))
+        val scaled = pinchDistanceRatio / (0.7f + sensitivity / 200f) // Narrow 0.29-0.5 intentional: wider causes resting hand false pinch (see #11)
         return scaled.coerceAtLeast(MIN_PINCH_DISTANCE_RATIO)
     }
 
