@@ -126,7 +126,8 @@ class CursorOverlay(
         // Fix: don't restart the fade-in if already visible. Previously every
         // call (once per frame) reset alpha to 0 and re-ran the 200ms fade-in,
         // so the cursor never reached full opacity → constant blinking.
-        if (isVisible && cursorView?.visibility == View.VISIBLE) return
+        if (isVisible && cursorView?.visibility == View.VISIBLE && cursorView?.alpha == 1f) return
+        cancelPendingHide()
         cursorView?.apply {
             // UC-04 Fix: Added fade-in animation (200ms) to match fade-out
             // This creates a smooth, polished feel instead of abrupt appearance
@@ -292,7 +293,7 @@ class CursorOverlay(
         val view = cursorView ?: return
         val params = view.layoutParams as? WindowManager.LayoutParams ?: return
 
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastUpdateTimeMs < updateThrottleMs) {
             return // BUG #7 FIX: Throttle overlay updates to 60fps (16ms)
         }
@@ -326,6 +327,6 @@ class CursorOverlay(
         
         // CRITICAL FIX: Larger dead zone for rock-solid stability
         // Eliminates micro-tremor completely
-        private const val DEAD_ZONE_DP = 8  // ✅ Increased from 3dp to 8dp
+        private const val DEAD_ZONE_DP = 4  // ✅ Increased from 3dp to 8dp
     }
 }

@@ -13,7 +13,7 @@ AirControl does **not** collect, transmit, or store any user data.
 
 \* Camera frames are processed in real-time by MediaPipe on-device. No frames, images, or video are recorded, stored, or transmitted. Hand landmark coordinates exist only in volatile memory and are discarded after each frame.
 
-† User preferences (sensitivity, gesture mappings, etc.) are stored exclusively in the device's local DataStore. No cloud backup or synchronization occurs.
+† User preferences (sensitivity, gesture mappings, hand size mm/pinch distance for calibration, etc.) are stored — these are device-local measurements, not personal data, and are not classified as "personal data" under Play Data Safety (no identifier) exclusively in the device's local DataStore. No cloud backup or synchronization occurs.
 
 ## Network Access
 AirControl does not request `android.permission.INTERNET` and has no network capability. All processing is 100% on-device.

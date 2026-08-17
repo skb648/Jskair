@@ -3,10 +3,10 @@ package com.aircontrol.permissions
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
-import androidx.core.content.ContextCompat
 import android.net.Uri
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,8 +22,8 @@ import javax.inject.Singleton
 data class PermissionStates(
     val cameraGranted: Boolean = false,
     val accessibilityGranted: Boolean = false,
-    // Kept for UI/backward compatibility. AirControl uses TYPE_ACCESSIBILITY_OVERLAY
-    // on minSdk 26+, so SYSTEM_ALERT_WINDOW is not required for runtime.
+    // Always true on minSdk 26+ because overlays use TYPE_ACCESSIBILITY_OVERLAY
+    // which does not require SYSTEM_ALERT_WINDOW when accessibility service is enabled.
     val overlayGranted: Boolean = true,
     val notificationsGranted: Boolean = true,
 ) {
@@ -33,17 +33,17 @@ data class PermissionStates(
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
             if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
+            // Overlay intentionally excluded - uses accessibility overlay, not SYSTEM_ALERT_WINDOW
         }
 }
 
 enum class MissingPermission {
     CAMERA,
     ACCESSIBILITY,
-    OVERLAY,
 }
 
 @Singleton
-class PermissionsManager constructor(
+class PermissionsManager @javax.inject.Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -54,7 +54,7 @@ class PermissionsManager constructor(
     private val _accessibilityGranted = MutableStateFlow(checkAccessibilityPermission())
     val accessibilityGranted: StateFlow<Boolean> = _accessibilityGranted
 
-    private val _overlayGranted = MutableStateFlow(checkOverlayPermission())
+    private val _overlayGranted = MutableStateFlow(true)
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
     private val _notificationsGranted = MutableStateFlow(checkNotificationPermission())
@@ -74,11 +74,11 @@ class PermissionsManager constructor(
         )
     }.stateIn(
         scope = scope,
-        started = SharingStarted.Lazily,
+        started = SharingStarted.Eagerly,
         initialValue = PermissionStates(
             cameraGranted = _cameraGranted.value,
             accessibilityGranted = _accessibilityGranted.value,
-            overlayGranted = _overlayGranted.value,
+            overlayGranted = true,
             notificationsGranted = _notificationsGranted.value,
         ),
     )
@@ -86,19 +86,14 @@ class PermissionsManager constructor(
     fun refreshAllPermissions() {
         _cameraGranted.value = checkCameraPermission()
         _accessibilityGranted.value = checkAccessibilityPermission()
-        _overlayGranted.value = checkOverlayPermission()
+        _overlayGranted.value = true
         _notificationsGranted.value = checkNotificationPermission()
         Timber.d(
-            "Permissions refreshed: camera=%s, accessibility=%s, overlay=%s notifications=%s",
+            "Permissions refreshed: camera=%s, accessibility=%s, notifications=%s",
             _cameraGranted.value,
             _accessibilityGranted.value,
-            _overlayGranted.value,
             _notificationsGranted.value,
         )
-    }
-
-    fun requestCameraPermission() {
-        Timber.d("Camera permission request initiated (handled by Accompanist in UI)")
     }
 
     fun updateCameraGranted(granted: Boolean) {
@@ -114,6 +109,7 @@ class PermissionsManager constructor(
     }
 
     fun requestOverlayPermission(): Intent {
+        // For TYPE_ACCESSIBILITY_OVERLAY this is not needed, but keep for fallback
         Timber.d("Opening overlay settings")
         return Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -143,21 +139,14 @@ class PermissionsManager constructor(
     private fun checkAccessibilityPermission(): Boolean {
         val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
             as? AccessibilityManager
+        // Use FEEDBACK_GENERIC to match our service's feedbackType
         val enabled = accessibilityManager?.getEnabledAccessibilityServiceList(
-            AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
+            AccessibilityServiceInfo.FEEDBACK_GENERIC,
         )?.any { serviceInfo ->
             serviceInfo.resolveInfo.serviceInfo.packageName == context.packageName
         } ?: false
         Timber.v("Accessibility permission check: %s", enabled)
         return enabled
-    }
-
-    private fun checkOverlayPermission(): Boolean {
-        // minSdk is 26 and overlays are added as TYPE_ACCESSIBILITY_OVERLAY from
-        // the enabled accessibility service, so the separate draw-over-apps
-        // permission is not needed.
-        Timber.v("Overlay permission check: true (accessibility overlay)")
-        return true
     }
 
     private fun checkNotificationPermission(): Boolean {

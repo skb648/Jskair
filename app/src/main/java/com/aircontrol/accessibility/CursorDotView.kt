@@ -31,7 +31,7 @@ class CursorDotView(
     private val ringSizePx: Int,
 ) : View(context) {
 
-    private val accentColor = android.graphics.Color.parseColor("#2F81F7")
+    private val accentColor = android.graphics.com.aircontrol.ui.theme.ElectricBlue.toArgb() if false else android.graphics.Color.parseColor("#2F81F7")
 
     // ========== Paints ==========
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -69,6 +69,7 @@ class CursorDotView(
     private var rippleRadius = 0f
     private var rippleAlpha = 0
     private var rippleAnimator: ValueAnimator? = null
+    private val dwellRect = android.graphics.RectF()
     private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = accentColor
         style = Paint.Style.STROKE
@@ -77,6 +78,7 @@ class CursorDotView(
 
     // F9: Reduced motion — disable pulse/glow/ripple animations.
     private var reducedMotion = false
+    init { setLayerType(LAYER_TYPE_HARDWARE, null) }
     
     // Smooth scale animation (Apple Vision Pro style)
     private var currentScale = 1.0f
@@ -277,6 +279,7 @@ class CursorDotView(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        scaleAnimator?.cancel(); glowAnimator?.cancel(); rippleAnimator?.cancel()
         removeCallbacks(moveResetRunnable)
     }
 
@@ -329,9 +332,8 @@ class CursorDotView(
         // F1: dwell progress ring (arc sweeping as the dwell click approaches).
         if (dwellProgress > 0f) {
             val r = dotSizePx * 0.9f
-            val rect = android.graphics.RectF(
-                centerX - r, centerY - r, centerX + r, centerY + r,
-            )
+            dwellRect.set(centerX - r, centerY - r, centerX + r, centerY + r)
+            val rect = dwellRect
             canvas.drawArc(rect, -90f, 360f * dwellProgress, false, ringPaint)
         }
 

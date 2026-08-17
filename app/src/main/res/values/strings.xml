@@ -93,7 +93,7 @@
     <string name="gesture_map_description">Tap any gesture to remap its action</string>
     <string name="gesture_map_select_action">Choose what this gesture does</string>
     <string name="gesture_map_conflict_title">Conflict detected</string>
-    <string name="gesture_map_conflict_message">\"%1$s\" is already mapped to %2$s</string>
+    <string name="gesture_map_conflict_message">"%1$s" is already mapped to %2$s</string>
     <string name="gesture_map_swap">Swap</string>
     <string name="gesture_map_cancel">Cancel</string>
     <string name="gesture_map_reset">Reset</string>
@@ -121,6 +121,7 @@
     <string name="settings_version">Version</string>
     <string name="settings_privacy_note">All processing happens on-device. No camera data is recorded, transmitted, or stored. AirControl never requires network access.</string>
     <string name="settings_licenses">Open Source Licenses</string>
+    <string name="settings_gaze_sensitivity">Gaze Sensitivity</string>
     <string name="settings_licenses_detail">This app uses MediaPipe, CameraX, Hilt, Compose, Kotlin Coroutines, and other open-source libraries.</string>
 
     <!-- Calibration -->

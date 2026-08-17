@@ -96,7 +96,7 @@ class GestureEngine(
     private var pinchStateEntryTimeMs: Long = 0L
 
     // Time debouncing - require continuous recognition for 35ms before state transition
-    private val TIME_DEBOUNCE_MS = 35L
+    private val TIME_DEBOUNCE_MS = 50L
     
     // Pinch tracking state
     @Volatile

@@ -44,6 +44,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -78,6 +80,7 @@ fun OnboardingScreen(
     val pagerState = rememberPagerState(initialPage = currentStep, pageCount = { 5 })
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -166,7 +169,7 @@ fun OnboardingScreen(
                 1 -> permissionStates.cameraGranted
                 2 -> permissionStates.accessibilityGranted
                 3 -> permissionStates.overlayGranted
-                4 -> true // Tutorial page - always allow to proceed
+                4 -> permissionStates.allGranted // Require all perms before finishing
                 else -> true
             },
             onPrevious = {
@@ -175,6 +178,7 @@ fun OnboardingScreen(
                 }
             },
             onNext = {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 if (pagerState.currentPage < 4) {
                     scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
                 }
@@ -252,6 +256,7 @@ private fun CameraPermissionStep(
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -314,6 +319,7 @@ private fun AccessibilityPermissionStep(
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -374,6 +380,7 @@ private fun OverlayPermissionStep(
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -423,6 +430,7 @@ private fun OverlayPermissionStep(
 @Composable
 private fun PermissionGrantedBadge() {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     val scale = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -469,6 +477,7 @@ private fun PageIndicator(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     Row(
         modifier = modifier.semantics {

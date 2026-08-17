@@ -4,6 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.navigation.compose.rememberNavController
 import com.aircontrol.ui.calibration.CalibrationScreen
 import com.aircontrol.ui.customgesture.CustomGestureScreen
@@ -22,6 +24,10 @@ fun AirControlNavHost(
     NavHost(
         navController = navController,
         startDestination = startDestination,
+        enterTransition = { slideInHorizontally { it / 3 } },
+        exitTransition = { slideOutHorizontally { -it / 3 } },
+        popEnterTransition = { slideInHorizontally { -it / 3 } },
+        popExitTransition = { slideOutHorizontally { it / 3 } },
     ) {
         composable(AirControlRoute.Onboarding.route) {
             OnboardingScreen(

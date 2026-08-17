@@ -36,6 +36,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +92,21 @@ fun SettingsScreen(
     var dwellDuration by remember { mutableFloatStateOf(preferences.dwellDurationMs.toFloat()) }
     var cursorGain by remember { mutableFloatStateOf(preferences.cursorGain.toFloat()) }
     var gazeSensitivity by remember { mutableFloatStateOf(preferences.gazeSensitivity.toFloat()) }
+    // Track dragging to avoid overwriting user interaction
+    var isDraggingSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingCursorSpeed by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingHoldDuration by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingDwellDuration by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingCursorGain by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingGazeSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+    // Sync from external change (e.g., reset) only when not dragging
+    LaunchedEffect(preferences.sensitivity) { if (!isDraggingSensitivity) sensitivity = preferences.sensitivity.toFloat() }
+    LaunchedEffect(preferences.cursorSpeed) { if (!isDraggingCursorSpeed) cursorSpeed = preferences.cursorSpeed.toFloat() }
+    LaunchedEffect(preferences.holdDuration) { if (!isDraggingHoldDuration) holdDuration = preferences.holdDuration.toFloat() }
+    LaunchedEffect(preferences.dwellDurationMs) { if (!isDraggingDwellDuration) dwellDuration = preferences.dwellDurationMs.toFloat() }
+    LaunchedEffect(preferences.cursorGain) { if (!isDraggingCursorGain) cursorGain = preferences.cursorGain.toFloat() }
+    LaunchedEffect(preferences.gazeSensitivity) { if (!isDraggingGazeSensitivity) gazeSensitivity = preferences.gazeSensitivity.toFloat() }
 
     Scaffold(
         topBar = {
@@ -129,11 +146,11 @@ fun SettingsScreen(
             SectionHeader(title = "Gesture Controls")
 
             SettingSliderCard(
-                title = "Sensitivity",
+                title = stringResource(R.string.settings_sensitivity),
                 valueLabel = "${sensitivity.toInt()}%",
                 value = sensitivity,
-                onValueChange = { sensitivity = it },
-                onValueChangeFinished = { viewModel.updateSensitivity(sensitivity.toInt()) },
+                onValueChange = { isDraggingSensitivity = true; sensitivity = it },
+                onValueChangeFinished = { isDraggingSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateSensitivity(sensitivity.toInt()) },
                 valueRange = 1f..100f,
             )
 
@@ -154,7 +171,7 @@ fun SettingsScreen(
                     SegmentedButtonGroup(
                         options = HandPreference.entries,
                         selectedOption = preferences.handPreference,
-                        onOptionSelected = { viewModel.updateHandPreference(it) },
+                        onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHandPreference(it) },
                         labelMapper = { it.displayName },
                     )
                 }
@@ -177,7 +194,7 @@ fun SettingsScreen(
                     SegmentedButtonGroup(
                         options = listOf(15, 24, 30),
                         selectedOption = preferences.analysisFps,
-                        onOptionSelected = { viewModel.updateAnalysisFps(it) },
+                        onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateAnalysisFps(it) },
                         labelMapper = { "${it} FPS" },
                     )
                 }
@@ -189,22 +206,22 @@ fun SettingsScreen(
             SectionHeader(title = "Cursor")
 
             SettingSliderCard(
-                title = "Cursor Speed",
+                title = stringResource(R.string.settings_cursor_speed),
                 valueLabel = "${cursorSpeed.toInt()}%",
                 value = cursorSpeed,
-                onValueChange = { cursorSpeed = it },
-                onValueChangeFinished = { viewModel.updateCursorSpeed(cursorSpeed.toInt()) },
+                onValueChange = { isDraggingCursorSpeed = true; cursorSpeed = it },
+                onValueChangeFinished = { isDraggingCursorSpeed = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorSpeed(cursorSpeed.toInt()) },
                 valueRange = 1f..100f,
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             SettingSliderCard(
-                title = "Hold Duration",
+                title = stringResource(R.string.settings_hold_duration),
                 valueLabel = "${holdDuration.toInt()}ms",
                 value = holdDuration,
-                onValueChange = { holdDuration = it },
-                onValueChangeFinished = { viewModel.updateHoldDuration(holdDuration.toInt()) },
+                onValueChange = { isDraggingHoldDuration = true; holdDuration = it },
+                onValueChangeFinished = { isDraggingHoldDuration = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHoldDuration(holdDuration.toInt()) },
                 valueRange = 200f..2000f,
                 steps = 8,
             )
@@ -218,7 +235,7 @@ fun SettingsScreen(
                 title = "Cursor Mode",
                 subtitle = "Show cursor overlay when tracking",
                 checked = preferences.cursorEnabled,
-                onCheckedChange = { viewModel.updateCursorEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorEnabled(it) },
                 icon = Icons.Default.TouchApp,
             )
 
@@ -228,7 +245,7 @@ fun SettingsScreen(
                 title = "Haptic Feedback",
                 subtitle = "Vibrate on gesture actions",
                 checked = preferences.hapticFeedback,
-                onCheckedChange = { viewModel.updateHapticFeedback(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHapticFeedback(it) },
                 icon = Icons.Outlined.Vibration,
             )
 
@@ -238,7 +255,7 @@ fun SettingsScreen(
                 title = "Status Pill",
                 subtitle = "Show armed/disarmed indicator",
                 checked = preferences.statusPillEnabled,
-                onCheckedChange = { viewModel.updateStatusPillEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStatusPillEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -247,7 +264,7 @@ fun SettingsScreen(
                 title = "Battery Saver",
                 subtitle = "Reduce FPS when idle to save battery",
                 checked = preferences.batterySaver,
-                onCheckedChange = { viewModel.updateBatterySaver(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBatterySaver(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -256,7 +273,7 @@ fun SettingsScreen(
                 title = "Start on Boot",
                 subtitle = "Auto-start tracking after device restart",
                 checked = preferences.startOnBoot,
-                onCheckedChange = { viewModel.updateStartOnBoot(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStartOnBoot(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing24))
@@ -268,7 +285,7 @@ fun SettingsScreen(
                 title = "Dwell-to-click",
                 subtitle = "Hold the cursor still to auto-click",
                 checked = preferences.dwellEnabled,
-                onCheckedChange = { viewModel.updateDwellEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateDwellEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))
@@ -277,8 +294,8 @@ fun SettingsScreen(
                 title = "Dwell Duration",
                 valueLabel = "${dwellDuration.toInt()}ms",
                 value = dwellDuration,
-                onValueChange = { dwellDuration = it },
-                onValueChangeFinished = { viewModel.updateDwellDuration(dwellDuration.toInt()) },
+                onValueChange = { isDraggingDwellDuration = true; dwellDuration = it },
+                onValueChangeFinished = { isDraggingDwellDuration = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateDwellDuration(dwellDuration.toInt()) },
                 valueRange = 400f..3000f,
                 steps = 12,
             )
@@ -289,7 +306,7 @@ fun SettingsScreen(
                 title = "Stationary Click",
                 subtitle = "Ignore pinches while the hand is moving",
                 checked = preferences.stationaryClickEnabled,
-                onCheckedChange = { viewModel.updateStationaryClickEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStationaryClickEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -298,7 +315,7 @@ fun SettingsScreen(
                 title = "Palm → Home",
                 subtitle = "Hold an open palm to open Home",
                 checked = preferences.palmHomeEnabled,
-                onCheckedChange = { viewModel.updatePalmHomeEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updatePalmHomeEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -307,7 +324,7 @@ fun SettingsScreen(
                 title = "Sit-back Mode",
                 subtitle = "Reach the whole screen without raising your hand",
                 checked = preferences.sitBackMode,
-                onCheckedChange = { viewModel.updateSitBackMode(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateSitBackMode(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -316,7 +333,7 @@ fun SettingsScreen(
                 title = "Reduced Motion",
                 subtitle = "Disable cursor pulse and glow animations",
                 checked = preferences.reducedMotion,
-                onCheckedChange = { viewModel.updateReducedMotion(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateReducedMotion(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))
@@ -325,8 +342,8 @@ fun SettingsScreen(
                 title = "Cursor Gain",
                 valueLabel = "${cursorGain.toInt()}%",
                 value = cursorGain,
-                onValueChange = { cursorGain = it },
-                onValueChangeFinished = { viewModel.updateCursorGain(cursorGain.toInt()) },
+                onValueChange = { isDraggingCursorGain = true; cursorGain = it },
+                onValueChangeFinished = { isDraggingCursorGain = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorGain(cursorGain.toInt()) },
                 valueRange = 0f..100f,
             )
 
@@ -339,17 +356,17 @@ fun SettingsScreen(
                 title = "Eye is Mouse",
                 subtitle = "Cursor follows your gaze; pinch to click",
                 checked = preferences.eyeTrackingEnabled,
-                onCheckedChange = { viewModel.updateEyeTrackingEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateEyeTrackingEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             SettingSliderCard(
-                title = "Gaze Sensitivity",
+                title = stringResource(R.string.settings_gaze_sensitivity),
                 valueLabel = "${gazeSensitivity.toInt()}%",
                 value = gazeSensitivity,
-                onValueChange = { gazeSensitivity = it },
-                onValueChangeFinished = { viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
+                onValueChange = { isDraggingGazeSensitivity = true; gazeSensitivity = it },
+                onValueChangeFinished = { isDraggingGazeSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
                 valueRange = 0f..100f,
             )
 
@@ -359,7 +376,7 @@ fun SettingsScreen(
                 title = "Invert Horizontal Gaze",
                 subtitle = "Flip left/right if gaze direction feels reversed",
                 checked = preferences.gazeInvertX,
-                onCheckedChange = { viewModel.updateGazeInvertX(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeInvertX(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -368,7 +385,7 @@ fun SettingsScreen(
                 title = "Blink to Click",
                 subtitle = "Blink (300–800ms) to click where you are looking",
                 checked = preferences.blinkClickEnabled,
-                onCheckedChange = { viewModel.updateBlinkClickEnabled(it) },
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBlinkClickEnabled(it) },
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))

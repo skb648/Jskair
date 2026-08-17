@@ -38,6 +38,12 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Run lint
+        run: ./gradlew lintDebug --continue
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --continue
+
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 

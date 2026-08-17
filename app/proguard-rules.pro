@@ -13,8 +13,10 @@
 
 # ---------- MediaPipe Tasks Vision ----------
 # MediaPipe - keep only the classes we actually use
--keep class com.google.mediapipe.tasks.vision.handlandmarker.** { *; }
--keep class com.google.mediapipe.tasks.vision.facelandmarker.** { *; }
+-keep class com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker { *; }
+-keep class com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult { *; }
+-keep class com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker { *; }
+-keep class com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult { *; }
 -keep class com.google.mediapipe.framework.** { *; }
 -keep interface com.google.mediapipe.** { *; }
 -keepclassmembers class com.google.mediapipe.** { *; }

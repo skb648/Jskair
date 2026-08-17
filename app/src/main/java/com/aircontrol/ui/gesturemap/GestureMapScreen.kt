@@ -187,8 +187,10 @@ fun GestureMapScreen(
                     .fillMaxSize()
                     .clickable(
                         role = Role.Button,
+                        onClickLabel = "Dismiss gesture options",
                         onClick = { viewModel.dismissActionSheet() },
-                    ),
+                    )
+                    .semantics { contentDescription = "Dismiss gesture options" },
             ) {
                 Box(
                     modifier = Modifier

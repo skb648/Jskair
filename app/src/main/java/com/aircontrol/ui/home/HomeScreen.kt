@@ -28,11 +28,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Vibration
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,14 +53,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.permissions.MissingPermission
@@ -83,11 +86,13 @@ fun HomeScreen(
     onNavigateToCustomGesture: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
-    val preferences by viewModel.userPreferences.collectAsState()
-    val permissionStates by viewModel.permissionStates.collectAsState()
-    val serviceState by viewModel.serviceState.collectAsState()
-    val sessionStats by viewModel.sessionStats.collectAsState()
+    val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
+    val permissionStates by viewModel.permissionStates.collectAsStateWithLifecycle()
+    val serviceState by viewModel.serviceState.collectAsStateWithLifecycle()
+    val sessionStats by viewModel.sessionStats.collectAsStateWithLifecycle()
+    val handDetected by viewModel.handDetected.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
         viewModel.refreshPermissions()
@@ -104,7 +109,10 @@ fun HomeScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = onNavigateToSettings,
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                            onNavigateToSettings()
+                        },
                         modifier = Modifier.semantics {
                             contentDescription = "Settings"
                         },
@@ -143,6 +151,7 @@ fun HomeScreen(
                         PermissionWarningCard(
                             missingPermission = missing,
                             onFixClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 when (missing) {
                                     MissingPermission.CAMERA -> {
                                         context.startActivity(
@@ -159,17 +168,12 @@ fun HomeScreen(
                                             },
                                         )
                                     }
-                                    MissingPermission.OVERLAY -> {
-                                        context.startActivity(
-                                            Intent(
-                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                                Uri.parse("package:${context.packageName}"),
-                                            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) },
-                                        )
-                                    }
                                 }
                             },
-                            onReRunOnboarding = onNavigateToOnboarding,
+                            onReRunOnboarding = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                                onNavigateToOnboarding()
+                            },
                         )
                         Spacer(modifier = Modifier.height(Dimens.spacing12))
                     }
@@ -192,19 +196,20 @@ fun HomeScreen(
                         .padding(vertical = Dimens.spacing32),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    // Animated Power Button
+                    // Animated Power Button - FIXED logic: OFF -> ON, ON/PAUSED -> OFF with haptic
                     AnimatedPowerButton(
                         isActive = serviceState == ServiceState.ACTIVE,
                         isPaused = serviceState == ServiceState.PAUSED,
                         onClick = {
-                            val newState = serviceState != ServiceState.OFF
-                            viewModel.toggleGestures(!newState)
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            val shouldEnable = serviceState == ServiceState.OFF
+                            viewModel.toggleGestures(shouldEnable)
                         },
                         size = 120.dp,
-                        contentDescription = if (serviceState == ServiceState.ACTIVE) {
-                            "Gestures active, tap to disable"
-                        } else {
-                            "Gestures off, tap to enable"
+                        contentDescription = when (serviceState) {
+                            ServiceState.ACTIVE -> "Gestures active, tap to disable"
+                            ServiceState.PAUSED -> "Gestures paused, tap to resume"
+                            ServiceState.OFF -> "Gestures off, tap to enable"
                         },
                     )
 
@@ -228,20 +233,20 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(Dimens.spacing4))
 
-                    // Hand presence indicator
+                    // Hand presence indicator - FIXED: real detection vs fake service state
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(Dimens.spacing8),
                     ) {
-                        // TODO(D-48): Use actual hand detection state from HandTracker instead of service state
                         HandPresenceIndicator(
-                            handDetected = serviceState == ServiceState.ACTIVE,
+                            handDetected = handDetected,
                         )
                         Text(
-                            text = when (serviceState) {
-                                ServiceState.ACTIVE -> stringResource(R.string.home_service_active)
-                                ServiceState.PAUSED -> stringResource(R.string.home_status_paused)
-                                ServiceState.OFF -> stringResource(R.string.home_service_inactive)
+                            text = when {
+                                serviceState == ServiceState.OFF -> stringResource(R.string.home_service_inactive)
+                                handDetected -> stringResource(R.string.home_hand_detected)
+                                serviceState == ServiceState.PAUSED -> stringResource(R.string.home_status_paused)
+                                else -> stringResource(R.string.home_no_hand)
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
@@ -250,7 +255,6 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(Dimens.spacing16))
 
-                    // TODO: Connect session stats to actual tracking data
                     // Session stats
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(Dimens.spacing32),
@@ -275,24 +279,33 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(Dimens.spacing8),
             ) {
                 QuickToggleCard(
-                    icon = Icons.Default.TouchApp,
+                    icon = Icons.Default.Mouse,
                     label = stringResource(R.string.home_cursor_mode),
                     enabled = preferences.cursorEnabled,
-                    onToggle = { viewModel.toggleCursorMode(it) },
+                    onToggle = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        viewModel.toggleCursorMode(it)
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 QuickToggleCard(
                     icon = Icons.Outlined.Vibration,
                     label = stringResource(R.string.home_haptics),
                     enabled = preferences.hapticFeedback,
-                    onToggle = { viewModel.toggleHapticFeedback(it) },
+                    onToggle = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        viewModel.toggleHapticFeedback(it)
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 QuickToggleCard(
-                    icon = Icons.Default.Fingerprint,
+                    icon = Icons.Default.Bolt,
                     label = stringResource(R.string.home_battery_saver),
                     enabled = preferences.batterySaver,
-                    onToggle = { viewModel.toggleBatterySaver(it) },
+                    onToggle = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        viewModel.toggleBatterySaver(it)
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -301,7 +314,10 @@ fun HomeScreen(
 
             // === Action Buttons ===
             FilledTonalButton(
-                onClick = onNavigateToGestureMap,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                    onNavigateToGestureMap()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(Dimens.buttonHeight),
@@ -328,7 +344,10 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             FilledTonalButton(
-                onClick = onNavigateToCalibration,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LightImpact)
+                    onNavigateToCalibration()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(Dimens.buttonHeight),
@@ -381,7 +400,7 @@ fun HomeScreen(
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             ) {
                 Icon(
-                    imageVector = Icons.Default.Fingerprint,
+                    imageVector = Icons.Default.TouchApp,
                     contentDescription = null,
                     modifier = Modifier.size(Dimens.iconMedium),
                 )
@@ -484,12 +503,10 @@ private fun PermissionWarningCard(
     val title = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_title)
         MissingPermission.ACCESSIBILITY -> stringResource(R.string.home_warning_accessibility_title)
-        MissingPermission.OVERLAY -> stringResource(R.string.home_warning_overlay_title)
     }
     val message = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_message)
         MissingPermission.ACCESSIBILITY -> stringResource(R.string.home_warning_accessibility_message)
-        MissingPermission.OVERLAY -> stringResource(R.string.home_warning_overlay_message)
     }
 
     Card(
@@ -547,7 +564,7 @@ private fun PermissionWarningCard(
 private fun formatUptime(seconds: Long): String {
     return when {
         seconds < 60 -> "${seconds}s"
-        seconds < 3600 -> "${seconds / 60}m"
+        seconds < 3600 -> "${seconds / 60}m ${seconds % 60}s"
         else -> "${seconds / 3600}h ${seconds % 3600 / 60}m"
     }
 }

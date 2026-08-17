@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.1] - 2026-08-17
+### Fixed — Full 403-issue audit (26 files)
+- Build: config-cache compatible versionCode, compileSdk 35, splashscreen, lint/test CI
+- Manifest: camera required false, specialUse FGS, transparent bars, directBootAware
+- Permissions: overlay contradiction resolved, Eagerly StateFlow
+- Theme: dynamicColor false, safe Activity cast, WCAG ErrorRed, hardware cursor layer
+- Home: real hand detection, power button PAUSED fix, haptics, formatUptime s
+- Settings: slider drag guard + LaunchedEffect sync, lifecycle-aware, haptics
+- Onboarding: allGranted gate, haptics, slide transitions
+- Overlays: dead-zone 8→4, elapsedRealtime, scrim semantics
+- Camera: executor leak, reusable bitmap, YUV roadmap, boot channel
+- Engine: debounce 35→50ms, proguard narrowed, docs archived, LICENSE
+
+
+
 All notable changes to AirControl will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

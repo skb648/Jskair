@@ -6,8 +6,8 @@ buildscript {
         gradlePluginPortal()
     }
     dependencies {
-        // Use implementation artifacts directly to avoid plugin-marker resolution
-        // failures on some restricted mirrors.
+        // Kept for restricted mirrors where plugin-marker resolution fails.
+        // Safe to keep alongside alias() - gradle will dedup.
         classpath("com.google.dagger:hilt-android-gradle-plugin:2.53.1")
         classpath("com.google.devtools.ksp:symbol-processing-gradle-plugin:2.0.21-1.0.28")
     }

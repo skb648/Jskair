@@ -1,39 +1,83 @@
 package com.aircontrol
 
 import android.app.Application
+import android.os.StrictMode
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 
-/**
- * Application class for AirControl.
- *
- * Initializes:
- * - Timber for structured logging (debug builds only)
- * - LeakCanary for memory leak detection (debug builds, auto-configured by the library)
- *
- * LeakCanary is included as a debugImplementation dependency and automatically
- * initializes itself via its ContentProvider. No manual initialization needed.
- * It will detect activities, fragments, views, and ViewModels that are not
- * properly garbage collected after being destroyed.
- *
- * To verify LeakCanary is working:
- * 1. Run the debug build
- * 2. Navigate through the app (onboarding → home → settings → back)
- * 3. LeakCanary will show a notification if any leaks are detected
- * 4. Detailed heap analysis is available in the LeakCanary activity
- */
 @HiltAndroidApp
 class AirControlApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
         initTimber()
+        initStrictMode()
+        initNotificationChannels()
     }
 
     private fun initTimber() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
             Timber.d("AirControl application initialized")
+        } else {
+            // In release, plant a tree that reports to crash analytics if available,
+            // but keeps info/warn/error for diagnostics. Debug/Verbose stripped by R8.
+            Timber.plant(ReleaseTree())
+        }
+    }
+
+    private fun initStrictMode() {
+        if (BuildConfig.DEBUG) {
+            StrictMode.setThreadPolicy(
+                StrictMode.ThreadPolicy.Builder()
+                    .detectDiskReads()
+                    .detectDiskWrites()
+                    .detectNetwork()
+                    .penaltyLog()
+                    .build()
+            )
+            StrictMode.setVmPolicy(
+                StrictMode.VmPolicy.Builder()
+                    .detectLeakedSqlLiteObjects()
+                    .detectLeakedClosableObjects()
+                    .penaltyLog()
+                    .build()
+            )
+        }
+    }
+
+    private fun initNotificationChannels() {
+        // Create notification channels early so foreground service never fails
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val manager = getSystemService(android.app.NotificationManager::class.java)
+            val trackingChannel = android.app.NotificationChannel(
+                "aircontrol_tracking",
+                getString(R.string.notification_channel_name),
+                android.app.NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = getString(R.string.notification_channel_description)
+                setShowBadge(false)
+                enableVibration(false)
+            }
+            val bootChannel = android.app.NotificationChannel(
+                "aircontrol_boot",
+                "Boot Resume",
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Resume gesture tracking after reboot"
+                setShowBadge(false)
+            }
+            manager?.createNotificationChannels(listOf(trackingChannel, bootChannel))
+        }
+    }
+
+    private class ReleaseTree : Timber.Tree() {
+        override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+            // Only log warn/error/info in release; debug/verbose stripped by R8
+            if (priority >= android.util.Log.INFO) {
+                android.util.Log.println(priority, tag, message)
+                // TODO: Integrate with Firebase Crashlytics if needed
+            }
         }
     }
 }

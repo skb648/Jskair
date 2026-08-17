@@ -2,19 +2,19 @@
 agp = "8.9.2"
 kotlin = "2.0.21"
 ksp = "2.0.21-1.0.28"
-compose-bom = "2024.12.01"
+compose-bom = "2025.05.00"
 hilt = "2.53.1"
 hilt-navigation-compose = "1.2.0"
 camerax = "1.4.1"
-mediapipe-vision = "0.10.18"
+mediapipe-vision = "0.10.20"
 datastore = "1.1.1"
-accompanist-permissions = "0.36.0"
 coroutines = "1.9.0"
 timber = "5.0.1"
 navigation-compose = "2.8.5"
-lifecycle = "2.8.7"
+lifecycle = "2.9.0"
 activity-compose = "1.9.3"
 core-ktx = "1.15.0"
+core-splashscreen = "1.0.1"
 leakcanary = "2.14"
 junit = "4.13.2"
 androidx-test-ext = "1.2.1"
@@ -38,6 +38,7 @@ compose-runtime = { group = "androidx.compose.runtime", name = "runtime" }
 
 # AndroidX Core
 core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
+core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "core-splashscreen" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
 
 # Lifecycle
@@ -65,9 +66,6 @@ mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision"
 
 # DataStore
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
-
-# Accompanist
-accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanist-permissions" }
 
 # Coroutines
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }

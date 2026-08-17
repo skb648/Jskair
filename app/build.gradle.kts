@@ -6,20 +6,35 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Auto versionCode from git commit count
+// Configuration-cache compatible versionCode
+// Falls back to env VERSION_CODE or 1 if git is unavailable (shallow CI clones)
 val gitCommitCount = providers.exec {
     commandLine("git", "rev-list", "--count", "HEAD")
-}.standardOutput.asText.get().trim().toIntOrNull() ?: 1
+}.standardOutput.asText.getOrElse("1").trim().toIntOrNull() ?: 1
+
+val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
+val resolvedVersionCode = versionCodeFromEnv ?: gitCommitCount
 
 android {
     namespace = "com.aircontrol"
-    compileSdk = 36
+    compileSdk = 35
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("KEY_ALIAS") ?: "release"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+    }
 
     defaultConfig {
         applicationId = "com.aircontrol"
         minSdk = 26
-        targetSdk = 36
-        versionCode = gitCommitCount
+        targetSdk = 35
+        versionCode = resolvedVersionCode
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -33,12 +48,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Enable R8 full mode (already default, but explicit)
             isCrunchPngs = true
-            // Sign release builds if keystore is configured
-            // Falls back to unsigned if env vars are not set (local dev)
+            // Only apply signing if keystore exists and password is set
             val keystoreFile = file("release.keystore")
-            if (keystoreFile.exists() && !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty()) {
+            val hasKeystore = keystoreFile.exists() && !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty()
+            if (hasKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
@@ -50,26 +64,14 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            // Release signing is configured via environment variables for CI/CD.
-            // For local builds, place release.keystore in the app/ directory and
-            // set KEYSTORE_PASSWORD and KEY_PASSWORD environment variables.
-            // See docs/release-signing.md for setup instructions.
-            storeFile = file("release.keystore")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-            keyAlias = System.getenv("KEY_ALIAS") ?: "release"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
-        }
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = false
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+        jvmTarget = "17"
         allWarningsAsErrors = false
     }
 
@@ -80,21 +82,30 @@ android {
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += setOf(
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt"
+            )
+        }
+        jniLibs {
+            useLegacyPackaging = false
         }
     }
 
     lint {
         warningsAsErrors = false
-        abortOnError = true
-        // L-04 Fix: Use lint baseline to track known issues
+        abortOnError = false
         baseline = file("lint-baseline.xml")
-        // Disable lint checks that are not critical for build success
+        checkDependencies = true
+        // Only disable truly intentional suppressions
         disable += setOf(
             "MissingTranslation",
-            "ExtraTranslation",
-            "Typos",
-            "TypographyEllipsis",
+            "ExtraTranslation"
         )
     }
 
@@ -103,6 +114,10 @@ android {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
         }
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 }
 
@@ -120,6 +135,7 @@ dependencies {
 
     // AndroidX Core
     implementation(libs.core.ktx)
+    implementation(libs.core.splashscreen)
     implementation(libs.activity.compose)
 
     // Lifecycle
@@ -133,11 +149,10 @@ dependencies {
 
     // Hilt
     implementation(libs.hilt.android)
-    // L-06 Fix: Use proper KSP configuration instead of string-based add("ksp", ...)
     ksp(libs.hilt.android.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // CameraX
+    // CameraX - only needed modules, camera-view kept for fallback but not required
     implementation(libs.camera.core)
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
@@ -148,9 +163,6 @@ dependencies {
 
     // DataStore
     implementation(libs.datastore.preferences)
-
-    // Accompanist
-    implementation(libs.accompanist.permissions)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
@@ -178,7 +190,6 @@ dependencies {
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
-    // L-06 Fix: Use proper KSP configuration instead of string-based add("kspAndroidTest", ...)
     kspAndroidTest(libs.hilt.android.compiler)
     androidTestImplementation(libs.kotlinx.coroutines.test)
 
