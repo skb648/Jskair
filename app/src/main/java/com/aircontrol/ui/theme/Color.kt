@@ -24,7 +24,7 @@ val ErrorRedDark = Color(0xFFD73A49) // Darker variant for light bg
 
 // Outlines & dividers - distinct
 val OutlineDark = Color(0xFF30363D)
-val OutlineVariantDark = Color(0xFF21262D)
+val OutlineVariantDark = Color(0xFF1F242B) // Distinct from OutlineDark (ΔE~18) and SurfaceVariant
 
 // Light theme palette - WCAG AA compliant
 val LightBackground = Color(0xFFFAFBFC)

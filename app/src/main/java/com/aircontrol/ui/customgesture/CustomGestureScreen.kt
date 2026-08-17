@@ -43,6 +43,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.aircontrol.R
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,7 +69,7 @@ fun CustomGestureScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Custom Gestures") },
+                title = { Text(stringResource(R.string.custom_gestures_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -228,7 +230,7 @@ private fun CustomGestureCreatorPanel(
         OutlinedTextField(
             value = state.name,
             onValueChange = onNameChange,
-            label = { Text("Gesture Name") },
+            label = { Text(stringResource(R.string.gesture_name_label)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -236,7 +238,7 @@ private fun CustomGestureCreatorPanel(
         OutlinedTextField(
             value = state.description,
             onValueChange = onDescriptionChange,
-            label = { Text("Description (optional)") },
+            label = { Text(stringResource(R.string.gesture_description_label)) },
             maxLines = 2,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -310,7 +312,7 @@ private fun CustomGestureCreatorPanel(
             OutlinedButton(
                 onClick = onCancel,
                 modifier = Modifier.weight(1f),
-            ) { Text("Cancel") }
+            ) { Text(stringResource(R.string.cancel)) }
             Button(
                 onClick = onSave,
                 enabled = state.isValid,

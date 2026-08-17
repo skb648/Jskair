@@ -499,7 +499,7 @@ private fun TestGesturesStep(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             ) {
-                Text("Simulate: ${listOf("Open Palm", "Fist", "Pinch")[completed]}")
+                Text(stringResource(R.string.simulate_prefix, listOf("Open Palm", "Fist", "Pinch")[completed]))
             }
         }
 

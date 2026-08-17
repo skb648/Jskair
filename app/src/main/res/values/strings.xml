@@ -129,6 +129,11 @@
     <string name="settings_section_accessibility">Accessibility</string>
     <string name="settings_section_eye_tracking">Eye Tracking</string>
     <string name="settings_section_about">About</string>
+    <string name="custom_gestures_title">Custom Gestures</string>
+    <string name="gesture_name_label">Gesture Name</string>
+    <string name="gesture_description_label">Description (optional)</string>
+    <string name="cancel">Cancel</string>
+    <string name="simulate_prefix">Simulate: %s</string>
     <string name="settings_licenses_detail">This app uses MediaPipe, CameraX, Hilt, Compose, Kotlin Coroutines, and other open-source libraries.</string>
 
     <!-- Calibration -->
