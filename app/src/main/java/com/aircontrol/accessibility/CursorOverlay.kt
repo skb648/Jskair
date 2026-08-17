@@ -279,9 +279,7 @@ class CursorOverlay(
             size,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                // FLAG_LAYOUT_NO_LIMITS removed — prevent cursor off-screen lost
-            
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
