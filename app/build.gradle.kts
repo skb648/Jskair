@@ -21,7 +21,11 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("release.keystore")
+            // Only set storeFile if it exists, otherwise validation will fail on CI without keystore
+            val ksFile = file("release.keystore")
+            if (ksFile.exists()) {
+                storeFile = ksFile
+            }
             storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
             keyAlias = System.getenv("KEY_ALIAS") ?: "release"
             keyPassword = System.getenv("KEY_PASSWORD") ?: ""
