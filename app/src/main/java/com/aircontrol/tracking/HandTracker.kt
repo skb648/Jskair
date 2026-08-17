@@ -290,6 +290,6 @@ class HandTrackerImpl @Inject constructor(
         private const val NUM_HANDS = 1
         private const val MIN_DETECTION_CONFIDENCE = 0.6f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
-        private const val MAX_PENDING_TIMESTAMPS = 8
+        private const val MAX_PENDING_TIMESTAMPS = 32
     }
 }

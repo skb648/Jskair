@@ -312,7 +312,7 @@ class FaceTrackerImpl @Inject constructor(
         private const val MIN_DETECTION_CONFIDENCE = 0.5f
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
-        private const val MAX_PENDING_TIMESTAMPS = 8
+        private const val MAX_PENDING_TIMESTAMPS = 32
         private const val EPSILON = 1e-6f
     }
 }
