@@ -16,12 +16,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -45,7 +47,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         // Keep splash on screen until preferences are loaded
-        var keepSplash = true
+        var keepSplash by androidx.compose.runtime.mutableStateOf(true)
         splashScreen.setKeepOnScreenCondition { keepSplash }
 
         setContent {
@@ -87,6 +89,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Preview(showBackground = true)
 @Composable
 private fun LoadingScreen() {
     Surface(
@@ -106,7 +109,7 @@ private fun LoadingScreen() {
                 CircularProgressIndicator(
                     color = MaterialTheme.colorScheme.primary,
                     strokeWidth = 3.dp,
-                    modifier = Modifier.size(96.dp).semantics { contentDescription = "Loading" }
+                    modifier = Modifier.size(96.dp).progressSemantics().then(Modifier)
                 )
                 Text(
                     text = "✋",

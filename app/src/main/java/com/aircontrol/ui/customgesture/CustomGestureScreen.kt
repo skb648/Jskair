@@ -243,7 +243,7 @@ private fun CustomGestureCreatorPanel(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Text("Trigger Pose", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.custom_trigger_pose), style = MaterialTheme.typography.titleSmall)
         CustomGesturePose.entries.forEach { pose ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -257,7 +257,7 @@ private fun CustomGestureCreatorPanel(
             }
         }
 
-        Text("Direction (optional)", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.custom_direction_optional), style = MaterialTheme.typography.titleSmall)
         CustomGestureDirection.entries.forEach { direction ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -271,7 +271,7 @@ private fun CustomGestureCreatorPanel(
             }
         }
 
-        Text("Action", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.custom_action_label), style = MaterialTheme.typography.titleSmall)
         val availableActions = GestureAction.entries.filter { it != GestureAction.NONE }
         var expanded by remember { mutableStateOf(false) }
         ExposedDropdownMenuBox(

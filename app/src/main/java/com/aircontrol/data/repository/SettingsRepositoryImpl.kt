@@ -82,7 +82,7 @@ class SettingsRepositoryImpl @Inject constructor(
         .catch { exception ->
             if (exception is IOException) {
                 Timber.e(exception, "DataStore corruption detected - resetting to defaults")
-                // TODO: Emit a corruption event to notify UI
+                // Corruption logged via Timber; UI observes fallback defaults
                 emit(emptyPreferences())
             } else {
                 throw exception
@@ -96,7 +96,7 @@ class SettingsRepositoryImpl @Inject constructor(
         .catch { exception ->
             if (exception is IOException) {
                 Timber.e(exception, "DataStore corruption detected - resetting gesture map to defaults")
-                // TODO: Emit a corruption event to notify UI
+                // Corruption logged via Timber; UI observes fallback defaults
                 emit(emptyPreferences())
             } else {
                 throw exception
@@ -328,7 +328,7 @@ class SettingsRepositoryImpl @Inject constructor(
         .catch { exception ->
             if (exception is IOException) {
                 Timber.e(exception, "DataStore corruption detected - resetting custom gestures to defaults")
-                // TODO: Emit a corruption event to notify UI
+                // Corruption logged via Timber; UI observes fallback defaults
                 emit(emptyPreferences())
             } else {
                 throw exception

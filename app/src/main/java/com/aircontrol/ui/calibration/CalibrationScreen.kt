@@ -255,7 +255,7 @@ private fun IntroStep(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(Dimens.buttonCornerRadius),
         ) {
-            Text("Skip for now", color = TextSecondary)
+            Text(stringResource(R.string.calibration_skip_for_now), color = TextSecondary)
         }
     }
 }
@@ -512,7 +512,7 @@ private fun TestGesturesStep(
                     .height(Dimens.buttonHeight),
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             ) {
-                Text("Complete Calibration", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.calibration_complete_button), style = MaterialTheme.typography.titleSmall)
             }
         }
     }
@@ -573,7 +573,7 @@ private fun CompleteStep(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("Hand Size", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    Text(stringResource(R.string.calibration_hand_size), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     Text(
                         "%.0f mm".format(handSizeMm),
                         style = MaterialTheme.typography.bodyMedium,
@@ -586,7 +586,7 @@ private fun CompleteStep(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("Pinch Distance", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    Text(stringResource(R.string.calibration_pinch_distance), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     Text(
                         "%.0f mm".format(pinchDistanceMm),
                         style = MaterialTheme.typography.bodyMedium,

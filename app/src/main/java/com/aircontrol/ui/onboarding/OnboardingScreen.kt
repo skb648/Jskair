@@ -46,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -85,11 +86,21 @@ fun OnboardingScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     // Android 13+ POST_NOTIFICATIONS for boot resume notification
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { _ -> /* no-op, PermissionsManager will refresh */ }
+
+    // Request POST_NOTIFICATIONS on Android 13+ after camera permission (boot resume needs it)
+    androidx.compose.runtime.LaunchedEffect(permissionStates.cameraGranted) {
+        if (permissionStates.cameraGranted && !permissionStates.notificationsGranted && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -266,6 +277,9 @@ private fun CameraPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -329,6 +343,9 @@ private fun AccessibilityPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -390,6 +407,9 @@ private fun OverlayPermissionStep(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -440,6 +460,9 @@ private fun OverlayPermissionStep(
 private fun PermissionGrantedBadge() {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
     val scale = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -487,6 +510,9 @@ private fun PageIndicator(
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    BackHandler(enabled = pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    }
 
     Row(
         modifier = modifier.semantics {
@@ -559,7 +585,7 @@ private fun NavigationControls(
                 enabled = canProceed,
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = ElectricBlue,
+                    containerColor = MaterialTheme.colorScheme.primary,
                 ),
             ) {
                 Text(text = stringResource(R.string.onboarding_get_started))
@@ -896,7 +922,7 @@ private fun GestureTutorialStep(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             colors = ButtonDefaults.buttonColors(
-                containerColor = ElectricBlue,
+                containerColor = MaterialTheme.colorScheme.primary,
             ),
         ) {
             Text(text = stringResource(R.string.onboarding_get_started))

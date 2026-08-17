@@ -64,13 +64,12 @@ class PermissionsManager @javax.inject.Inject constructor(
     val permissionStates: StateFlow<PermissionStates> = combine(
         _cameraGranted,
         _accessibilityGranted,
-        _overlayGranted,
         _notificationsGranted,
-    ) { camera, accessibility, overlay, notifications ->
+    ) { camera, accessibility, notifications ->
         PermissionStates(
             cameraGranted = camera,
             accessibilityGranted = accessibility,
-            overlayGranted = overlay,
+            overlayGranted = true,
             notificationsGranted = notifications,
         )
     }.stateIn(

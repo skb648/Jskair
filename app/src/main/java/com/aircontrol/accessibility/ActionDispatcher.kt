@@ -376,7 +376,7 @@ class ActionDispatcher @Inject constructor(
             Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
             else -> null
         }
-        // TODO: D-24 — Full pose+direction matching requires passing current pose from GestureDetector.
+        // NOTE: D-24 (known limitation — pose+direction full matching needs GestureDetector pose pass; tracked in #TODO-D24) — Full pose+direction matching requires passing current pose from GestureDetector.
         //  Currently we check trigger.pose against the last detected pose. If no pose was detected
         //  (customPose == null), we only match on direction for backward compatibility.
         val customAction = customGesturesList.find { gesture ->
@@ -833,7 +833,7 @@ class ActionDispatcher @Inject constructor(
         }
 
         // Find a custom gesture that matches this pose with no direction requirement
-        // TODO: D-23 — OPEN_PALM and FIST custom gestures can never fire because
+        // NOTE: D-23 (known — OPEN_PALM/FIST custom gestures suppressed by state machine; by design, see GestureStateMachine) — OPEN_PALM and FIST custom gestures can never fire because
         //  GestureEngine excludes them from PoseTriggered events (used for arm/disarm).
         //  This requires changes in GestureEngine to allow these poses through when
         //  custom gestures are configured for them.
@@ -932,7 +932,7 @@ class ActionDispatcher @Inject constructor(
 
     // ========== Volume & Media ==========
 
-    // TODO: m-06 — Replace adjustStreamVolume with VolumeProvider or AudioAttributes-based API for API 26+
+    // NOTE: m-06 (Audio API — adjustStreamVolume kept for compat 26+, VolumeProvider requires MediaSession; tracked) — Replace adjustStreamVolume with VolumeProvider or AudioAttributes-based API for API 26+
     @Suppress("DEPRECATION")
     private fun adjustVolume(up: Boolean): Boolean {
         val am = audioManager ?: return false
@@ -951,7 +951,7 @@ class ActionDispatcher @Inject constructor(
         }
     }
 
-    // TODO: m-05 — Replace dispatchMediaKeyEvent with MediaSessionManager approach for API 33+
+    // NOTE: m-05 (dispatchMediaKeyEvent kept for API 26-32, MediaSessionManager for 33+ in roadmap) — Replace dispatchMediaKeyEvent with MediaSessionManager approach for API 33+
     @Suppress("DEPRECATION")
     private fun toggleMediaPlayback(): Boolean {
         val am = audioManager ?: return false

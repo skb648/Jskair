@@ -26,7 +26,7 @@
     native <methods>;
 }
 # MediaPipe protocol buffer generated code
--keep class * extends com.google.protobuf.GeneratedMessageLite { *; }
+-keep class * extends com.google.protobuf.GeneratedMessageLite { <fields>; }
 -keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite { *; }
 
 # ---------- Hilt / Dagger ----------

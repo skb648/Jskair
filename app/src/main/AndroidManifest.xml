@@ -17,7 +17,6 @@
         android:name=".AirControlApp"
         android:allowBackup="false" <!-- fullBackupContent ignored when false, kept for future if enable -->
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
         android:localeConfig="@xml/locales_config"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

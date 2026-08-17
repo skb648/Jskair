@@ -1,3 +1,13 @@
 HSPLcom/aircontrol/gestures/GestureDetectorImpl;->processHandFrame(Lcom/aircontrol/tracking/HandFrame;)V
 HSPLcom/aircontrol/tracking/HandTrackerImpl;->processFrame(Lcom/google/mediapipe/framework/image/MPImage;J)V
 HSPLcom/aircontrol/accessibility/CursorOverlay;->updatePosition(FF)V
+HSPLandroidx/compose/runtime/Composer;->startRestartGroup(I)V
+HSPLandroidx/compose/material3/Text;->Text(Ljava/lang/String;)V
+HSPLcom/aircontrol/ui/theme/AirControlTheme;->AirControlTheme(Z)V
+HSPLcom/aircontrol/data/repository/SettingsRepositoryImpl;->getUserPreferences()Lkotlinx/coroutines/flow/Flow;
+HSPLcom/aircontrol/permissions/PermissionsManager;->refreshAllPermissions()V
+HSPLandroidx/lifecycle/ViewModel;->ViewModel()V
+HSPLdagger/hilt/android/HiltAndroidApp;->onCreate()V
+HSPLcom/aircontrol/tracking/OneEuroFilter;->filter(FFJ)F
+HSPLcom/aircontrol/gesture/detection/StaticPoseClassifier;->classify(Lcom/aircontrol/gesture/model/HandInput;)Lcom/aircontrol/gesture/model/Pose;
+HSPLcom/aircontrol/accessibility/ActionDispatcher;->dispatchGesture(Landroid/accessibilityservice/AccessibilityService;)V

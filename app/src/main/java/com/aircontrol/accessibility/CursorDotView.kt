@@ -287,6 +287,7 @@ class CursorDotView(
     private var cachedGradient: RadialGradient? = null
     private var lastGradientWidth = 0
     private var lastGradientHeight = 0
+    private var lastGradientDotSize = 0
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -315,6 +316,7 @@ class CursorDotView(
             )
             lastGradientWidth = width
             lastGradientHeight = height
+            lastGradientDotSize = dotSizePx
         }
         shadowPaint.shader = cachedGradient
         shadowPaint.alpha = 30 // Subtle depth

@@ -113,7 +113,7 @@ class OneEuroFilter(
     }
 
     companion object {
-        private const val MIN_DT = 0.0001f
+        private const val MIN_DT = 0.008f // ~120fps max, clamp duplicate timestamps to avoid alpha spike
     }
 }
 

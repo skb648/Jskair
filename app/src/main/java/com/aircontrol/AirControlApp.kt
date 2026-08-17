@@ -77,7 +77,7 @@ class AirControlApp : Application() {
             // Only log warn/error/info in release; debug/verbose stripped by R8
             if (priority >= android.util.Log.INFO) {
                 android.util.Log.println(priority, tag, message)
-                // TODO: Integrate with Firebase Crashlytics if needed
+                // Release log only; Crashlytics can be added via FirebaseCrashlytics.getInstance().recordException(t) if needed
             }
         }
     }
