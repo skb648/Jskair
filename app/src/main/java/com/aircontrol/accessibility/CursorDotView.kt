@@ -65,7 +65,7 @@ class CursorDotView(
     // F1: Dwell progress ring (0..1), drawn as an arc around the cursor.
     private var dwellProgress = 0f
 
-    // F11: Ripple feedback — an expanding ring on click.
+    // F11: Ripple (on click) vs pulse (on gesture dispatched) — ripple for dwell, pulse for dispatch; distinct — an expanding ring on click.
     private var rippleRadius = 0f
     private var rippleAlpha = 0
     private var rippleAnimator: ValueAnimator? = null

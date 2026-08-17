@@ -54,7 +54,7 @@ class CursorOverlay(
     private val deadZonePx = dpToPx(DEAD_ZONE_DP)
 
     // Cursor size in pixels
-    private val cursorSizePx = dpToPx(CURSOR_SIZE_DP)
+    private val cursorSizePx = dpToPx(CURSOR_SIZE_DP) // Responsive: scaled via screen density already (tablet density higher)
     private val ringSizePx = dpToPx(RING_SIZE_DP)
 
     // Armed state — shows ring around cursor

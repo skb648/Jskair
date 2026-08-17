@@ -51,7 +51,7 @@ class HandTrackerImpl @Inject constructor(
     private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
-        extraBufferCapacity = 8,
+        extraBufferCapacity = 32,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()

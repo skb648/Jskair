@@ -69,7 +69,7 @@ class FaceTrackerImpl @Inject constructor(
     private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
 
     private val _gazePoints = MutableSharedFlow<GazePoint>(
-        extraBufferCapacity = 8,
+        extraBufferCapacity = 32,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gazePoints: SharedFlow<GazePoint> = _gazePoints.asSharedFlow()

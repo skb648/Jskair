@@ -170,13 +170,14 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
      * and index tip, scaled by hand size (wrist-to-middle-MCP distance).
      * This normalization ensures pinch works at any distance from the camera.
      */
+    // Hand size bias mitigated via calibratedPinchRatio (personalized) + MIN 0.25
     internal fun isPinch(landmarks: List<Landmark3D>): Boolean {
         val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
         val indexTip = landmarks[LandmarkIndex.INDEX_TIP]
         val wrist = landmarks[LandmarkIndex.WRIST]
         val middleMcp = landmarks[LandmarkIndex.MIDDLE_MCP]
 
-        val pinchDistance = distance2D(thumbTip, indexTip)
+        val pinchDistance = distance2D(thumbTip, indexTip) // 2D intentional: Z noisy on MediaPipe, 3D would jitter more
         val handSize = distance2D(wrist, middleMcp)
 
         if (handSize < EPSILON) return false
@@ -269,7 +270,7 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
         // required for landmark template matching. Below this, landmarks are too
         // erratic to reliably match against saved templates. 0.7 matches the
         // engine's low-confidence threshold (see GestureEngine.CONFIDENCE_THRESHOLD).
-        private const val MIN_TEMPLATE_MATCH_CONFIDENCE = 0.7f
+        private const val MIN_TEMPLATE_MATCH_CONFIDENCE = 0.6f // Low light 0.65 now matches (was 0.7 too strict)
     }
 
     /**

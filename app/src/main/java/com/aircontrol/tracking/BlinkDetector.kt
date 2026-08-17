@@ -5,12 +5,12 @@ package com.aircontrol.tracking
  *
  * EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
  *
- * When both eyes are open EAR is typically > 0.25; when closed it drops toward
+ * When both eyes are open EAR is typically > 0.22 // Chashma users EAR 0.18, 0.22 still triggers (was 0.20 too low for glasses reflection)5; when closed it drops toward
  * ~0.10. A deliberate blink (both eyes closed for [minBlinkMs]..[maxBlinkMs])
  * emits a single click event via [update].
  */
 class BlinkDetector(
-    private val earThreshold: Float = 0.22f,
+    private val earThreshold: Float = 0.22 // Chashma users EAR 0.18, 0.22 still triggers (was 0.20 too low for glasses reflection)2f,
     private val minBlinkMs: Long = 300L,
     private val maxBlinkMs: Long = 800L,
 ) {

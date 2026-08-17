@@ -53,7 +53,7 @@ data class LandmarkTemplate(
          * 0.0025 per pair — strict enough to distinguish distinct hand shapes,
          * loose enough to tolerate natural hand jitter.
          */
-        const val MATCH_TOLERANCE = 0.05f
+        const val MATCH_TOLERANCE = 0.07f // Relaxed 0.05→0.07 for jitter tolerance (avg 0.0035 per pair, still distinct)
 
         /**
          * The curated set of landmark index pairs whose normalized distances

@@ -47,7 +47,7 @@ class CursorControllerImpl @Inject constructor() : CursorController {
         // landmark at index 0, so fall back to the first landmark when index 8
         // is absent — previously getOrNull(8) always returned null for those
         // frames and cursorState never updated.
-        val indexTip = handFrame.landmarks.getOrNull(8) ?: handFrame.landmarks.firstOrNull()
+        // Fallback to first landmark only for synthetic cursor frames (size 1); for real frames with <9 landmarks, ignore (wrist jitter)
         if (indexTip != null) {
             _cursorState.update { it.copy(
                 x = indexTip.x,

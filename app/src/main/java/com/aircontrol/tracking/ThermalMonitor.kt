@@ -39,7 +39,7 @@ enum class ThermalStatus {
 class ThermalMonitor(
     @ApplicationContext private val context: Context,
     private val scope: CoroutineScope,
-    private val pollingIntervalMs: Long = 5000L,
+    private val pollingIntervalMs: Long = 5000L // Service uses 5000, Camera uses 6000 to desync 2 polls,
 ) {
     private val powerManager by lazy { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
 

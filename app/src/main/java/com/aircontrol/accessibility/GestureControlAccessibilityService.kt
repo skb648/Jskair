@@ -931,7 +931,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         if (gazeCalibration.isCalibrated) {
             return gazeCalibration.map(gx, gy)
         }
-        val gain = 1.5f + (currentPreferences.gazeSensitivity / 100f) * 2.0f
+        val gain = 1.2f + (currentPreferences.gazeSensitivity / 100f) * 1.3f // Was 1.5+2.0=2.5-3.5 too fast, now 1.2-2.5 controllable
         var screenX = 0.5f + (gx - 0.5f) * gain
         if (currentPreferences.gazeInvertX) screenX = 1f - screenX
         val screenY = 0.5f + (gy - 0.5f) * gain
@@ -1081,6 +1081,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // New values match the Apple Vision Pro architecture for optimal performance:
         //   - minCutoff = 1.0 Hz: Lower lag, better jitter elimination (Apple spec)
         //   - beta      = 0.007:  Lower high-speed delay, minimal filtering (Apple spec)
+        // Light theme could use 0.9 for less jitter, but keep 1.0 for consistency (tested both)
         private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.0f
         private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.007f
 
