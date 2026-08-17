@@ -515,7 +515,7 @@ class SettingsRepositoryImpl @Inject constructor(
      * Kept for backward compatibility with existing user data.
      */
     private fun deserializeGestureMapLegacy(json: String): List<GestureMapEntry> {
-        return json.split(";").mapNotNull { segment ->
+        return json.split(";").map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { segment ->
             val parts = segment.split("|")
             if (parts.size == 3) {
                 try {
@@ -650,7 +650,7 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     companion object {
-        private val VALID_FPS_SET = setOf(15, 24, 30)
+        private val VALID_FPS_SET = setOf(15, 24, 30) // scan 5 FPS internal only, not user-selectable
         private const val DEFAULT_FPS = 24
     }
 }

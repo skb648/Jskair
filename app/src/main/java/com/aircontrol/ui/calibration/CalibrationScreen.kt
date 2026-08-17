@@ -97,7 +97,7 @@ fun CalibrationScreen(
                 actions = {
                     if (uiState.step != CalibrationStep.COMPLETE) {
                         TextButton(onClick = { viewModel.skipCalibration() }) {
-                            Text("Skip", color = TextSecondary)
+                            Text(stringResource(R.string.calibration_skip), color = TextSecondary)
                         }
                     }
                 },
@@ -245,7 +245,7 @@ private fun IntroStep(
                 .height(Dimens.buttonHeight),
             shape = RoundedCornerShape(Dimens.buttonCornerRadius),
         ) {
-            Text("Start Calibration", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.calibration_start), style = MaterialTheme.typography.titleSmall)
         }
 
         Spacer(modifier = Modifier.height(Dimens.spacing8))
@@ -320,7 +320,7 @@ private fun PalmDetectStep(
                     .height(Dimens.buttonHeight),
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             ) {
-                Text("Proceed", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.calibration_proceed), style = MaterialTheme.typography.titleSmall)
             }
         } else {
             Text(
@@ -377,7 +377,7 @@ private fun MeasuringStep(progress: Float) {
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 
         Text(
-            text = "Keep your hand steady with fingers spread",
+            text = stringResource(R.string.calibration_measuring_hint),
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
         )
@@ -398,7 +398,7 @@ private fun TestGesturesStep(
         modifier = Modifier.padding(vertical = Dimens.spacing32),
     ) {
         Text(
-            text = "Test Your Gestures",
+            text = stringResource(R.string.calibration_test_title),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -407,7 +407,7 @@ private fun TestGesturesStep(
         Spacer(modifier = Modifier.height(Dimens.spacing8))
 
         Text(
-            text = "Perform $total gestures to verify recognition",
+            text = stringResource(R.string.calibration_test_description),
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
         )

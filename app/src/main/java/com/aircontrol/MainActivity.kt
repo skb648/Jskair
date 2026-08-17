@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,8 +19,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -106,7 +106,7 @@ private fun LoadingScreen() {
                 CircularProgressIndicator(
                     color = MaterialTheme.colorScheme.primary,
                     strokeWidth = 3.dp,
-                    modifier = Modifier.size(96.dp)
+                    modifier = Modifier.size(96.dp).semantics { contentDescription = "Loading" }
                 )
                 Text(
                     text = "✋",
@@ -115,14 +115,14 @@ private fun LoadingScreen() {
             }
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = stringResource(com.aircontrol.R.string.app_name),
+                text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Loading...",
+                text = stringResource(R.string.loading),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

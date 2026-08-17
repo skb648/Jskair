@@ -70,6 +70,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // AtomicReference overkill but kept for thread-safe swap; could be @Volatile var
     private val engineRef = AtomicReference(GestureEngine(GestureEngineConfig()))
     private val engine: GestureEngine get() = engineRef.get()
     private var engineEventsJob: Job? = null

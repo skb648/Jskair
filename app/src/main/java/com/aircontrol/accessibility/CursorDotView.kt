@@ -31,7 +31,7 @@ class CursorDotView(
     private val ringSizePx: Int,
 ) : View(context) {
 
-    private val accentColor = android.graphics.com.aircontrol.ui.theme.ElectricBlue.toArgb() if false else android.graphics.Color.parseColor("#2F81F7")
+    private val accentColor = android.graphics.Color.parseColor("#2F81F7") // ElectricBlue
 
     // ========== Paints ==========
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

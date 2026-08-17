@@ -78,9 +78,18 @@ fun OnboardingScreen(
     val permissionStates by viewModel.permissionStates.collectAsState()
     val currentStep by viewModel.currentStep.collectAsState()
     val pagerState = rememberPagerState(initialPage = currentStep, pageCount = { 5 })
+    // Sync pager if ViewModel externally changes step (deep-link)
+    androidx.compose.runtime.LaunchedEffect(currentStep) {
+        if (pagerState.currentPage != currentStep) pagerState.animateScrollToPage(currentStep)
+    }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+
+    // Android 13+ POST_NOTIFICATIONS for boot resume notification
+    val notificationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { _ -> /* no-op, PermissionsManager will refresh */ }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),

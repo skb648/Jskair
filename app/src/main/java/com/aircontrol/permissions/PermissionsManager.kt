@@ -54,6 +54,7 @@ class PermissionsManager @javax.inject.Inject constructor(
     private val _accessibilityGranted = MutableStateFlow(checkAccessibilityPermission())
     val accessibilityGranted: StateFlow<Boolean> = _accessibilityGranted
 
+    // Kept for binary compat; not used in allGranted, always true for TYPE_ACCESSIBILITY_OVERLAY
     private val _overlayGranted = MutableStateFlow(true)
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 

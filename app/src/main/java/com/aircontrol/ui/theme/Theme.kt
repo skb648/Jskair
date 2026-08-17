@@ -44,7 +44,7 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = ElectricBlue,
+    primary = ElectricBlueAccessible,
     onPrimary = LightOnPrimary,
     primaryContainer = ElectricBlue.copy(alpha = 0.15f),
     onPrimaryContainer = ElectricBlueVariant,

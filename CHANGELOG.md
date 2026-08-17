@@ -1,7 +1,7 @@
 # Changelog
 
 ## [1.0.1] - 2026-08-17
-### Fixed — Full 403-issue audit (26 files)
+### Fixed — Full 403-issue audit (26 files) — see FIXES_ALL_DONE_REPORT.md for per-issue mapping
 - Build: config-cache compatible versionCode, compileSdk 35, splashscreen, lint/test CI
 - Manifest: camera required false, specialUse FGS, transparent bars, directBootAware
 - Permissions: overlay contradiction resolved, Eagerly StateFlow

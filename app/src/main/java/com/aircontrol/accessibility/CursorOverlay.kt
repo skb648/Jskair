@@ -327,6 +327,6 @@ class CursorOverlay(
         
         // CRITICAL FIX: Larger dead zone for rock-solid stability
         // Eliminates micro-tremor completely
-        private const val DEAD_ZONE_DP = 4  // ✅ Increased from 3dp to 8dp
+        private const val DEAD_ZONE_DP = 4 // Complementary to CursorSmoother 0.004 (1 is normalized, 1 is dp) — total ~8px effective  // ✅ Increased from 3dp to 8dp
     }
 }

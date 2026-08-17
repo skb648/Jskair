@@ -42,7 +42,7 @@ class AdaptiveFpsController(
     private val downgradeJob = AtomicReference<Job?>(null)
 
     val analysisIntervalMs: Long
-        get() = 1000L / _currentFps.value.coerceAtLeast(1)
+        get() = (1000f / _currentFps.value.coerceAtLeast(1)).toLong()
 
     fun onHandDetected(timestampMs: Long) {
         val wasInScanMode = _currentFps.value != configuredFps

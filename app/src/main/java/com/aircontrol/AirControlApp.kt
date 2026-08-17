@@ -30,8 +30,6 @@ class AirControlApp : Application() {
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(
                 StrictMode.ThreadPolicy.Builder()
-                    .detectDiskReads()
-                    .detectDiskWrites()
                     .detectNetwork()
                     .penaltyLog()
                     .build()
@@ -50,12 +48,15 @@ class AirControlApp : Application() {
         // Create notification channels early so foreground service never fails
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val manager = getSystemService(android.app.NotificationManager::class.java)
+            // DirectBoot: getString may fail before credential decrypt, use hardcoded fallback
+            val trackingName = try { getString(R.string.notification_channel_name) } catch (_: Exception) { "Hand Tracking" }
+            val trackingDesc = try { getString(R.string.notification_channel_description) } catch (_: Exception) { "Controls for the hand tracking foreground service" }
             val trackingChannel = android.app.NotificationChannel(
                 "aircontrol_tracking",
-                getString(R.string.notification_channel_name),
+                trackingName,
                 android.app.NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = getString(R.string.notification_channel_description)
+                description = trackingDesc
                 setShowBadge(false)
                 enableVibration(false)
             }
@@ -67,7 +68,7 @@ class AirControlApp : Application() {
                 description = "Resume gesture tracking after reboot"
                 setShowBadge(false)
             }
-            manager?.createNotificationChannels(listOf(trackingChannel, bootChannel))
+            try { manager?.createNotificationChannels(listOf(trackingChannel, bootChannel)) } catch (_: Exception) {}
         }
     }
 

@@ -114,7 +114,7 @@ class CameraService : LifecycleService() {
     private lateinit var settingsRepository: com.aircontrol.data.repository.SettingsRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val analysisExecutor = Executors.newSingleThreadExecutor { r ->
+    private var analysisExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "aircontrol-analysis").apply { isDaemon = true }
     }
 

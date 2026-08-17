@@ -143,7 +143,7 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             // ===== Gesture Controls =====
-            SectionHeader(title = "Gesture Controls")
+            SectionHeader(title = stringResource(R.string.settings_section_gesture_controls)
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_sensitivity),
@@ -203,7 +203,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 
             // ===== Cursor =====
-            SectionHeader(title = "Cursor")
+            SectionHeader(title = stringResource(R.string.settings_section_cursor)
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_cursor_speed),
@@ -229,7 +229,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 
             // ===== Preferences =====
-            SectionHeader(title = "Preferences")
+            SectionHeader(title = stringResource(R.string.settings_section_preferences)
 
             SettingSwitchRow(
                 title = "Cursor Mode",
@@ -279,7 +279,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 
             // ===== Accessibility (Vision Pro features) =====
-            SectionHeader(title = "Accessibility")
+            SectionHeader(title = stringResource(R.string.settings_section_accessibility)
 
             SettingSwitchRow(
                 title = "Dwell-to-click",
@@ -350,7 +350,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 
             // ===== Eye Tracking (Eye is Mouse) =====
-            SectionHeader(title = "Eye Tracking")
+            SectionHeader(title = stringResource(R.string.settings_section_eye_tracking)
 
             SettingSwitchRow(
                 title = "Eye is Mouse",
@@ -429,7 +429,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing32))
 
             // ===== About =====
-            SectionHeader(title = "About")
+            SectionHeader(title = stringResource(R.string.settings_section_about)
 
             Card(
                 modifier = Modifier.fillMaxWidth(),

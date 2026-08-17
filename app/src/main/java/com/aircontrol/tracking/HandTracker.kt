@@ -246,8 +246,8 @@ class HandTrackerImpl @Inject constructor(
      */
     private fun validateModelFile(): Boolean {
         return try {
-            val assetList = context.assets.list("") ?: emptyArray()
-            MODEL_FILE in assetList
+            // Samsung devices truncate assets.list; try open directly
+            try { context.assets.open(MODEL_FILE).close(); true } catch (_: Exception) { false }
         } catch (e: Exception) {
             Timber.e(e, "Error checking model file in assets")
             false

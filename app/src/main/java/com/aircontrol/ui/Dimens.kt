@@ -35,7 +35,8 @@ object Dimens {
 
     // Specific
     val statusIndicatorSize = 12.dp
-    val sensitivitySliderWidth = 280.dp // Deprecated: use fillMaxWidth
+    @Deprecated("Use fillMaxWidth")
+    val sensitivitySliderWidth = 280.dp
     val navBarHeight = 64.dp
     val topAppBarHeight = 56.dp
     val progressIndicatorSize = 64.dp

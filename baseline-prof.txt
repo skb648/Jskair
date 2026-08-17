@@ -1,0 +1,3 @@
+HSPLcom/aircontrol/gestures/GestureDetectorImpl;->processHandFrame(Lcom/aircontrol/tracking/HandFrame;)V
+HSPLcom/aircontrol/tracking/HandTrackerImpl;->processFrame(Lcom/google/mediapipe/framework/image/MPImage;J)V
+HSPLcom/aircontrol/accessibility/CursorOverlay;->updatePosition(FF)V

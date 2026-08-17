@@ -2,7 +2,7 @@
 
 > Control your device with intuitive air gestures — no touch required. Privacy-first, on-device only.
 
-![AirControl](app/src/main/res/mipmap-xxxhdpi/ic_launcher.png)
+![AirControl](app/src/main/res/mipmap-xxxhdpi/ic_launcher.png) <!-- If preview broken, see app/src/main/res/mipmap-xxxhdpi/ic_launcher.png locally -->
 
 ## ✨ Features
 - **Hand Tracking:** MediaPipe Hand Landmarker (GPU → CPU fallback), 24 FPS adaptive, 5 FPS scan when idle
