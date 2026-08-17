@@ -76,8 +76,7 @@ fun SettingSwitchRow(
                 if (icon != null) {
                     Icon(
                         imageVector = icon,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        contentDescription = null, // decorative: title Text is label,
                         modifier = Modifier.size(Dimens.iconMedium),
                     )
                     Spacer(modifier = Modifier.width(Dimens.spacing12))

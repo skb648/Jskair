@@ -12,7 +12,7 @@
         variant="all" version="8.9.2">
 
     <!-- 
-      Known issue: MediaPipe generates deprecated API usage warnings.
+      Known issue: MediaPipe 0.10.20 generates deprecated (fixed in 0.10.25, baseline will be removed) API usage warnings.
       These are in third-party code and cannot be fixed by us.
     -->
     <issue id="Deprecated" message=".*mediapipe.*">

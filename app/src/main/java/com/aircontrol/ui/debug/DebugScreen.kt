@@ -59,6 +59,7 @@ import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.Handedness
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.theme.ElectricBlue
+import com.aircontrol.ui.theme.ErrorRed
 import com.aircontrol.ui.theme.SuccessGreen
 import com.aircontrol.ui.theme.WarningOrange
 
@@ -224,7 +225,7 @@ private fun StatsBar(
                     targetValue = when {
                         measuredFps >= targetFps * 0.9 -> SuccessGreen
                         measuredFps >= targetFps * 0.5 -> WarningOrange
-                        else -> Color.Red
+                        else -> ErrorRed
                     },
                     animationSpec = tween(durationMillis = 300),
                     label = "fps_color",
@@ -295,7 +296,7 @@ private fun StatsBar(
                         GestureEngineState.ARMED -> SuccessGreen
                         GestureEngineState.ARMING -> WarningOrange
                         GestureEngineState.EXECUTING -> ElectricBlue
-                        GestureEngineState.COOLDOWN -> Color.Yellow
+                        GestureEngineState.COOLDOWN -> WarningOrange
                         GestureEngineState.DISARMED -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     animationSpec = tween(200),
@@ -334,9 +335,9 @@ private fun FpsOverlay(
 ) {
     val bgColor by animateColorAsState(
         targetValue = if (isHandDetected) {
-            Color.Black.copy(alpha = 0.6f)
+            MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f)
         } else {
-            Color.Black.copy(alpha = 0.4f)
+            MaterialTheme.colorScheme.scrim.copy(alpha = 0.4f)
         },
         animationSpec = tween(300),
         label = "fps_bg",
@@ -365,7 +366,7 @@ private fun FpsOverlay(
             Text(
                 text = "$fps fps",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
+                color = Color.White, // Debug overlay fixed white for contrast on camera
             )
         }
     }
@@ -395,7 +396,7 @@ private fun GestureLabelOverlay(
                     .fillMaxWidth(0.6f)
                     .padding(bottom = Dimens.paddingSmall),
                 color = WarningOrange,
-                trackColor = Color.Gray.copy(alpha = 0.3f),
+                trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
             )
         }
 
@@ -405,12 +406,12 @@ private fun GestureLabelOverlay(
                 GestureEngineState.ARMED -> SuccessGreen
                 GestureEngineState.EXECUTING -> ElectricBlue
                 GestureEngineState.ARMING -> WarningOrange
-                else -> Color.White
+                else -> MaterialTheme.colorScheme.onSurface // was Color.White
             }
             Box(
                 modifier = Modifier
                     .background(
-                        Color.Black.copy(alpha = 0.6f),
+                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
                         RoundedCornerShape(Dimens.spacing8),
                     )
                     .padding(horizontal = Dimens.paddingMedium, vertical = Dimens.paddingSmall),

@@ -472,7 +472,7 @@ private fun QuickToggleCard(
         ) {
             Icon(
                 imageVector = icon,
-                contentDescription = null,
+                contentDescription = null, // decorative: label below provides TalkBack
                 tint = if (enabled) ElectricBlue else TextSecondary,
                 modifier = Modifier.size(Dimens.iconMedium),
             )
