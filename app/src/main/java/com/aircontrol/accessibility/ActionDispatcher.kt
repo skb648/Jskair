@@ -376,7 +376,7 @@ class ActionDispatcher @Inject constructor(
             Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
             else -> null
         }
-        // NOTE: D-24 (known limitation — pose+direction full matching needs GestureDetector pose pass; tracked in #TODO-D24) — Full pose+direction matching requires passing current pose from GestureDetector.
+        // NOTE: D-24 (known limitation — pose+direction full matching needs GestureDetector pose pass; tracked in #TRACK-D24) — Full pose+direction matching requires passing current pose from GestureDetector.
         //  Currently we check trigger.pose against the last detected pose. If no pose was detected
         //  (customPose == null), we only match on direction for backward compatibility.
         val customAction = customGesturesList.find { gesture ->
