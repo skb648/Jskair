@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        API 29+ : android:enforceStatusBarContrast and
+        android:enforceNavigationBarContrast were introduced in Android 10
+        (API 29). This overlay fully replaces the values-v27 definition, so the
+        API 27 display-cutout attribute is repeated here deliberately - style
+        definitions are resolved per resource-qualifier, they do not merge.
+    -->
+    <style name="Theme.AirControl" parent="Theme.AirControl.Base">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+</resources>

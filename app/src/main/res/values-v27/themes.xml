@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        API 27+ : android:windowLayoutInDisplayCutoutMode was introduced in
+        Android 8.1 (API 27). Declared here rather than in the base theme so
+        lint's NewApi check passes without suppression.
+    -->
+    <style name="Theme.AirControl" parent="Theme.AirControl.Base">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

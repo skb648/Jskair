@@ -1,19 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.AirControl" parent="android:Theme.Material.NoActionBar">
+    <!--
+        Base theme: only attributes available at minSdk (API 26) live here.
+        API-gated attributes are added in values-v27 / values-v29 overlays so
+        that no attribute is ever declared on a platform that cannot honour it.
+    -->
+    <style name="Theme.AirControl.Base" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowBackground">@color/background_navy</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
-        <item name="android:enforceStatusBarContrast">false</item>
-        <item name="android:enforceNavigationBarContrast">false</item>
     </style>
 
-    <style name="Theme.AirControl.Splash" parent="Theme.AirControl">
-        <item name="android:windowSplashScreenBackground">@color/background_navy</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
-        <item name="android:windowSplashScreenAnimationDuration">300</item>
+    <!-- API 26: no display-cutout or bar-contrast enforcement attributes exist. -->
+    <style name="Theme.AirControl" parent="Theme.AirControl.Base" />
+
+    <!--
+        Splash screen uses the AndroidX core-splashscreen attributes (no
+        "android:" prefix). The library backports them to API 21+ and maps them
+        onto the platform attributes on API 31+, so a single declaration is
+        correct on every supported API level. The previous platform-prefixed
+        attributes were silently ignored below API 31, which meant devices on
+        API 26-30 - the majority of the supported range - got no splash icon
+        and no splash background at all.
+    -->
+    <style name="Theme.AirControl.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/background_navy</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimationDuration">300</item>
         <item name="postSplashScreenTheme">@style/Theme.AirControl</item>
     </style>
 </resources>
