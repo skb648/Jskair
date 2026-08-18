@@ -37,11 +37,10 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Run lint
-        run: ./gradlew lintDebug --continue
+        run: ./gradlew --no-daemon --stacktrace lintDebug
 
       - name: Run unit tests
-        continue-on-error: true
-        run: ./gradlew testDebugUnitTest --continue || echo "Unit tests failed but continuing to build APK"
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
 
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
