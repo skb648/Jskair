@@ -16,26 +16,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.ui.navigation.AirControlNavHost
 import com.aircontrol.ui.navigation.AirControlRoute
 import com.aircontrol.ui.theme.AirControlTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -48,13 +48,19 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Keep splash on screen until preferences are loaded
-        val keepSplash = androidx.compose.runtime.mutableStateOf(true)
+        val keepSplash = mutableStateOf(true)
         splashScreen.setKeepOnScreenCondition { keepSplash.value }
+
+        // Never leave the platform splash screen waiting indefinitely for a data-store
+        // emission. The in-app LoadingScreen remains available after this timeout.
+        lifecycleScope.launch {
+            delay(SPLASH_MAX_WAIT_MS)
+            keepSplash.value = false
+        }
 
         setContent {
             AirControlContent(
-                onPreferencesLoaded = { keepSplash.value = false }
+                onPreferencesLoaded = { keepSplash.value = false },
             )
         }
     }
@@ -62,12 +68,13 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AirControlContent(onPreferencesLoaded: () -> Unit) {
         val preferences by settingsRepository.userPreferences.collectAsStateWithLifecycle(
-            initialValue = null
+            initialValue = null,
         )
 
-        // Notify splash screen once loaded
-        if (preferences != null) {
-            onPreferencesLoaded()
+        LaunchedEffect(preferences) {
+            if (preferences != null) {
+                onPreferencesLoaded()
+            }
         }
 
         AirControlTheme {
@@ -89,6 +96,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    companion object {
+        private const val SPLASH_MAX_WAIT_MS = 1500L
+    }
 }
 
 @Preview(showBackground = true)
@@ -101,21 +112,20 @@ private fun LoadingScreen() {
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // App icon placeholder with branded loading
             Box(
                 modifier = Modifier.size(96.dp),
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
                     color = MaterialTheme.colorScheme.primary,
                     strokeWidth = 3.dp,
-                    modifier = Modifier.size(96.dp).progressSemantics().then(Modifier)
+                    modifier = Modifier.size(96.dp).progressSemantics(),
                 )
                 Text(
                     text = "✋",
-                    style = MaterialTheme.typography.headlineLarge
+                    style = MaterialTheme.typography.headlineLarge,
                 )
             }
             Spacer(modifier = Modifier.height(24.dp))
@@ -123,13 +133,13 @@ private fun LoadingScreen() {
                 text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
+                color = MaterialTheme.colorScheme.onBackground,
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = stringResource(R.string.loading),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
