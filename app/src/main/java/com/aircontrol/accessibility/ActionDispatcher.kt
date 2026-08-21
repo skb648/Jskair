@@ -495,7 +495,8 @@ class ActionDispatcher @Inject constructor(
                 dragLockUntilMs = System.currentTimeMillis() + DRAG_GRACE_PERIOD_MS
                 dragGraceFrameCount = 0
                 Timber.v("Pinch START at (%.2f, %.2f)", cursorX, cursorY)
-                true
+                val startAction = gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                startAction != GestureAction.NONE
             }
             PinchPhase.MOVE -> {
                 // Determine action based on hold duration
@@ -534,20 +535,6 @@ class ActionDispatcher @Inject constructor(
 
                 // Custom gesture action takes priority if present
                 var finalAction = customPinchAction ?: effectiveAction
-
-                // F3 Double-pinch: upgrade a quick second tap to DOUBLE_TAP.
-                val now = System.currentTimeMillis()
-                if (finalAction == GestureAction.TAP) {
-                    val isDoubleTap = lastTapTimeMs > 0L &&
-                        (now - lastTapTimeMs) <= DOUBLE_TAP_WINDOW_MS
-                    if (isDoubleTap) {
-                        finalAction = GestureAction.DOUBLE_TAP
-                        // Reset so the next tap starts a fresh single/double cycle.
-                        lastTapTimeMs = 0L
-                    } else {
-                        lastTapTimeMs = now
-                    }
-                }
 
                 // Apply stationary-click gate to discrete click actions (not DRAG).
                 if (currentPreferences.stationaryClickEnabled &&
@@ -641,7 +628,7 @@ class ActionDispatcher @Inject constructor(
         val gesture = GestureDescription.Builder()
             // Two taps with a short gap between them.
             .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
-            .addStroke(GestureDescription.StrokeDescription(path, DOUBLE_TAP_GAP_MS, TAP_DURATION_MS))
+            .addStroke(GestureDescription.StrokeDescription(path, TAP_DURATION_MS + DOUBLE_TAP_GAP_MS, TAP_DURATION_MS))
             .build()
 
         return dispatchGestureWithRetry(gesture, "double_tap")
