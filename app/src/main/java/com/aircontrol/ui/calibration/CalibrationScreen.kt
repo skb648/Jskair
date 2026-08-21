@@ -220,7 +220,7 @@ private fun IntroStep(
         Spacer(modifier = Modifier.height(Dimens.spacing32))
 
         Text(
-            text = "Calibrate Your Hand",
+            text = stringResource(R.string.calibration_intro_title),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -230,7 +230,7 @@ private fun IntroStep(
         Spacer(modifier = Modifier.height(Dimens.spacing12))
 
         Text(
-            text = "We'll measure your hand size and pinch distance to personalize gesture recognition. This takes about 30 seconds.",
+            text = stringResource(R.string.calibration_intro_description),
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             textAlign = TextAlign.Center,
@@ -289,7 +289,7 @@ private fun PalmDetectStep(
                         HandSkeletonPreview()
                         Spacer(modifier = Modifier.height(Dimens.spacing8))
                         Text(
-                            text = "Hand detected!",
+                            text = stringResource(R.string.calibration_hand_detected),
                             style = MaterialTheme.typography.titleSmall,
                             color = SuccessGreen,
                         )
@@ -299,7 +299,7 @@ private fun PalmDetectStep(
                         PulsingPalmOutline()
                         Spacer(modifier = Modifier.height(Dimens.spacing12))
                         Text(
-                            text = "Hold your open palm in front of the camera",
+                            text = stringResource(R.string.calibration_palm_detect),
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary,
                             textAlign = TextAlign.Center,
@@ -324,7 +324,7 @@ private fun PalmDetectStep(
             }
         } else {
             Text(
-                text = "Position your hand about 30cm from the camera",
+                text = stringResource(R.string.calibration_position_hand_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
                 textAlign = TextAlign.Center,
@@ -340,7 +340,7 @@ private fun MeasuringStep(progress: Float) {
         modifier = Modifier.padding(vertical = Dimens.spacing48),
     ) {
         Text(
-            text = "Measuring your hand...",
+            text = stringResource(R.string.calibration_measuring),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -356,12 +356,16 @@ private fun MeasuringStep(progress: Float) {
 
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 
+        val progressCd = stringResource(
+            R.string.calibration_measurement_progress_cd,
+            (progress * 100).toInt(),
+        )
         LinearProgressIndicator(
             progress = { progress },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(8.dp)
-                .semantics { contentDescription = "Measurement progress ${(progress * 100).toInt()}%" },
+                .semantics { contentDescription = progressCd },
             color = ElectricBlue,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
@@ -369,7 +373,7 @@ private fun MeasuringStep(progress: Float) {
         Spacer(modifier = Modifier.height(Dimens.spacing12))
 
         Text(
-            text = "${(progress * 100).toInt()}% complete",
+            text = stringResource(R.string.calibration_progress, (progress * 100).toInt()),
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
         )
@@ -415,7 +419,11 @@ private fun TestGesturesStep(
         Spacer(modifier = Modifier.height(Dimens.spacing32))
 
         // Gesture test cards
-        val gestures = listOf("Open Palm" to "Show an open palm", "Fist" to "Make a fist", "Pinch" to "Pinch thumb and index")
+        val gestures = listOf(
+            stringResource(R.string.calibration_test_open_palm) to stringResource(R.string.calibration_open_palm_instruction),
+            stringResource(R.string.calibration_test_fist) to stringResource(R.string.calibration_fist_instruction),
+            stringResource(R.string.calibration_test_pinch) to stringResource(R.string.calibration_pinch_instruction),
+        )
         gestures.forEachIndexed { index, (name, instruction) ->
             val isCompleted = index < completed
             val isCurrent = index == completed
@@ -442,7 +450,7 @@ private fun TestGesturesStep(
                     if (isCompleted) {
                         Icon(
                             imageVector = Icons.Default.Check,
-                            contentDescription = "Completed",
+                            contentDescription = stringResource(R.string.calibration_completed),
                             tint = SuccessGreen,
                             modifier = Modifier.size(Dimens.iconMedium),
                         )
@@ -491,15 +499,17 @@ private fun TestGesturesStep(
 
         // Simulate gesture recognition (in production, this comes from HandTracker)
         if (BuildConfig.DEBUG && completed < total) {
+            val gestureNames = listOf(
+                stringResource(R.string.calibration_test_open_palm),
+                stringResource(R.string.calibration_test_fist),
+                stringResource(R.string.calibration_test_pinch),
+            )
             FilledTonalButton(
-                onClick = {
-                    val gestureNames = listOf("Open Palm", "Fist", "Pinch")
-                    onSimulateGesture(gestureNames[completed])
-                },
+                onClick = { onSimulateGesture(gestureNames[completed]) },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(Dimens.buttonCornerRadius),
             ) {
-                Text(stringResource(R.string.simulate_prefix, listOf("Open Palm", "Fist", "Pinch")[completed]))
+                Text(stringResource(R.string.simulate_prefix, gestureNames[completed]))
             }
         }
 
@@ -544,7 +554,7 @@ private fun CompleteStep(
             }
             Icon(
                 imageVector = Icons.Default.Check,
-                contentDescription = "Calibration complete",
+                contentDescription = stringResource(R.string.calibration_complete),
                 tint = Color.White,
                 modifier = Modifier.size(40.dp),
             )
@@ -553,7 +563,7 @@ private fun CompleteStep(
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 
         Text(
-            text = "Calibration Complete",
+            text = stringResource(R.string.calibration_complete),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -575,7 +585,7 @@ private fun CompleteStep(
                 ) {
                     Text(stringResource(R.string.calibration_hand_size), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     Text(
-                        "%.0f mm".format(handSizeMm),
+                        text = stringResource(R.string.calibration_mm_format, handSizeMm),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -588,7 +598,7 @@ private fun CompleteStep(
                 ) {
                     Text(stringResource(R.string.calibration_pinch_distance), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     Text(
-                        "%.0f mm".format(pinchDistanceMm),
+                        text = stringResource(R.string.calibration_mm_format, pinchDistanceMm),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -600,7 +610,7 @@ private fun CompleteStep(
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 
         Text(
-            text = "Your personal thresholds have been saved. You can re-run calibration anytime from Settings.",
+            text = stringResource(R.string.calibration_complete_hint),
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             textAlign = TextAlign.Center,

@@ -62,38 +62,14 @@ fun SettingsScreen(
     onNavigateToGazeCalibration: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
-    // Bug: Settings Sliders Resetting Fix — Use collectAsStateWithLifecycle() instead
-    // of collectAsState(). This makes the flow collection lifecycle-aware: it
-    // stops collecting when the Composable leaves the composition (e.g., when the
-    // user navigates away from Settings), preventing unnecessary background
-    // collection and ensuring the StateFlow's WhileSubscribed(5_000) grace period
-    // works correctly.
     val preferences by viewModel.userPreferences.collectAsStateWithLifecycle()
 
-    // Bug: Settings Sliders Resetting Fix — Local slider state must NOT be keyed
-    // on the persisted preference value. Previously, `remember(preferences.sensitivity)`
-    // would re-initialize the slider whenever the repository emitted a new value
-    // (which happens ~immediately after onValueChangeFinished writes to DataStore).
-    // This caused the slider to "snap back" to the persisted value during/after
-    // an active drag, making the UI feel broken.
-    //
-    // The fix: use unkeyed remember { mutableFloatStateOf(...) } so the slider
-    // state persists across recompositions. We initialize from the current
-    // preference value, but we do NOT re-initialize when the preference updates.
-    // The only time the slider should sync back to the persisted value is on
-    // first composition (screen entry) — which the unkeyed remember handles
-    // correctly because it only runs the initializer once.
-    //
-    // A LaunchedEffect syncs the local state if the persisted value changes
-    // from an EXTERNAL source (e.g., another screen, or a reset-to-defaults
-    // action) — but only when the user is NOT actively dragging.
     var sensitivity by remember { mutableFloatStateOf(preferences.sensitivity.toFloat()) }
     var cursorSpeed by remember { mutableFloatStateOf(preferences.cursorSpeed.toFloat()) }
     var holdDuration by remember { mutableFloatStateOf(preferences.holdDuration.toFloat()) }
     var dwellDuration by remember { mutableFloatStateOf(preferences.dwellDurationMs.toFloat()) }
     var cursorGain by remember { mutableFloatStateOf(preferences.cursorGain.toFloat()) }
     var gazeSensitivity by remember { mutableFloatStateOf(preferences.gazeSensitivity.toFloat()) }
-    // Track dragging to avoid overwriting user interaction
     var isDraggingSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingCursorSpeed by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingHoldDuration by remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -101,7 +77,6 @@ fun SettingsScreen(
     var isDraggingCursorGain by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingGazeSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
-    // Sync from external change (e.g., reset) only when not dragging
     LaunchedEffect(preferences.sensitivity) { if (!isDraggingSensitivity) sensitivity = preferences.sensitivity.toFloat() }
     LaunchedEffect(preferences.cursorSpeed) { if (!isDraggingCursorSpeed) cursorSpeed = preferences.cursorSpeed.toFloat() }
     LaunchedEffect(preferences.holdDuration) { if (!isDraggingHoldDuration) holdDuration = preferences.holdDuration.toFloat() }
@@ -148,7 +123,7 @@ fun SettingsScreen(
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_sensitivity),
-                valueLabel = "${sensitivity.toInt()}%",
+                valueLabel = stringResource(R.string.settings_percent_value, sensitivity.toInt()),
                 value = sensitivity,
                 onValueChange = { isDraggingSensitivity = true; sensitivity = it },
                 onValueChangeFinished = { isDraggingSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateSensitivity(sensitivity.toInt()) },
@@ -164,7 +139,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(Dimens.paddingMedium)) {
                     Text(
-                        text = "Hand Preference",
+                        text = stringResource(R.string.settings_hand_preference),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -173,7 +148,7 @@ fun SettingsScreen(
                         options = HandPreference.entries,
                         selectedOption = preferences.handPreference,
                         onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHandPreference(it) },
-                        labelMapper = { it.displayName },
+                        labelMapper = { it.displayName() },
                     )
                 }
             }
@@ -187,7 +162,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(Dimens.paddingMedium)) {
                     Text(
-                        text = "Camera FPS",
+                        text = stringResource(R.string.settings_analysis_fps),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -196,7 +171,7 @@ fun SettingsScreen(
                         options = listOf(15, 24, 30),
                         selectedOption = preferences.analysisFps,
                         onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateAnalysisFps(it) },
-                        labelMapper = { "${it} FPS" },
+                        labelMapper = { stringResource(R.string.settings_analysis_fps_value, it) },
                     )
                 }
             }
@@ -208,7 +183,7 @@ fun SettingsScreen(
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_cursor_speed),
-                valueLabel = "${cursorSpeed.toInt()}%",
+                valueLabel = stringResource(R.string.settings_percent_value, cursorSpeed.toInt()),
                 value = cursorSpeed,
                 onValueChange = { isDraggingCursorSpeed = true; cursorSpeed = it },
                 onValueChangeFinished = { isDraggingCursorSpeed = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorSpeed(cursorSpeed.toInt()) },
@@ -219,7 +194,7 @@ fun SettingsScreen(
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_hold_duration),
-                valueLabel = "${holdDuration.toInt()}ms",
+                valueLabel = stringResource(R.string.settings_duration_ms_value, holdDuration.toInt()),
                 value = holdDuration,
                 onValueChange = { isDraggingHoldDuration = true; holdDuration = it },
                 onValueChangeFinished = { isDraggingHoldDuration = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHoldDuration(holdDuration.toInt()) },
@@ -233,8 +208,8 @@ fun SettingsScreen(
             SectionHeader(title = stringResource(R.string.settings_section_preferences))
 
             SettingSwitchRow(
-                title = "Cursor Mode",
-                subtitle = "Show cursor overlay when tracking",
+                title = stringResource(R.string.settings_cursor_mode),
+                subtitle = stringResource(R.string.settings_cursor_mode_subtitle),
                 checked = preferences.cursorEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorEnabled(it) },
                 icon = Icons.Default.TouchApp,
@@ -243,8 +218,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Haptic Feedback",
-                subtitle = "Vibrate on gesture actions",
+                title = stringResource(R.string.settings_haptic_feedback),
+                subtitle = stringResource(R.string.settings_haptic_subtitle),
                 checked = preferences.hapticFeedback,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateHapticFeedback(it) },
                 icon = Icons.Outlined.Vibration,
@@ -253,8 +228,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Status Pill",
-                subtitle = "Show armed/disarmed indicator",
+                title = stringResource(R.string.settings_status_pill),
+                subtitle = stringResource(R.string.settings_status_pill_subtitle),
                 checked = preferences.statusPillEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStatusPillEnabled(it) },
             )
@@ -262,8 +237,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Battery Saver",
-                subtitle = "Reduce FPS when idle to save battery",
+                title = stringResource(R.string.settings_battery_saver),
+                subtitle = stringResource(R.string.settings_battery_saver_subtitle),
                 checked = preferences.batterySaver,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBatterySaver(it) },
             )
@@ -271,8 +246,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Start on Boot",
-                subtitle = "Auto-start tracking after device restart",
+                title = stringResource(R.string.settings_start_on_boot),
+                subtitle = stringResource(R.string.settings_start_on_boot_subtitle),
                 checked = preferences.startOnBoot,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStartOnBoot(it) },
             )
@@ -283,8 +258,8 @@ fun SettingsScreen(
             SectionHeader(title = stringResource(R.string.settings_section_accessibility))
 
             SettingSwitchRow(
-                title = "Dwell-to-click",
-                subtitle = "Hold the cursor still to auto-click",
+                title = stringResource(R.string.settings_dwell_to_click),
+                subtitle = stringResource(R.string.settings_dwell_to_click_subtitle),
                 checked = preferences.dwellEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateDwellEnabled(it) },
             )
@@ -292,8 +267,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             SettingSliderCard(
-                title = "Dwell Duration",
-                valueLabel = "${dwellDuration.toInt()}ms",
+                title = stringResource(R.string.settings_dwell_duration),
+                valueLabel = stringResource(R.string.settings_duration_ms_value, dwellDuration.toInt()),
                 value = dwellDuration,
                 onValueChange = { isDraggingDwellDuration = true; dwellDuration = it },
                 onValueChangeFinished = { isDraggingDwellDuration = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateDwellDuration(dwellDuration.toInt()) },
@@ -304,8 +279,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Stationary Click",
-                subtitle = "Ignore pinches while the hand is moving",
+                title = stringResource(R.string.settings_stationary_click),
+                subtitle = stringResource(R.string.settings_stationary_click_subtitle),
                 checked = preferences.stationaryClickEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateStationaryClickEnabled(it) },
             )
@@ -313,8 +288,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Palm → Home",
-                subtitle = "Hold an open palm to open Home",
+                title = stringResource(R.string.settings_palm_home),
+                subtitle = stringResource(R.string.settings_palm_home_subtitle),
                 checked = preferences.palmHomeEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updatePalmHomeEnabled(it) },
             )
@@ -322,8 +297,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Sit-back Mode",
-                subtitle = "Reach the whole screen without raising your hand",
+                title = stringResource(R.string.settings_sit_back_mode),
+                subtitle = stringResource(R.string.settings_sit_back_mode_subtitle),
                 checked = preferences.sitBackMode,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateSitBackMode(it) },
             )
@@ -331,8 +306,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Reduced Motion",
-                subtitle = "Disable cursor pulse and glow animations",
+                title = stringResource(R.string.settings_reduced_motion),
+                subtitle = stringResource(R.string.settings_reduced_motion_subtitle),
                 checked = preferences.reducedMotion,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateReducedMotion(it) },
             )
@@ -340,8 +315,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             SettingSliderCard(
-                title = "Cursor Gain",
-                valueLabel = "${cursorGain.toInt()}%",
+                title = stringResource(R.string.settings_cursor_gain),
+                valueLabel = stringResource(R.string.settings_percent_value, cursorGain.toInt()),
                 value = cursorGain,
                 onValueChange = { isDraggingCursorGain = true; cursorGain = it },
                 onValueChangeFinished = { isDraggingCursorGain = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorGain(cursorGain.toInt()) },
@@ -354,8 +329,8 @@ fun SettingsScreen(
             SectionHeader(title = stringResource(R.string.settings_section_eye_tracking))
 
             SettingSwitchRow(
-                title = "Eye is Mouse",
-                subtitle = "Cursor follows your gaze; pinch to click",
+                title = stringResource(R.string.settings_eye_is_mouse),
+                subtitle = stringResource(R.string.settings_eye_is_mouse_subtitle),
                 checked = preferences.eyeTrackingEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateEyeTrackingEnabled(it) },
             )
@@ -364,7 +339,7 @@ fun SettingsScreen(
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_gaze_sensitivity),
-                valueLabel = "${gazeSensitivity.toInt()}%",
+                valueLabel = stringResource(R.string.settings_percent_value, gazeSensitivity.toInt()),
                 value = gazeSensitivity,
                 onValueChange = { isDraggingGazeSensitivity = true; gazeSensitivity = it },
                 onValueChangeFinished = { isDraggingGazeSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
@@ -374,8 +349,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Invert Horizontal Gaze",
-                subtitle = "Flip left/right if gaze direction feels reversed",
+                title = stringResource(R.string.settings_invert_gaze),
+                subtitle = stringResource(R.string.settings_invert_gaze_subtitle),
                 checked = preferences.gazeInvertX,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeInvertX(it) },
             )
@@ -383,8 +358,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
-                title = "Blink to Click",
-                subtitle = "Blink (300–800ms) to click where you are looking",
+                title = stringResource(R.string.settings_blink_click),
+                subtitle = stringResource(R.string.settings_blink_click_subtitle),
                 checked = preferences.blinkClickEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBlinkClickEnabled(it) },
             )
@@ -443,7 +418,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            text = "Version",
+                            text = stringResource(R.string.settings_version),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -468,7 +443,7 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.padding(Dimens.spacing8))
                         Text(
-                            text = "All processing happens on-device. No camera data is recorded, transmitted, or stored. AirControl never requires network access.",
+                            text = stringResource(R.string.settings_privacy_note),
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                         )
@@ -488,14 +463,14 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.padding(Dimens.spacing12)) {
                             Text(
-                                text = "Open Source Licenses",
+                                text = stringResource(R.string.settings_licenses),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Spacer(modifier = Modifier.height(Dimens.spacing4))
                             Text(
-                                text = "This app uses MediaPipe, CameraX, Hilt, Compose, Kotlin Coroutines, and other open-source libraries.",
+                                text = stringResource(R.string.settings_licenses_detail),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary,
                             )
@@ -518,4 +493,11 @@ private fun SectionHeader(title: String) {
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(bottom = Dimens.spacing8),
     )
+}
+
+@Composable
+private fun HandPreference.displayName(): String = when (this) {
+    HandPreference.LEFT -> stringResource(R.string.settings_hand_left)
+    HandPreference.RIGHT -> stringResource(R.string.settings_hand_right)
+    HandPreference.ANY -> stringResource(R.string.settings_hand_any)
 }

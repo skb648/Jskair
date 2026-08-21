@@ -51,10 +51,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aircontrol.accessibility.GestureAction
+import com.aircontrol.accessibility.displayNameRes
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
 import com.aircontrol.data.model.CustomGestureTrigger
+import com.aircontrol.data.model.CustomGestureTrigger as Trigger
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,7 +74,7 @@ fun CustomGestureScreen(
                 title = { Text(stringResource(R.string.custom_gestures_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.custom_gestures_back_cd))
                     }
                 },
                 actions = {
@@ -80,7 +82,7 @@ fun CustomGestureScreen(
                         viewModel.resetCreator()
                         showCreator = true
                     }) {
-                        Icon(Icons.Default.Add, contentDescription = "Add gesture")
+                        Icon(Icons.Default.Add, contentDescription = stringResource(R.string.custom_gestures_add_cd))
                     }
                 },
             )
@@ -120,12 +122,12 @@ fun CustomGestureScreen(
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                "No custom gestures yet",
+                                stringResource(R.string.custom_gestures_empty_title),
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                "Tap + to create a custom gesture",
+                                stringResource(R.string.custom_gestures_empty_subtitle),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -160,12 +162,13 @@ private fun CustomGestureItem(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val enabledLabel = stringResource(if (gesture.isEnabled) R.string.custom_gestures_enabled else R.string.custom_gestures_disabled)
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .semantics {
-                contentDescription = "Gesture: ${gesture.name}, ${if (gesture.isEnabled) "enabled" else "disabled"}"
+                contentDescription = stringResource(R.string.custom_gestures_item_cd, gesture.name, enabledLabel)
             },
     ) {
         Row(
@@ -182,7 +185,9 @@ private fun CustomGestureItem(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = formatTriggerDisplay(gesture.triggerPose) + " \u2192 " + gesture.action.displayName(),
+                    text = formatTriggerDisplay(gesture.triggerPose) +
+                        stringResource(R.string.custom_gestures_trigger_arrow) +
+                        stringResource(gesture.action.displayNameRes()),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -193,10 +198,10 @@ private fun CustomGestureItem(
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
             IconButton(onClick = onEdit) {
-                Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.custom_gestures_edit_cd), modifier = Modifier.size(18.dp))
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete")
+                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.custom_gestures_delete_cd))
             }
         }
     }
@@ -223,7 +228,7 @@ private fun CustomGestureCreatorPanel(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            if (state.isEditing) "Edit Gesture" else "Create Gesture",
+            stringResource(if (state.isEditing) R.string.custom_gestures_edit_title else R.string.custom_gestures_create_title),
             style = MaterialTheme.typography.titleLarge,
         )
 
@@ -253,7 +258,7 @@ private fun CustomGestureCreatorPanel(
                     selected = state.selectedPose == pose,
                     onClick = { onPoseChange(pose) },
                 )
-                Text(pose.displayName(), modifier = Modifier.padding(start = 8.dp))
+                Text(stringResource(pose.displayNameRes()), modifier = Modifier.padding(start = 8.dp))
             }
         }
 
@@ -267,7 +272,7 @@ private fun CustomGestureCreatorPanel(
                     selected = state.selectedDirection == direction,
                     onClick = { onDirectionChange(direction) },
                 )
-                Text(direction.displayName(), modifier = Modifier.padding(start = 8.dp))
+                Text(stringResource(direction.displayNameRes()), modifier = Modifier.padding(start = 8.dp))
             }
         }
 
@@ -279,7 +284,7 @@ private fun CustomGestureCreatorPanel(
             onExpandedChange = { expanded = !expanded },
         ) {
             OutlinedTextField(
-                value = state.selectedAction.displayName(),
+                value = stringResource(state.selectedAction.displayNameRes()),
                 onValueChange = {},
                 readOnly = true,
                 trailingIcon = {
@@ -293,7 +298,7 @@ private fun CustomGestureCreatorPanel(
             ) {
                 availableActions.forEach { action ->
                     DropdownMenuItem(
-                        text = { Text(action.displayName()) },
+                        text = { Text(stringResource(action.displayNameRes())) },
                         onClick = {
                             onActionChange(action)
                             expanded = false
@@ -317,70 +322,29 @@ private fun CustomGestureCreatorPanel(
                 onClick = onSave,
                 enabled = state.isValid,
                 modifier = Modifier.weight(1f),
-            ) { Text(if (state.isEditing) "Update" else "Create") }
+            ) { Text(stringResource(if (state.isEditing) R.string.custom_gestures_update_button else R.string.custom_gestures_create_button)) }
         }
     }
 }
 
 /** Formats the trigger for display in the gesture list. */
-private fun formatTriggerDisplay(trigger: CustomGestureTrigger): String {
+@Composable
+private fun formatTriggerDisplay(trigger: Trigger): String {
     return when (trigger) {
-        is CustomGestureTrigger.PoseWithDirection -> {
+        is Trigger.PoseWithDirection -> {
             if (trigger.direction == CustomGestureDirection.NONE) {
-                trigger.pose.displayName()
+                stringResource(trigger.pose.displayNameRes())
             } else {
-                trigger.pose.displayName() + " + " + trigger.direction.displayName()
+                stringResource(trigger.pose.displayNameRes()) +
+                    stringResource(R.string.custom_gestures_trigger_plus) +
+                    stringResource(trigger.direction.displayNameRes())
             }
         }
-        is CustomGestureTrigger.FingerCount -> {
-            trigger.extendedFingers.toString() + " fingers"
+        is Trigger.FingerCount -> {
+            stringResource(R.string.custom_gestures_fingers_count, trigger.extendedFingers)
         }
-        is CustomGestureTrigger.LandmarkTemplateTrigger -> {
-            // Bug: Custom Gestures Not Triggering Fix — Display the template name
-            // for landmark-template-based custom gestures.
-            "Template: " + trigger.template.name
+        is Trigger.LandmarkTemplateTrigger -> {
+            stringResource(R.string.custom_gestures_template_prefix, trigger.template.name)
         }
     }
-}
-
-private fun CustomGesturePose.displayName(): String = when (this) {
-    CustomGesturePose.OPEN_PALM -> "Open Palm"
-    CustomGesturePose.FIST -> "Fist"
-    CustomGesturePose.PINCH -> "Pinch"
-    CustomGesturePose.POINTING -> "Pointing"
-    CustomGesturePose.VICTORY -> "Victory (Peace)"
-    CustomGesturePose.THUMB_UP -> "Thumb Up"
-    CustomGesturePose.THUMB_DOWN -> "Thumb Down"
-    CustomGesturePose.THREE_FINGERS -> "Three Fingers"
-    CustomGesturePose.FOUR_FINGERS -> "Four Fingers"
-}
-
-private fun CustomGestureDirection.displayName(): String = when (this) {
-    CustomGestureDirection.NONE -> "No Direction"
-    CustomGestureDirection.LEFT -> "Swipe Left"
-    CustomGestureDirection.RIGHT -> "Swipe Right"
-    CustomGestureDirection.UP -> "Swipe Up"
-    CustomGestureDirection.DOWN -> "Swipe Down"
-}
-
-private fun GestureAction.displayName(): String = when (this) {
-    GestureAction.NONE -> "None"
-    GestureAction.SCROLL_UP -> "Scroll Up"
-    GestureAction.SCROLL_DOWN -> "Scroll Down"
-    GestureAction.SCROLL_LEFT -> "Scroll Left"
-    GestureAction.SCROLL_RIGHT -> "Scroll Right"
-    GestureAction.BACK -> "Back"
-    GestureAction.HOME -> "Home"
-    GestureAction.RECENTS -> "Recents"
-    GestureAction.NOTIFICATIONS -> "Notifications"
-    GestureAction.QUICK_SETTINGS -> "Quick Settings"
-    GestureAction.VOLUME_UP -> "Volume Up"
-    GestureAction.VOLUME_DOWN -> "Volume Down"
-    GestureAction.MEDIA_PLAY_PAUSE -> "Play/Pause"
-    GestureAction.SCREENSHOT -> "Screenshot"
-    GestureAction.LOCK_SCREEN -> "Lock Screen"
-    GestureAction.TAP -> "Tap"
-    GestureAction.DOUBLE_TAP -> "Double Tap"
-    GestureAction.LONG_PRESS -> "Long Press"
-    GestureAction.DRAG -> "Drag"
 }

@@ -14,7 +14,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.aircontrol.MainActivity
 import com.aircontrol.R
-import com.aircontrol.camera.CameraService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,9 +28,15 @@ import javax.inject.Inject
 /**
  * Receiver for BOOT_COMPLETED.
  *
- * Android 14+ restricts starting while-in-use foreground services, including
- * camera services, directly from background boot broadcasts. AirControl avoids
- * starting the camera here and posts a user-visible resume notification instead.
+ * Android 12+ forbids starting a foreground service (camera) from the
+ * background. Instead of starting [com.aircontrol.camera.CameraService]
+ * directly (fix #16: this threw ForegroundServiceStartNotAllowedException),
+ * we post a notification that opens MainActivity / dispatches through the
+ * activity (which is allowed to start FGS from the foreground).
+ *
+ * Fix #17: receiver is NOT direct-boot-aware and does NOT listen for
+ * LOCKED_BOOT_COMPLETED, so it will never run before credential unlock and
+ * can safely touch credential-encrypted DataStore.
  */
 @AndroidEntryPoint
 class BootCompletedReceiver : BroadcastReceiver() {
@@ -46,7 +51,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
         val pendingResult = goAsync()
-        Timber.i("Boot completed received, checking if resume notification is required")
+        Timber.i("Boot completed received")
 
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -55,25 +60,26 @@ class BootCompletedReceiver : BroadcastReceiver() {
                 withTimeout(8_000) {
                     val prefs = settingsRepository.userPreferences.first()
 
-                if (!prefs.startOnBoot || !prefs.gesturesEnabled) {
-                    Timber.d("Boot resume skipped: startOnBoot=%s gesturesEnabled=%s", prefs.startOnBoot, prefs.gesturesEnabled)
-                    return@withTimeout
-                }
+                    if (!prefs.startOnBoot || !prefs.gesturesEnabled) {
+                        Timber.d("Boot resume skipped: startOnBoot=%s gesturesEnabled=%s",
+                            prefs.startOnBoot, prefs.gesturesEnabled)
+                        return@withTimeout
+                    }
 
-                permissionsManager.refreshAllPermissions()
-                val permStates = permissionsManager.permissionStates.first()
+                    permissionsManager.refreshAllPermissions()
+                    val permStates = permissionsManager.permissionStates.first()
 
-                if (!permStates.allGranted) {
-                    Timber.w(
-                        "Cannot offer boot resume: missing permissions camera=%s a11y=%s overlay=%s",
-                        permStates.cameraGranted,
-                        permStates.accessibilityGranted,
-                        permStates.overlayGranted,
-                    )
-                    return@withTimeout
-                }
+                    if (!permStates.allGranted) {
+                        Timber.w(
+                            "Cannot offer boot resume: missing permissions camera=%s a11y=%s notif=%s",
+                            permStates.cameraGranted,
+                            permStates.accessibilityGranted,
+                            permStates.notificationsGranted,
+                        )
+                        return@withTimeout
+                    }
 
-                postResumeNotification(context)
+                    postResumeNotification(context)
                 }
             } finally {
                 pendingResult.finish()
@@ -84,44 +90,43 @@ class BootCompletedReceiver : BroadcastReceiver() {
 
     private fun postResumeNotification(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
         ) {
             Timber.w("Cannot post boot resume notification: POST_NOTIFICATIONS denied")
             return
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        // Use a DEDICATED channel for boot-resume, not CameraService.CHANNEL_ID.
-        // CameraService creates its channel at IMPORTANCE_LOW; Android never lowers
-        // an existing channel's importance, so reusing that channel would have made
-        // this resume notification silently non-audible.
-        if (manager.getNotificationChannel(BOOT_RESUME_CHANNEL_ID) == null) {
+        // The boot-resume channel is created up-front by AirControlApp; if it's
+        // missing for some reason (data cleared / crash), create it here lazily.
+        if (manager.getNotificationChannel(com.aircontrol.AirControlApp.BOOT_RESUME_CHANNEL_ID) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(
-                    BOOT_RESUME_CHANNEL_ID,
+                    com.aircontrol.AirControlApp.BOOT_RESUME_CHANNEL_ID,
                     context.getString(R.string.notification_channel_name),
-                    // H-02 Fix: Use DEFAULT importance instead of LOW for boot recovery
-                    // Users who enabled "Start on Boot" expect to be notified audibly
-                    // that they need to open the app to resume tracking.
                     NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply {
                     description = context.getString(R.string.notification_channel_description)
                     setShowBadge(false)
-                    // Enable vibration and sound for boot recovery notification
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 300, 200, 300)
                 },
             )
         }
 
-        // H-02 Fix: Add direct "Resume Tracking" action button
-        val resumeIntent = PendingIntent.getService(
+        // Fix #16: instead of PendingIntent.getService (which would throw on
+        // Android 12+ for a camera FGS started from the background), open
+        // MainActivity which is in the foreground and can start the service.
+        val resumeIntent = Intent(context, MainActivity::class.java).apply {
+            action = MainActivity.ACTION_RESUME_TRACKING
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val resumePendingIntent = PendingIntent.getActivity(
             context,
             BOOT_RESUME_ACTION_REQUEST_CODE,
-            Intent(context, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
-            },
+            resumeIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
@@ -134,8 +139,7 @@ class BootCompletedReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        // H-02 Fix: Improved notification with action button and better UX
-        val notification = NotificationCompat.Builder(context, BOOT_RESUME_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, com.aircontrol.AirControlApp.BOOT_RESUME_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_tracking_notification)
             .setContentTitle(context.getString(R.string.boot_resume_notification_title))
             .setContentText(context.getString(R.string.boot_resume_notification_text))
@@ -147,24 +151,19 @@ class BootCompletedReceiver : BroadcastReceiver() {
             .addAction(
                 R.drawable.ic_tracking_notification,
                 context.getString(R.string.boot_resume_action_button),
-                resumeIntent,
+                resumePendingIntent,
             )
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
 
         NotificationManagerCompat.from(context).notify(BOOT_RESUME_NOTIFICATION_ID, notification)
-        Timber.i("Posted boot resume notification with action button")
+        Timber.i("Posted boot resume notification")
     }
 
     companion object {
         private const val BOOT_RESUME_NOTIFICATION_ID = 1002
         private const val BOOT_RESUME_REQUEST_CODE = 2002
         private const val BOOT_RESUME_ACTION_REQUEST_CODE = 2003
-        // Dedicated channel (see postResumeNotification) — separate from the
-        // camera foreground-service channel so the resume notification can be
-        // audible (IMPORTANCE_DEFAULT) without conflicting with the LOW-importance
-        // tracking channel.
-        private const val BOOT_RESUME_CHANNEL_ID = "aircontrol_boot_resume"
     }
 }

@@ -206,9 +206,9 @@ fun HomeScreen(
                         },
                         size = 120.dp,
                         contentDescription = when (serviceState) {
-                            ServiceState.ACTIVE -> "Gestures active, tap to disable"
-                            ServiceState.PAUSED -> "Gestures paused, tap to resume"
-                            ServiceState.OFF -> "Gestures off, tap to enable"
+                            ServiceState.ACTIVE -> stringResource(R.string.home_power_active_cd)
+                            ServiceState.PAUSED -> stringResource(R.string.home_power_paused_cd)
+                            ServiceState.OFF -> stringResource(R.string.home_power_off_cd)
                         },
                     )
 

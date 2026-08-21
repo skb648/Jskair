@@ -4,6 +4,7 @@ import com.aircontrol.accessibility.ActionDispatcher
 import com.aircontrol.control.CursorController
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gestures.GestureDetector
+import com.aircontrol.service.CameraServiceManager
 import com.aircontrol.tracking.FaceTracker
 import com.aircontrol.tracking.HandTracker
 import dagger.hilt.EntryPoint
@@ -26,6 +27,7 @@ interface AccessibilityServiceEntryPoint {
     fun actionDispatcher(): ActionDispatcher
     fun settingsRepository(): SettingsRepository
     fun cursorController(): CursorController
+    fun cameraServiceManager(): CameraServiceManager
 
     companion object {
         fun getFromApplication(application: android.app.Application): AccessibilityServiceEntryPoint {

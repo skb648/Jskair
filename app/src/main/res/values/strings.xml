@@ -163,6 +163,16 @@
     <string name="calibration_simulate_complete">Simulate Complete</string>
     <string name="calibration_hand_size">Hand Size</string>
     <string name="calibration_pinch_distance">Pinch Distance</string>
+    <string name="calibration_position_hand_hint">Position your hand about 30cm from the camera</string>
+    <string name="calibration_open_palm">Open Palm</string>
+    <string name="calibration_fist">Fist</string>
+    <string name="calibration_pinch">Pinch</string>
+    <string name="calibration_open_palm_instruction">Show an open palm</string>
+    <string name="calibration_fist_instruction">Make a fist</string>
+    <string name="calibration_pinch_instruction">Pinch thumb and index</string>
+    <string name="calibration_completed">Completed</string>
+    <string name="calibration_mm_format">%.0f mm</string>
+    <string name="calibration_measurement_progress">Measurement progress %1$d%%</string>
 
     <!-- Gaze calibration -->
     <string name="calibration_error_hint">Could not detect your face. Ensure your face is well-lit and eye tracking is enabled, then retry.</string>
@@ -187,7 +197,7 @@
     <string name="notification_action_stop">Stop</string>
     <string name="notification_text_thermal">Performance reduced due to heat</string>
     <string name="notification_text_thermal_critical">Paused — device is overheating</string>
-    <string name="thermal_severe_notification">AirControl performance reduced: Device is overheating. Frame rate lowered to 5 FPS; tracking stays active.</string>
+    <string name="thermal_severe_notification">AirControl performance reduced: Device is overheating. Frame rate lowered; tracking stays active.</string>
     <string name="boot_resume_notification_title">AirControl tracking paused</string>
     <string name="boot_resume_notification_text">Tap to resume gesture tracking</string>
     <string name="boot_resume_notification_text_extended">AirControl was tracking before you restarted your device. Android requires you to confirm before camera tracking can resume. Tap the notification or the Resume button below to start tracking immediately.</string>
@@ -214,5 +224,116 @@
     <string name="content_description_hand_presence">Hand presence indicator</string>
 
     <!-- Accessibility Service -->
+    <string name="accessibility_service_name">AirControl</string>
     <string name="accessibility_service_description">AirControl uses accessibility to perform gestures on your behalf based on hand tracking. This allows scrolling, navigation, and cursor control without touching the screen. No window content is read.</string>
+
+    <!-- Error toasts -->
+    <string name="injection_failed_toast">AirControl failed to start gesture tracking. Please disable and re-enable the accessibility service.</string>
+    <string name="show_open_palm_hint">Show an open palm to activate gestures</string>
+
+    <!-- Settings - additional toggles & labels -->
+    <string name="settings_cursor_mode">Cursor Mode</string>
+    <string name="settings_cursor_mode_subtitle">Show cursor overlay when tracking</string>
+    <string name="settings_haptic_subtitle">Vibrate on gesture actions</string>
+    <string name="settings_status_pill_subtitle">Show armed/disarmed indicator</string>
+    <string name="settings_battery_saver_subtitle">Reduce FPS when idle to save battery</string>
+    <string name="settings_start_on_boot_subtitle">Auto-start tracking after device restart</string>
+    <string name="settings_dwell_to_click">Dwell-to-click</string>
+    <string name="settings_dwell_to_click_subtitle">Hold the cursor still to auto-click</string>
+    <string name="settings_dwell_duration">Dwell Duration</string>
+    <string name="settings_stationary_click">Stationary Click</string>
+    <string name="settings_stationary_click_subtitle">Ignore pinches while the hand is moving</string>
+    <string name="settings_palm_home">Palm → Home</string>
+    <string name="settings_palm_home_subtitle">Hold an open palm to open Home</string>
+    <string name="settings_sit_back_mode">Sit-back Mode</string>
+    <string name="settings_sit_back_mode_subtitle">Reach the whole screen without raising your hand</string>
+    <string name="settings_reduced_motion">Reduced Motion</string>
+    <string name="settings_reduced_motion_subtitle">Disable cursor pulse and glow animations</string>
+    <string name="settings_cursor_gain">Cursor Gain</string>
+    <string name="settings_eye_is_mouse">Eye is Mouse</string>
+    <string name="settings_eye_is_mouse_subtitle">Cursor follows your gaze; pinch to click</string>
+    <string name="settings_invert_gaze">Invert Horizontal Gaze</string>
+    <string name="settings_invert_gaze_subtitle">Flip left/right if gaze direction feels reversed</string>
+    <string name="settings_blink_click">Blink to Click</string>
+    <string name="settings_blink_click_subtitle">Blink (300–800ms) to click where you are looking</string>
+    <string name="settings_percent_value">%d%%</string>
+    <string name="settings_duration_ms_value">%dms</string>
+
+    <!-- Home - power button content descriptions -->
+    <string name="home_power_active_cd">Gestures active, tap to disable</string>
+    <string name="home_power_paused_cd">Gestures paused, tap to resume</string>
+    <string name="home_power_off_cd">Gestures off, tap to enable</string>
+
+    <!-- Custom gestures screen -->
+    <string name="custom_gestures_empty_title">No custom gestures yet</string>
+    <string name="custom_gestures_empty_subtitle">Tap + to create a custom gesture</string>
+    <string name="custom_gestures_edit_title">Edit Gesture</string>
+    <string name="custom_gestures_create_title">Create Gesture</string>
+    <string name="custom_gestures_update_button">Update</string>
+    <string name="custom_gestures_create_button">Create</string>
+    <string name="custom_gestures_item_cd">Gesture: %1$s, %2$s</string>
+    <string name="custom_gestures_enabled">enabled</string>
+    <string name="custom_gestures_disabled">disabled</string>
+    <string name="custom_gestures_edit_cd">Edit</string>
+    <string name="custom_gestures_delete_cd">Delete</string>
+    <string name="custom_gestures_back_cd">Back</string>
+    <string name="custom_gestures_add_cd">Add gesture</string>
+    <string name="custom_gestures_trigger_arrow"> → </string>
+    <string name="custom_gestures_trigger_plus"> + </string>
+    <string name="custom_gestures_fingers_count">%d fingers</string>
+    <string name="custom_gestures_template_prefix">Template: %s</string>
+
+    <!-- Custom gesture pose names -->
+    <string name="pose_open_palm">Open Palm</string>
+    <string name="pose_fist">Fist</string>
+    <string name="pose_pinch">Pinch</string>
+    <string name="pose_pointing">Pointing</string>
+    <string name="pose_victory">Victory (Peace)</string>
+    <string name="pose_thumb_up">Thumb Up</string>
+    <string name="pose_thumb_down">Thumb Down</string>
+    <string name="pose_three_fingers">Three Fingers</string>
+    <string name="pose_four_fingers">Four Fingers</string>
+
+    <!-- Custom gesture direction names -->
+    <string name="direction_none">No Direction</string>
+    <string name="direction_left">Swipe Left</string>
+    <string name="direction_right">Swipe Right</string>
+    <string name="direction_up">Swipe Up</string>
+    <string name="direction_down">Swipe Down</string>
+
+    <!-- Gesture action display names -->
+    <string name="action_none">None</string>
+    <string name="action_scroll_up">Scroll Up</string>
+    <string name="action_scroll_down">Scroll Down</string>
+    <string name="action_scroll_left">Scroll Left</string>
+    <string name="action_scroll_right">Scroll Right</string>
+    <string name="action_back">Back</string>
+    <string name="action_home">Home</string>
+    <string name="action_recents">Recents</string>
+    <string name="action_notifications">Notifications</string>
+    <string name="action_quick_settings">Quick Settings</string>
+    <string name="action_volume_up">Volume Up</string>
+    <string name="action_volume_down">Volume Down</string>
+    <string name="action_media_play_pause">Play/Pause</string>
+    <string name="action_screenshot">Screenshot</string>
+    <string name="action_lock_screen">Lock Screen</string>
+    <string name="action_tap">Tap</string>
+    <string name="action_double_tap">Double Tap</string>
+    <string name="action_long_press">Long Press</string>
+    <string name="action_drag">Drag</string>
+
+    <!-- Gesture map -->
+    <string name="gesture_map_dismiss_cd">Dismiss gesture options</string>
+    <string name="gesture_map_select_action_prompt">Select Action</string>
+    <string name="gesture_map_selected_cd">Selected</string>
+
+    <!-- Debug -->
+    <string name="debug_handedness_left">L</string>
+    <string name="debug_handedness_right">R</string>
+    <string name="debug_handedness_unknown">-</string>
+    <string name="debug_no_hand_detected">No hand detected</string>
+    <string name="debug_skeleton_cd_detected">Hand skeleton with %1$d landmarks, confidence %2$d percent</string>
+
+    <!-- Calibration measurement progress content description -->
+    <string name="calibration_measurement_progress_cd">Measurement progress %1$d%%</string>
 </resources>

@@ -37,7 +37,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.aircontrol.R
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.theme.ElectricBlue
 import com.aircontrol.ui.theme.ErrorRed
@@ -266,7 +268,7 @@ fun PermissionWarningCard(
                         contentColor = ErrorRed,
                     ),
                 ) {
-                    Text(text = "Fix Now")
+                    Text(text = stringResource(R.string.home_warning_fix_button))
                 }
                 androidx.compose.material3.OutlinedButton(
                     onClick = onReRunOnboarding,
@@ -275,7 +277,7 @@ fun PermissionWarningCard(
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
                 ) {
-                    Text(text = "Re-run Setup")
+                    Text(text = stringResource(R.string.home_warning_rerun_button))
                 }
             }
         }

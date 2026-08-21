@@ -17,33 +17,40 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import timber.log.Timber
+import javax.inject.Inject
 import javax.inject.Singleton
 
 data class PermissionStates(
     val cameraGranted: Boolean = false,
     val accessibilityGranted: Boolean = false,
-    // Always true on minSdk 26+ because overlays use TYPE_ACCESSIBILITY_OVERLAY
-    // which does not require SYSTEM_ALERT_WINDOW when accessibility service is enabled.
+    // TYPE_ACCESSIBILITY_OVERLAY does not require SYSTEM_ALERT_WINDOW when a11y is on.
     val overlayGranted: Boolean = true,
-    val notificationsGranted: Boolean = true,
+    // Fix #18: notification permission is required on API 33+ so the foreground
+    // notification and pause/resume controls are visible.
+    val notificationsGranted: Boolean = false,
 ) {
-    val allGranted: Boolean get() = cameraGranted && accessibilityGranted
+    // Fix #18: allGranted must include notifications on T+.
+    val allGranted: Boolean
+        get() = cameraGranted && accessibilityGranted &&
+            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU || notificationsGranted)
 
     val missingPermissions: List<MissingPermission>
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
             if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
-            // Overlay intentionally excluded - uses accessibility overlay, not SYSTEM_ALERT_WINDOW
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                !notificationsGranted) add(MissingPermission.NOTIFICATIONS)
         }
 }
 
 enum class MissingPermission {
     CAMERA,
     ACCESSIBILITY,
+    NOTIFICATIONS,
 }
 
 @Singleton
-class PermissionsManager @javax.inject.Inject constructor(
+class PermissionsManager @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -54,7 +61,6 @@ class PermissionsManager @javax.inject.Inject constructor(
     private val _accessibilityGranted = MutableStateFlow(checkAccessibilityPermission())
     val accessibilityGranted: StateFlow<Boolean> = _accessibilityGranted
 
-    // Kept for binary compat; not used in allGranted, always true for TYPE_ACCESSIBILITY_OVERLAY
     private val _overlayGranted = MutableStateFlow(true)
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
@@ -86,7 +92,6 @@ class PermissionsManager @javax.inject.Inject constructor(
     fun refreshAllPermissions() {
         _cameraGranted.value = checkCameraPermission()
         _accessibilityGranted.value = checkAccessibilityPermission()
-        _overlayGranted.value = true
         _notificationsGranted.value = checkNotificationPermission()
         Timber.d(
             "Permissions refreshed: camera=%s, accessibility=%s, notifications=%s",
@@ -96,67 +101,65 @@ class PermissionsManager @javax.inject.Inject constructor(
         )
     }
 
-    fun requestCameraPermission() {
-        Timber.d("Camera permission request initiated")
+    /**
+     * Returns an Intent that the caller can use to request the camera permission
+     * at runtime. Callers are responsible for launching this from an Activity.
+     * (Fix #37: previously this was a log-only no-op.)
+     */
+    fun requestCameraPermissionIntent(): Intent {
+        return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
 
     fun updateCameraGranted(granted: Boolean) {
         _cameraGranted.value = granted
-        Timber.d("Camera permission updated: %s", granted)
     }
 
     fun requestAccessibilityPermission(): Intent {
-        Timber.d("Opening accessibility settings")
         return Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
 
-    fun requestOverlayPermission(): Intent {
-        // For TYPE_ACCESSIBILITY_OVERLAY this is not needed, but keep for fallback
-        Timber.d("Opening overlay settings")
-        return Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:${context.packageName}"),
-        ).apply {
+    fun requestNotificationPermissionIntent(): Intent? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return null
+        return Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
 
     fun openAppSettings(): Intent {
-        Timber.d("Opening app settings")
         return Intent(
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
             Uri.parse("package:${context.packageName}"),
-        ).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
     }
 
     private fun checkCameraPermission(): Boolean {
-        val result = ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
-        val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         Timber.v("Camera permission check: %s", granted)
         return granted
     }
 
     private fun checkAccessibilityPermission(): Boolean {
-        val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
-            as? AccessibilityManager
-        // Use FEEDBACK_GENERIC to match our service's feedbackType
-        val enabled = accessibilityManager?.getEnabledAccessibilityServiceList(
+        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+        val enabled = am?.getEnabledAccessibilityServiceList(
             AccessibilityServiceInfo.FEEDBACK_GENERIC,
-        )?.any { serviceInfo ->
-            serviceInfo.resolveInfo.serviceInfo.packageName == context.packageName
-        } ?: false
+        )?.any { it.resolveInfo.serviceInfo.packageName == context.packageName } ?: false
         Timber.v("Accessibility permission check: %s", enabled)
         return enabled
     }
 
     private fun checkNotificationPermission(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return true
-        val result = ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
-        val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val granted = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         Timber.v("Notification permission check: %s", granted)
         return granted
     }
