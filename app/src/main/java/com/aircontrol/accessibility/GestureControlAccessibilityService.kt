@@ -1008,10 +1008,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun updateScreenMetrics() {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // AccessibilityService.dispatchGesture uses raw display coordinates.
+            // Do not subtract system-bar insets here: doing so shifts every injected
+            // tap/scroll upward and compresses the usable coordinate space.
             val metrics = windowManager.currentWindowMetrics
-            val insets = metrics.windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars())
-            screenWidth = metrics.bounds.width() - insets.left - insets.right
-            screenHeight = metrics.bounds.height() - insets.top - insets.bottom
+            screenWidth = metrics.bounds.width()
+            screenHeight = metrics.bounds.height()
         } else {
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
