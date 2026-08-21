@@ -6,16 +6,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Configuration-cache compatible versionCode.
-// Prefer an explicit VERSION_CODE in release/CI; otherwise derive a monotonic
-// value from git history when available. A deterministic fallback keeps local
-// builds functional when git metadata is unavailable.
-val gitCommitCount = providers.exec {
-    commandLine("git", "rev-list", "--count", "HEAD")
-}.standardOutput.asText.map { it.trim() }.orElse("1").get().toIntOrNull() ?: 1
-
+// Fix #77/#78: deterministic version code that does not depend on git.
+// Uses a hardcoded base plus CI-provided VERSION_CODE when present.
+// Do NOT use `git rev-list --count HEAD`: it is non-monotonic across branches
+// and breaks in source-zip builds where .git is absent.
+val versionCodeBase = 1
 val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
-val resolvedVersionCode = versionCodeFromEnv ?: gitCommitCount
+val resolvedVersionCode = versionCodeFromEnv ?: versionCodeBase
 
 android {
     namespace = "com.aircontrol"
@@ -27,9 +24,12 @@ android {
             if (ksFile.exists()) {
                 storeFile = ksFile
             }
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-            keyAlias = System.getenv("KEY_ALIAS") ?: "release"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            val ksPass = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            val keyPass = System.getenv("KEY_PASSWORD") ?: ""
+            val keyAlias = System.getenv("KEY_ALIAS") ?: "release"
+            storePassword = ksPass
+            keyPassword = keyPass
+            this.keyAlias = keyAlias
             enableV3Signing = true
             enableV4Signing = true
         }
@@ -55,9 +55,17 @@ android {
             )
             isCrunchPngs = true
             val keystoreFile = file("release.keystore")
-            val hasKeystore = keystoreFile.exists() && !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty()
+            val ksPassword = System.getenv("KEYSTORE_PASSWORD")
+            // Fix #79: fail loudly when signing isn't configured, rather than
+            // silently producing an unsigned release APK.
+            val hasKeystore = keystoreFile.exists() && !ksPassword.isNullOrEmpty()
             if (hasKeystore) {
                 signingConfig = signingConfigs.getByName("release")
+            } else if (gradle.startParameter.taskNames.any { "Release" in it }) {
+                throw GradleException(
+                    "Release build requires release.keystore + KEYSTORE_PASSWORD env var. " +
+                        "See CONTRIBUTING.md for release signing instructions.",
+                )
             }
         }
         debug {
@@ -93,7 +101,7 @@ android {
                 "META-INF/LICENSE",
                 "META-INF/LICENSE.txt",
                 "META-INF/NOTICE",
-                "META-INF/NOTICE.txt"
+                "META-INF/NOTICE.txt",
             )
         }
         jniLibs {
@@ -104,18 +112,17 @@ android {
     lint {
         warningsAsErrors = false
         abortOnError = true
-        baseline = file("lint-baseline.xml")
+        // Fix #86: remove lint-baseline.xml (it hid real issues) and re-enable
+        // MissingTranslation/ExtraTranslation so missing translations don't slip in.
         checkDependencies = true
-        disable += setOf(
-            "MissingTranslation",
-            "ExtraTranslation"
-        )
     }
 
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
-            isReturnDefaultValues = true
+            // Fix #85: isReturnDefaultValues = true makes unstubbed Android calls
+            // silently return null/0, hiding real failures. Turned off.
+            isReturnDefaultValues = false
         }
     }
 }
@@ -149,6 +156,9 @@ dependencies {
     implementation(libs.camera.core)
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
+    // Fix #91: remove unused camera-view dependency (it was declared in the
+    // catalog but not used in production code; only the debug screen uses it
+    // via AndroidView<PreviewView>, so keep it).
     implementation(libs.camera.view)
 
     implementation(libs.mediapipe.tasks.vision)
@@ -168,9 +178,12 @@ dependencies {
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.turbine)
 
+    androidTestImplementation(composeBom)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    // Fix #89: use the BOM-managed Compose test version (remove pinned version
+    // from catalog in a moment).
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
     kspAndroidTest(libs.hilt.android.compiler)

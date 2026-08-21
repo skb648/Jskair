@@ -1,5 +1,6 @@
 package com.aircontrol
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,24 +20,26 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.aircontrol.camera.CameraService
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.ui.navigation.AirControlNavHost
 import com.aircontrol.ui.navigation.AirControlRoute
 import com.aircontrol.ui.theme.AirControlTheme
 import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -44,16 +47,29 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var settingsRepository: SettingsRepository
 
+    // Incoming deep-link flags, read in onCreate.
+    private var startDestinationOverride: String? = null
+    private var startTrackingOnResume = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Handle incoming actions from BootCompletedReceiver / SettingsDeepLinkActivity.
+        when (intent?.action) {
+            ACTION_OPEN_SETTINGS -> startDestinationOverride = AirControlRoute.Settings.route
+            ACTION_RESUME_TRACKING -> {
+                startDestinationOverride = AirControlRoute.Home.route
+                startTrackingOnResume = true
+            }
+        }
+
         val keepSplash = mutableStateOf(true)
         splashScreen.setKeepOnScreenCondition { keepSplash.value }
 
-        // Never leave the platform splash screen waiting indefinitely for a data-store
-        // emission. The in-app LoadingScreen remains available after this timeout.
+        // Fix #26: bail out to Home (which can show an error/retry) instead of
+        // spinning forever if DataStore never emits.
         lifecycleScope.launch {
             delay(SPLASH_MAX_WAIT_MS)
             keepSplash.value = false
@@ -62,30 +78,53 @@ class MainActivity : ComponentActivity() {
         setContent {
             AirControlContent(
                 onPreferencesLoaded = { keepSplash.value = false },
+                startDestinationOverride = startDestinationOverride,
             )
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (startTrackingOnResume) {
+            startTrackingOnResume = false
+            // Start the camera foreground service from the (now-foreground)
+            // activity — this is the allowed path on Android 12+.
+            startService(Intent(this, CameraService::class.java).apply {
+                action = CameraService.ACTION_START
+            })
+        }
+    }
+
     @Composable
-    private fun AirControlContent(onPreferencesLoaded: () -> Unit) {
+    private fun AirControlContent(
+        onPreferencesLoaded: () -> Unit,
+        startDestinationOverride: String?,
+    ) {
+        // Fix #26: timeout with fallback to default preferences so the UI
+        // never hangs forever on a corrupt DataStore.
+        var timedOut by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            val loaded = withTimeoutOrNull(3000L) {
+                settingsRepository.userPreferences.collect { } // first emit unblocks
+            }
+            if (loaded == null) timedOut = true
+        }
+
         val preferences by settingsRepository.userPreferences.collectAsStateWithLifecycle(
-            initialValue = null,
+            initialValue = if (timedOut) com.aircontrol.data.model.UserPreferences() else null,
         )
 
         LaunchedEffect(preferences) {
-            if (preferences != null) {
-                onPreferencesLoaded()
-            }
+            if (preferences != null) onPreferencesLoaded()
         }
 
         AirControlTheme {
             when (val prefs = preferences) {
                 null -> LoadingScreen()
                 else -> {
-                    val startDestination = if (prefs.onboardingCompleted) {
-                        AirControlRoute.Home.route
-                    } else {
-                        AirControlRoute.Onboarding.route
+                    val startDestination = startDestinationOverride ?: run {
+                        if (prefs.onboardingCompleted) AirControlRoute.Home.route
+                        else AirControlRoute.Onboarding.route
                     }
                     Surface(
                         modifier = Modifier.fillMaxSize(),
@@ -99,11 +138,12 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val ACTION_OPEN_SETTINGS = "com.aircontrol.action.OPEN_SETTINGS"
+        const val ACTION_RESUME_TRACKING = "com.aircontrol.action.RESUME_TRACKING"
         private const val SPLASH_MAX_WAIT_MS = 1500L
     }
 }
 
-@Preview(showBackground = true)
 @Composable
 private fun LoadingScreen() {
     Surface(
@@ -122,14 +162,11 @@ private fun LoadingScreen() {
                 CircularProgressIndicator(
                     color = MaterialTheme.colorScheme.primary,
                     strokeWidth = 3.dp,
-                    modifier = Modifier.size(96.dp).progressSemantics(),
+                    modifier = Modifier.size(96.dp),
                 )
-                Text(
-                    text = "✋",
-                    style = MaterialTheme.typography.headlineLarge,
-                )
+                // Fix #109: don't render an emoji inside the spinner; use the app name.
             }
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.titleLarge,

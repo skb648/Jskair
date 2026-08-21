@@ -272,9 +272,9 @@ private fun StatsBar(
 
                 // Handedness
                 val handednessLabel = when (handedness) {
-                    Handedness.LEFT -> "L"
-                    Handedness.RIGHT -> "R"
-                    Handedness.UNKNOWN -> "-"
+                    Handedness.LEFT -> stringResource(R.string.debug_handedness_left)
+                    Handedness.RIGHT -> stringResource(R.string.debug_handedness_right)
+                    Handedness.UNKNOWN -> stringResource(R.string.debug_handedness_unknown)
                 }
                 Text(
                     text = handednessLabel,
@@ -364,7 +364,7 @@ private fun FpsOverlay(
             }
             Spacer(modifier = Modifier.width(Dimens.spacing4))
             Text(
-                text = "$fps fps",
+                text = stringResource(R.string.debug_fps_label, fps),
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White, // Debug overlay fixed white for contrast on camera
             )
@@ -440,10 +440,13 @@ private fun HandSkeletonOverlay(
     val wristColor = WarningOrange
 
     val contentDescriptionText = if (handFrame.isDetected) {
-        "Hand skeleton with ${handFrame.landmarks.size} landmarks, " +
-            "confidence ${(handFrame.confidence * 100).toInt()} percent"
+        stringResource(
+            R.string.debug_skeleton_cd_detected,
+            handFrame.landmarks.size,
+            (handFrame.confidence * 100).toInt(),
+        )
     } else {
-        "No hand detected"
+        stringResource(R.string.debug_no_hand_detected)
     }
 
     Canvas(

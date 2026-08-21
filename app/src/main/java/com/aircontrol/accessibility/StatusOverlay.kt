@@ -235,6 +235,24 @@ class StatusOverlay(
     }
 
     /**
+     * Repositions the overlay after a configuration change (e.g. rotation).
+     * Clamps the stored position into the new screen bounds so the pill
+     * doesn't end up off-screen.
+     */
+    fun reposition() {
+        val params = statusView?.layoutParams as? WindowManager.LayoutParams ?: return
+        val viewWidth = statusView?.width ?: 0
+        val viewHeight = statusView?.height ?: 0
+        params.x = posX.coerceIn(0, (screenWidth - viewWidth).coerceAtLeast(0))
+        params.y = posY.coerceIn(0, (screenHeight - viewHeight).coerceAtLeast(0))
+        posX = params.x
+        posY = params.y
+        try {
+            windowManager.updateViewLayout(statusView, params)
+        } catch (_: Exception) { /* not attached */ }
+    }
+
+    /**
      * Resets the overlay position to the default location.
      */
     fun resetToDefaultPosition() {

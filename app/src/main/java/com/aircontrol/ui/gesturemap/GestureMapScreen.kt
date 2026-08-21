@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aircontrol.R
 import com.aircontrol.accessibility.GestureAction
+import com.aircontrol.accessibility.displayNameRes
 import com.aircontrol.data.model.GestureMapEntry
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.components.HandPoseIcon
@@ -187,10 +188,10 @@ fun GestureMapScreen(
                     .fillMaxSize()
                     .clickable(
                         role = Role.Button,
-                        onClickLabel = "Dismiss gesture options",
+                        onClickLabel = stringResource(R.string.gesture_map_dismiss_cd),
                         onClick = { viewModel.dismissActionSheet() },
                     )
-                    .semantics { contentDescription = "Dismiss gesture options" },
+                    .semantics { contentDescription = "Dismiss" },
             ) {
                 Box(
                     modifier = Modifier
@@ -321,7 +322,7 @@ private fun ActionSelectionSheet(
             ) {
                 Column {
                     Text(
-                        text = selectedEntry?.label ?: "Select Action",
+                        text = selectedEntry?.label ?: stringResource(R.string.gesture_map_select_action_prompt),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
@@ -332,7 +333,7 @@ private fun ActionSelectionSheet(
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
                 }
             }
 
@@ -469,7 +470,7 @@ private fun ActionOption(
         if (isSelected) {
             Icon(
                 imageVector = Icons.Default.Check,
-                contentDescription = "Selected",
+                contentDescription = stringResource(R.string.gesture_map_selected_cd),
                 tint = ElectricBlue,
                 modifier = Modifier.size(Dimens.iconMedium),
             )
@@ -477,27 +478,9 @@ private fun ActionOption(
     }
 }
 
-private fun formatActionName(action: GestureAction): String = when (action) {
-    GestureAction.NONE -> "None"
-    GestureAction.SCROLL_UP -> "Scroll Up"
-    GestureAction.SCROLL_DOWN -> "Scroll Down"
-    GestureAction.SCROLL_LEFT -> "Scroll Left"
-    GestureAction.SCROLL_RIGHT -> "Scroll Right"
-    GestureAction.BACK -> "Back"
-    GestureAction.HOME -> "Home"
-    GestureAction.RECENTS -> "Recents"
-    GestureAction.NOTIFICATIONS -> "Notifications"
-    GestureAction.QUICK_SETTINGS -> "Quick Settings"
-    GestureAction.VOLUME_UP -> "Volume Up"
-    GestureAction.VOLUME_DOWN -> "Volume Down"
-    GestureAction.MEDIA_PLAY_PAUSE -> "Media Play/Pause"
-    GestureAction.SCREENSHOT -> "Screenshot"
-    GestureAction.LOCK_SCREEN -> "Lock Screen"
-    GestureAction.TAP -> "Tap"
-    GestureAction.DOUBLE_TAP -> "Double Tap"
-    GestureAction.LONG_PRESS -> "Long Press"
-    GestureAction.DRAG -> "Drag"
-}
+@Composable
+private fun formatActionName(action: GestureAction): String =
+    stringResource(action.displayNameRes())
 
 private fun actionIcon(action: GestureAction): ImageVector = when (action) {
     GestureAction.NONE -> Icons.Default.Close

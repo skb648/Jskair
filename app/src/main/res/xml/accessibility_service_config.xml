@@ -1,11 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Fix #46, #47, #98: we don't read window content, so remove the contradictory
+     flags (flagRetrieveInteractiveWindows / flagIncludeNotImportantViews) and
+     stop subscribing to accessibility events (empty eventTypes, no
+     notificationTimeout). settingsActivity points to SettingsDeepLinkActivity
+     which routes into the in-app Settings screen. -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowsChanged|typeWindowStateChanged"
-    android:accessibilityFeedbackType="feedbackGeneric|feedbackVisual"
-    android:accessibilityFlags="flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:accessibilityEventTypes=""
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags=""
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="false"
     android:description="@string/accessibility_service_description"
-    android:notificationTimeout="150"
-    android:settingsActivity="com.aircontrol.MainActivity" />
+    android:settingsActivity="com.aircontrol.SettingsDeepLinkActivity" />

@@ -1,9 +1,12 @@
 package com.aircontrol.tracking
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,42 +20,37 @@ import timber.log.Timber
 /**
  * Monitors device thermal status and reports it as a flow.
  *
- * Thermal thresholds (Bug #5 Fix — graduated degradation instead of pause on SEVERE):
- * - LIGHT       → Proactive FPS reduction to 2/3 of configured (only if not already throttled).
- * - MODERATE    → Reduce FPS to 1/2 of configured (clamped 5..15).
- * - SEVERE      → Dynamic frame skipping: reduce FPS to 5 FPS, but keep tracking alive.
- *                 Notification reads "Performance reduced due to heat". No pauseTracking().
- * - CRITICAL    → Pause tracking entirely (covers PowerManager CRITICAL/EMERGENCY/SHUTDOWN).
- * - NORMAL/None → Resume normal operation (with a 30s gradual FPS ramp).
- *
- * On API < 29 (before PowerManager thermal status API), polling is skipped
- * and the monitor reports THERMAL_NONE always.
+ * On API 29+ uses [PowerManager.currentThermalStatus].
+ * On API 26–28 (where the thermal-status API is unavailable), falls back to
+ * temperature heuristics from [BatteryManager] so thermal protection isn't dead
+ * on those devices (fix #23).
  */
 enum class ThermalStatus {
-    NONE,       // No thermal stress
-    LIGHT,      // Light throttling
-    MODERATE,   // Moderate throttling - reduce FPS to 1/2
-    SEVERE,     // Severe throttling - dynamic frame skipping at 5 FPS (no pause)
-    CRITICAL,   // Critical/Emergency/Shutdown - pause tracking entirely
+    NONE,
+    LIGHT,
+    MODERATE,
+    SEVERE,
+    CRITICAL,
 }
 
 class ThermalMonitor(
-    @ApplicationContext private val context: Context,
+    private val context: Context,
     private val scope: CoroutineScope,
-    private val pollingIntervalMs: Long = 5000L // Service uses 5000, Camera uses 6000 to desync 2 polls,
+    // Fix #41: default interval 5s; callers that want desync pass an explicit value.
+    private val pollingIntervalMs: Long = 5000L,
 ) {
-    private val powerManager by lazy { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
+    private val powerManager: PowerManager? =
+        context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
     private val _thermalStatus = MutableStateFlow(ThermalStatus.NONE)
     val thermalStatus: StateFlow<ThermalStatus> = _thermalStatus.asStateFlow()
 
     private var monitoringJob: Job? = null
 
+    // Battery-temperature based fallback receiver for API < 29.
+    private var batteryTempReceiver: BroadcastReceiver? = null
+
     fun startMonitoring() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Timber.i("Thermal status API not available (API < 29), skipping monitoring")
-            return
-        }
         if (monitoringJob?.isActive == true) return
 
         monitoringJob = scope.launch(Dispatchers.Default) {
@@ -61,42 +59,102 @@ class ThermalMonitor(
                 delay(pollingIntervalMs)
             }
         }
-        Timber.i("Thermal monitoring started")
+
+        // On older APIs, also listen for battery temperature changes to get
+        // coarse thermal data between polls.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            registerBatteryTempFallback()
+        }
+
+        Timber.i("Thermal monitoring started (interval=%dms, API=%d)", pollingIntervalMs, Build.VERSION.SDK_INT)
     }
 
-    fun stopMonitoring() {
+    /**
+     * @param resetStatus If true, status is reset to NONE (useful for tests).
+     *   Pass false from production shutdown paths to avoid spurious "recovered"
+     *   transitions (fix #43).
+     */
+    fun stopMonitoring(resetStatus: Boolean = true) {
         monitoringJob?.cancel()
         monitoringJob = null
-        _thermalStatus.value = ThermalStatus.NONE
+        unregisterBatteryTempFallback()
+        if (resetStatus) {
+            _thermalStatus.value = ThermalStatus.NONE
+        }
         Timber.i("Thermal monitoring stopped")
     }
 
     private fun checkThermalStatus() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-
-        val status = try {
-            powerManager?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE
-        } catch (e: Exception) {
-            Timber.w(e, "Failed to read thermal status")
-            PowerManager.THERMAL_STATUS_NONE
-        }
-
-        val thermalStatus = when (status) {
-            PowerManager.THERMAL_STATUS_NONE -> ThermalStatus.NONE
-            PowerManager.THERMAL_STATUS_LIGHT -> ThermalStatus.LIGHT
-            PowerManager.THERMAL_STATUS_MODERATE -> ThermalStatus.MODERATE
-            // Bug #5 Fix: SEVERE is now a "frame-skip" state, not a pause state.
-            PowerManager.THERMAL_STATUS_SEVERE -> ThermalStatus.SEVERE
-            // Critical / Emergency / Shutdown — pause tracking entirely to protect device.
-            PowerManager.THERMAL_STATUS_CRITICAL,
-            PowerManager.THERMAL_STATUS_EMERGENCY,
-            PowerManager.THERMAL_STATUS_SHUTDOWN -> ThermalStatus.CRITICAL
-            else -> ThermalStatus.NONE
+        val thermalStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val status = try {
+                powerManager?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to read thermal status")
+                PowerManager.THERMAL_STATUS_NONE
+            }
+            when (status) {
+                PowerManager.THERMAL_STATUS_NONE -> ThermalStatus.NONE
+                PowerManager.THERMAL_STATUS_LIGHT -> ThermalStatus.LIGHT
+                PowerManager.THERMAL_STATUS_MODERATE -> ThermalStatus.MODERATE
+                PowerManager.THERMAL_STATUS_SEVERE -> ThermalStatus.SEVERE
+                PowerManager.THERMAL_STATUS_CRITICAL,
+                PowerManager.THERMAL_STATUS_EMERGENCY,
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> ThermalStatus.CRITICAL
+                else -> ThermalStatus.NONE
+            }
+        } else {
+            readBatteryTempStatus()
         }
 
         if (_thermalStatus.value != thermalStatus) {
             Timber.i("Thermal status changed: %s → %s", _thermalStatus.value, thermalStatus)
             _thermalStatus.value = thermalStatus
         }
+    }
+
+    /**
+     * Map battery temperature (in tenths of °C) to a coarse thermal status on
+     * API < 29. Thresholds align with the qualitative guidance from AOSP:
+     * - >= 50°C → CRITICAL (device will likely throttle or shut down)
+     * - >= 45°C → SEVERE
+     * - >= 40°C → MODERATE
+     * - >= 35°C → LIGHT
+     * - else    → NONE
+     */
+    private fun readBatteryTempStatus(): ThermalStatus {
+        return try {
+            val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val tempTenths = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+            val tempC = tempTenths / 10f
+            when {
+                tempC >= 50f -> ThermalStatus.CRITICAL
+                tempC >= 45f -> ThermalStatus.SEVERE
+                tempC >= 40f -> ThermalStatus.MODERATE
+                tempC >= 35f -> ThermalStatus.LIGHT
+                else -> ThermalStatus.NONE
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to read battery temp on API<29")
+            ThermalStatus.NONE
+        }
+    }
+
+    private fun registerBatteryTempFallback() {
+        if (batteryTempReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_BATTERY_CHANGED) checkThermalStatus()
+            }
+        }
+        batteryTempReceiver = receiver
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        context.registerReceiver(receiver, filter)
+    }
+
+    private fun unregisterBatteryTempFallback() {
+        batteryTempReceiver?.let {
+            runCatching { context.unregisterReceiver(it) }
+        }
+        batteryTempReceiver = null
     }
 }

@@ -4,8 +4,6 @@ import com.aircontrol.control.CursorController
 import com.aircontrol.control.CursorControllerImpl
 import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.gestures.GestureDetectorImpl
-import com.aircontrol.service.AirControlService
-import com.aircontrol.service.AirControlServiceImpl
 import com.aircontrol.tracking.FaceTracker
 import com.aircontrol.tracking.FaceTrackerImpl
 import com.aircontrol.tracking.HandTracker
@@ -36,7 +34,8 @@ abstract class TrackingModule {
     @Singleton
     abstract fun bindCursorController(impl: CursorControllerImpl): CursorController
 
-    @Binds
-    @Singleton
-    abstract fun bindAirControlService(impl: AirControlServiceImpl): AirControlService
+    // Fix #49: AirControlServiceImpl is a second parallel tracking pipeline
+    // with its own HandTracker/MediaPipe lifecycle. It is retained for tests
+    // (which construct it directly) but is NOT bound in DI so production code
+    // cannot accidentally start a second pipeline.
 }

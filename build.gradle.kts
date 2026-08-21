@@ -1,18 +1,6 @@
-// Top-level build file where you can add configuration options common to all sub-projects/modules.
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-    dependencies {
-        // Kept for restricted mirrors where plugin-marker resolution fails.
-        // Safe to keep alongside alias() - gradle will dedup.
-        classpath("com.google.dagger:hilt-android-gradle-plugin:2.53.1")
-        classpath("com.google.devtools.ksp:symbol-processing-gradle-plugin:2.0.21-1.0.28")
-    }
-}
-
+// Top-level build file.
+// Fix #84: remove hardcoded Hilt/KSP versions from buildscript classpath so
+// version bumps only need to happen in the version catalog (libs.versions.toml).
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.kotlin.android) apply false

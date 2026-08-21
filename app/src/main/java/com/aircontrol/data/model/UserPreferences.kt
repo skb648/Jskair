@@ -12,7 +12,9 @@ data class UserPreferences(
     val holdDuration: Int = 600,
     val batterySaver: Boolean = false,
     val startOnBoot: Boolean = false,
-    val statusPillEnabled: Boolean = true,
+    // Fix #32: status pill is OFF by default so no system-wide overlay appears
+    // on first run without the user asking for it.
+    val statusPillEnabled: Boolean = false,
     val calibratedHandSizeMm: Float = 0f,
     val calibratedPinchDistanceMm: Float = 0f,
     val isCalibrated: Boolean = false,
