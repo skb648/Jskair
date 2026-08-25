@@ -25,21 +25,17 @@ data class PermissionStates(
     val accessibilityGranted: Boolean = false,
     // TYPE_ACCESSIBILITY_OVERLAY does not require SYSTEM_ALERT_WINDOW when a11y is on.
     val overlayGranted: Boolean = true,
-    // Fix #18: notification permission is required on API 33+ so the foreground
-    // notification and pause/resume controls are visible.
+    // Notifications are optional; the foreground camera service remains functional
+    // without POST_NOTIFICATIONS, although boot/resume notifications will be hidden.
     val notificationsGranted: Boolean = false,
 ) {
-    // Fix #18: allGranted must include notifications on T+.
     val allGranted: Boolean
-        get() = cameraGranted && accessibilityGranted &&
-            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU || notificationsGranted)
+        get() = cameraGranted && accessibilityGranted
 
     val missingPermissions: List<MissingPermission>
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
             if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
-                !notificationsGranted) add(MissingPermission.NOTIFICATIONS)
         }
 }
 
@@ -101,11 +97,8 @@ class PermissionsManager @Inject constructor(
         )
     }
 
-    /**
-     * Returns an Intent that the caller can use to request the camera permission
-     * at runtime. Callers are responsible for launching this from an Activity.
-     * (Fix #37: previously this was a log-only no-op.)
-     */
+    fun requestCameraPermission(): Intent = requestCameraPermissionIntent()
+
     fun requestCameraPermissionIntent(): Intent {
         return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.parse("package:${context.packageName}")
