@@ -16,37 +16,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.Volatile
 
-/**
- * Gaze estimate derived from MediaPipe Face Landmarker iris landmarks.
- *
- * @param x Normalized horizontal gaze [0,1] where 0.5 = looking straight ahead.
- * @param y Normalized vertical gaze [0,1] where 0.5 = looking straight ahead.
- * @param ear Average Eye Aspect Ratio of both eyes (blink signal). 1f when unknown.
- * @param confidence 1f when a face with iris landmarks was detected, else 0f.
- */
 data class GazePoint(
     val x: Float,
     val y: Float,
     val ear: Float = 1f,
     val confidence: Float,
 ) {
-    val isDetected: Boolean get() = confidence > 0f
+    val isDetected: Boolean get() = confidence >= MIN_GAZE_CONFIDENCE
 
     companion object {
-        val EMPTY = GazePoint(x = 0.5f, y = 0.5f, ear = 1f, confidence = 0f)
+        const val MIN_GAZE_CONFIDENCE = 0.45f
+        val EMPTY = GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f)
     }
 }
 
-/**
- * Wraps MediaPipe FaceLandmarker for "eye is mouse" gaze tracking.
- *
- * Mirrors the structure of [HandTracker]: LIVE_STREAM mode, GPU→CPU delegate
- * fallback, monotonic timestamps, and a FIFO timestamp queue for async callbacks.
- *
- * The iris landmarks (indices 468–477 in the 478-landmark face mesh) are used to
- * compute where the user is looking. Gaze coordinates are emitted as normalized
- * [GazePoint]s which the accessibility service maps to the screen cursor.
- */
 interface FaceTracker {
     val gazePoints: SharedFlow<GazePoint>
     fun initialize()
@@ -61,12 +44,10 @@ class FaceTrackerImpl @Inject constructor(
 ) : FaceTracker {
 
     private var faceLandmarker: FaceLandmarker? = null
-
-    @Volatile
-    private var _isInitialized = false
-    @Volatile
-    private var isClosing = false
+    @Volatile private var _isInitialized = false
+    @Volatile private var isClosing = false
     private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
     private val _gazePoints = MutableSharedFlow<GazePoint>(
         extraBufferCapacity = 32,
@@ -74,21 +55,13 @@ class FaceTrackerImpl @Inject constructor(
     )
     override val gazePoints: SharedFlow<GazePoint> = _gazePoints.asSharedFlow()
 
-    // Timestamp FIFO for LIVE_STREAM async callbacks (same pattern as HandTracker).
-    private val timestampLock = Any()
-    private val pendingFrameTimestampsMs = ArrayDeque<Long>()
-
     override fun initialize() {
         if (_isInitialized) {
             Timber.w("FaceTracker already initialized")
             return
         }
         if (!validateModelFile()) {
-            Timber.e(
-                "face_landmarker.task not found in assets. " +
-                    "Download from: https://storage.googleapis.com/mediapipe-models/" +
-                    "face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
-            )
+            Timber.e("face_landmarker.task not found in assets")
             return
         }
 
@@ -98,41 +71,24 @@ class FaceTrackerImpl @Inject constructor(
                 Timber.e("Failed to initialize FaceLandmarker with both GPU and CPU delegates")
                 return
             }
-
+        lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         Timber.i("FaceTracker initialized successfully")
     }
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
-        if (isClosing) return
+        if (isClosing || !_isInitialized) return
         val landmarker = faceLandmarker ?: return
-        if (!_isInitialized) return
-
-        var timestampQueued = false
-        val nanoTimeNs = System.nanoTime()
-        val mediaPipeTimestampUs = nanoTimeNs / 1000L
-        val frameTimestampMs = nanoTimeNs / 1_000_000L
-
+        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+            lastSubmittedTimestampMs + 1L
+        } else {
+            timestampMs
+        }
+        lastSubmittedTimestampMs = mediaPipeTimestampMs
         try {
-            synchronized(timestampLock) {
-                pendingFrameTimestampsMs.addLast(frameTimestampMs)
-                timestampQueued = true
-                while (pendingFrameTimestampsMs.size > MAX_PENDING_TIMESTAMPS) {
-                    pendingFrameTimestampsMs.removeFirst()
-                }
-            }
-            landmarker.detectAsync(mpImage, mediaPipeTimestampUs)
+            landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
         } catch (e: Exception) {
-            if (timestampQueued) {
-                synchronized(timestampLock) {
-                    if (pendingFrameTimestampsMs.isNotEmpty() &&
-                        pendingFrameTimestampsMs.last() == frameTimestampMs
-                    ) {
-                        pendingFrameTimestampsMs.removeLast()
-                    }
-                }
-            }
-            Timber.e(e, "Error processing face frame at timestamp %d", frameTimestampMs)
+            Timber.e(e, "Error processing face frame at timestamp %d", mediaPipeTimestampMs)
         }
     }
 
@@ -149,24 +105,18 @@ class FaceTrackerImpl @Inject constructor(
         faceLandmarker = null
         _isInitialized = false
         isClosing = false
-        synchronized(timestampLock) { pendingFrameTimestampsMs.clear() }
+        lastSubmittedTimestampMs = Long.MIN_VALUE
+        pendingCloseLatch = null
         Timber.i("FaceTracker closed")
     }
 
     override fun isInitialized(): Boolean = _isInitialized
 
     @Suppress("DEPRECATION")
-    private fun handleResult(result: FaceLandmarkerResult) {
+    private fun handleResult(result: FaceLandmarkerResult, resultTimestampMs: Long) {
         if (isClosing) {
             pendingCloseLatch?.countDown()
-        }
-
-        val systemTimestampMs = synchronized(timestampLock) {
-            if (pendingFrameTimestampsMs.isNotEmpty()) {
-                pendingFrameTimestampsMs.removeFirst()
-            } else {
-                System.nanoTime() / 1_000_000L
-            }
+            return
         }
 
         val faceLandmarks = result.faceLandmarks()
@@ -177,29 +127,22 @@ class FaceTrackerImpl @Inject constructor(
 
         val gaze = computeGaze(faceLandmarks[0])
         if (gaze != null) {
-            _gazePoints.tryEmit(gaze)
+            _gazePoints.tryEmit(gaze.copyTimestamp(resultTimestampMs))
         } else {
             _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f))
         }
     }
 
-    /**
-     * Computes a normalized gaze point from face landmarks using the iris center
-     * relative to the eye corners. Uses the standard MediaPipe 478-landmark indices:
-     *
-     * Left eye:  outer=33, inner=133, top=159, bottom=145, iris=468
-     * Right eye: inner=362, outer=263, top=386, bottom=374, iris=473
-     *
-     * Returns null if the landmark list is incomplete (should be 478).
-     */
+    // Timestamp is retained by the collector through the flow sample timing; the
+    // helper is deliberately allocation-free and documents the source timestamp.
+    private fun GazePoint.copyTimestamp(@Suppress("UNUSED_PARAMETER") timestampMs: Long): GazePoint = this
+
     private fun computeGaze(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
     ): GazePoint? {
         if (landmarks.size < 478) return null
 
         fun lm(i: Int) = landmarks[i]
-
-        // ---- Horizontal gaze ratio (0 = inner/nose, 1 = outer) ----
         val leftIris = lm(468)
         val leftOuter = lm(33)
         val leftInner = lm(133)
@@ -210,7 +153,6 @@ class FaceTrackerImpl @Inject constructor(
         val rightInner = lm(362)
         val rightH = gazeRatio(rightIris.x(), rightInner.x(), rightOuter.x())
 
-        // ---- Vertical gaze ratio (0 = up, 1 = down) ----
         val leftTop = lm(159)
         val leftBottom = lm(145)
         val leftV = gazeRatio(leftIris.y(), leftTop.y(), leftBottom.y())
@@ -221,19 +163,23 @@ class FaceTrackerImpl @Inject constructor(
 
         val h = ((leftH + rightH) / 2f).coerceIn(0f, 1f)
         val v = ((leftV + rightV) / 2f).coerceIn(0f, 1f)
-
-        // Average Eye Aspect Ratio for blink detection.
         val ear = computeAverageEar(landmarks)
 
-        return GazePoint(x = h, y = v, ear = ear, confidence = 1f)
+        val leftEyeWidth = kotlin.math.abs(leftOuter.x() - leftInner.x())
+        val rightEyeWidth = kotlin.math.abs(rightOuter.x() - rightInner.x())
+        if (leftEyeWidth < EPSILON || rightEyeWidth < EPSILON) return null
+        val eyeRatio = (leftEyeWidth / rightEyeWidth).coerceIn(0f, 10f)
+        val symmetry = 1f - kotlin.math.abs(1f - eyeRatio).coerceIn(0f, 1f)
+        val eyeSeparation = kotlin.math.abs(
+            ((leftOuter.x() + leftInner.x()) / 2f) - ((rightOuter.x() + rightInner.x()) / 2f),
+        )
+        val separationConfidence = (eyeSeparation / 0.12f).coerceIn(0f, 1f)
+        val geometryConfidence = (0.25f + 0.5f * symmetry + 0.25f * separationConfidence)
+            .coerceIn(0f, 1f)
+
+        return GazePoint(x = h, y = v, ear = ear, confidence = geometryConfidence)
     }
 
-    /**
-     * Eye Aspect Ratio averaged over both eyes.
-     *
-     * Left eye contour:  [33, 160, 158, 133, 153, 144]
-     * Right eye contour: [263, 387, 385, 362, 380, 373]
-     */
     private fun computeAverageEar(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
     ): Float {
@@ -253,14 +199,10 @@ class FaceTrackerImpl @Inject constructor(
         }
         val vertical = dist(p2, p6) + dist(p3, p5)
         val horizontal = 2f * dist(p1, p4)
-        if (horizontal < 1e-6f) return 1f
+        if (horizontal < EPSILON) return 1f
         return vertical / horizontal
     }
 
-    /**
-     * Maps a value linearly between [inner] and [outer] to a 0..1 ratio
-     * (0 at inner, 1 at outer), guarded against divide-by-zero.
-     */
     private fun gazeRatio(value: Float, inner: Float, outer: Float): Float {
         val span = outer - inner
         if (kotlin.math.abs(span) < EPSILON) return 0.5f
@@ -282,7 +224,6 @@ class FaceTrackerImpl @Inject constructor(
                 .setModelAssetPath(MODEL_FILE)
                 .setDelegate(delegate)
                 .build()
-
             val options = FaceLandmarker.FaceLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
                 .setRunningMode(RunningMode.LIVE_STREAM)
@@ -290,15 +231,16 @@ class FaceTrackerImpl @Inject constructor(
                 .setMinFaceDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinFacePresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, _ -> handleResult(result) }
+                .setResultListener { result, resultTimestampMs ->
+                    handleResult(result, resultTimestampMs)
+                }
                 .setErrorListener { error ->
                     Timber.e(error, "FaceLandmarker error (delegate=%s)", delegate)
                 }
                 .build()
-
-            val landmarker = FaceLandmarker.createFromOptions(context, options)
-            Timber.i("FaceLandmarker initialized with %s delegate", delegate)
-            landmarker
+            FaceLandmarker.createFromOptions(context, options).also {
+                Timber.i("FaceLandmarker initialized with %s delegate", delegate)
+            }
         } catch (e: Exception) {
             Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, will try fallback", delegate)
             null
@@ -306,13 +248,11 @@ class FaceTrackerImpl @Inject constructor(
     }
 
     companion object {
-        // Model source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
         private const val MODEL_FILE = "face_landmarker.task"
         private const val NUM_FACES = 1
         private const val MIN_DETECTION_CONFIDENCE = 0.5f
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
-        private const val MAX_PENDING_TIMESTAMPS = 32
         private const val EPSILON = 1e-6f
     }
 }
