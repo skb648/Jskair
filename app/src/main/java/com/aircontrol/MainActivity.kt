@@ -37,8 +37,8 @@ import com.aircontrol.ui.navigation.AirControlRoute
 import com.aircontrol.ui.theme.AirControlTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -47,7 +47,6 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var settingsRepository: SettingsRepository
 
-    // Incoming deep-link flags, read in onCreate.
     private var startDestinationOverride: String? = null
     private var startTrackingOnResume = false
 
@@ -56,7 +55,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Handle incoming actions from BootCompletedReceiver / SettingsDeepLinkActivity.
         when (intent?.action) {
             ACTION_OPEN_SETTINGS -> startDestinationOverride = AirControlRoute.Settings.route
             ACTION_RESUME_TRACKING -> {
@@ -68,8 +66,6 @@ class MainActivity : ComponentActivity() {
         val keepSplash = mutableStateOf(true)
         splashScreen.setKeepOnScreenCondition { keepSplash.value }
 
-        // Fix #26: bail out to Home (which can show an error/retry) instead of
-        // spinning forever if DataStore never emits.
         lifecycleScope.launch {
             delay(SPLASH_MAX_WAIT_MS)
             keepSplash.value = false
@@ -87,8 +83,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         if (startTrackingOnResume) {
             startTrackingOnResume = false
-            // Start the camera foreground service from the (now-foreground)
-            // activity — this is the allowed path on Android 12+.
             startService(Intent(this, CameraService::class.java).apply {
                 action = CameraService.ACTION_START
             })
@@ -100,14 +94,15 @@ class MainActivity : ComponentActivity() {
         onPreferencesLoaded: () -> Unit,
         startDestinationOverride: String?,
     ) {
-        // Fix #26: timeout with fallback to default preferences so the UI
-        // never hangs forever on a corrupt DataStore.
         var timedOut by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
-            val loaded = withTimeoutOrNull(3000L) {
-                settingsRepository.userPreferences.collect { } // first emit unblocks
+            runCatching {
+                settingsRepository.userPreferences.first()
+            }.onSuccess {
+                onPreferencesLoaded()
+            }.onFailure {
+                timedOut = true
             }
-            if (loaded == null) timedOut = true
         }
 
         val preferences by settingsRepository.userPreferences.collectAsStateWithLifecycle(
@@ -164,7 +159,6 @@ private fun LoadingScreen() {
                     strokeWidth = 3.dp,
                     modifier = Modifier.size(96.dp),
                 )
-                // Fix #109: don't render an emoji inside the spinner; use the app name.
             }
             Spacer(modifier = Modifier.height(16.dp))
             Text(
