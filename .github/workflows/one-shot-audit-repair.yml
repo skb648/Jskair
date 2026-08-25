@@ -1,7 +1,8 @@
 name: One-shot audit repair
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: write
@@ -24,66 +25,52 @@ jobs:
         run: |
           from pathlib import Path
           import re
-
           def patch(path, old, new, count=1):
               p=Path(path); s=p.read_text()
               if old not in s:
-                  print('SKIP', path, 'pattern already fixed/not present')
+                  print('SKIP', path)
                   return
               p.write_text(s.replace(old,new,count))
 
-          # Persisted preference default must match the model's OFF-by-default UX.
           patch('app/src/main/java/com/aircontrol/data/repository/SettingsRepositoryImpl.kt',
                 'statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: true,',
                 'statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: false,')
 
-          # Avoid a stale onboarding page index after removing the overlay page.
           p=Path('app/src/main/java/com/aircontrol/ui/onboarding/OnboardingScreen.kt'); s=p.read_text()
           s=s.replace('rememberPagerState(initialPage = currentStep, pageCount = { 5 })', 'rememberPagerState(initialPage = currentStep.coerceIn(0, 3), pageCount = { 4 })')
           s=s.replace('pageCount = 5,', 'pageCount = 4,')
           s=s.replace('pagerState.currentPage < 4', 'pagerState.currentPage < 3')
-          s=s.replace('currentPage + 1,\n                pageCount', 'currentPage + 1,\n                pageCount', 1)
-          # Remove the redundant overlay page by selecting gesture tutorial at page 3.
-          s=s.replace('''                    3 -> OverlayPermissionStep(\n                        isGranted = permissionStates.overlayGranted,\n                        onOpenSettings = {\n                            context.startActivity(\n                                viewModel.permissionsManager.requestOverlayPermission(),\n                            )\n                        },\n                    )\n                    // UU-01 Fix: Added gesture tutorial page\n                    4 -> GestureTutorialStep''', '''                    3 -> GestureTutorialStep''')
+          s=s.replace('''                    3 -> OverlayPermissionStep(\n                        isGranted = permissionStates.overlayGranted,\n                        onOpenSettings = {\n                            context.startActivity(\n                                viewModel.permissionsManager.requestOverlayPermission(),\n                            )\n                        },\n                    )\n                    // UU-01 Fix: Added gesture tutorial page\n                    4 -> GestureTutorialStep''', '                    3 -> GestureTutorialStep')
           s=re.sub(r'\n@Composable\nprivate fun OverlayPermissionStep\(.*?\n@Composable\nprivate fun PermissionGrantedBadge', '\n@Composable\nprivate fun PermissionGrantedBadge', s, count=1, flags=re.S)
           p.write_text(s)
 
-          # Gesture engine: an open palm used to arm must leave the neutral pose before
-          # Palm->Home can be armed, avoiding an accidental Home after arming.
           p=Path('gesture-engine/src/main/kotlin/com/aircontrol/gesture/GestureEngine.kt'); s=p.read_text()
           if 'private var palmHomeReady' not in s:
-              s=s.replace('    private var palmHomeFired: Boolean = false\n', '    private var palmHomeFired: Boolean = false\n    @Volatile private var palmHomeReady: Boolean = false\n', 1)
+              s=s.replace('    private var palmHomeFired: Boolean = false\n', '    private var palmHomeFired: Boolean = false\n    @Volatile private var palmHomeReady: Boolean = false\n',1)
           old='''        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {\n            if (pose == Pose.OPEN_PALM) {\n                if (!palmHolding) {\n                    palmHolding = true\n                    palmHoldStartMs = timestampMs\n                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {\n                    palmHomeFired = true\n                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))\n                }\n            } else {\n                palmHolding = false\n                palmHoldStartMs = 0L\n                palmHomeFired = false\n            }\n        } else {\n            palmHolding = false\n            palmHoldStartMs = 0L\n            palmHomeFired = false\n        }'''
           new='''        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {\n            if (pose != Pose.OPEN_PALM) {\n                palmHomeReady = true\n                palmHolding = false\n                palmHoldStartMs = 0L\n                palmHomeFired = false\n            } else if (palmHomeReady) {\n                if (!palmHolding) {\n                    palmHolding = true\n                    palmHoldStartMs = timestampMs\n                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {\n                    palmHomeFired = true\n                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))\n                }\n            }\n        } else {\n            palmHomeReady = false\n            palmHolding = false\n            palmHoldStartMs = 0L\n            palmHomeFired = false\n        }'''
           if old in s: s=s.replace(old,new,1)
           p.write_text(s)
 
-          # Accessibility pipeline: use monotonic timing and only feed one EMPTY frame
-          # during a wrong-hand run instead of resetting the FSM every frame.
           p=Path('app/src/main/java/com/aircontrol/accessibility/GestureControlAccessibilityService.kt'); s=p.read_text()
-          if 'import android.os.SystemClock' not in s:
-              s=s.replace('import android.os.Build\n','import android.os.Build\nimport android.os.SystemClock\n',1)
+          if 'import android.os.SystemClock' not in s: s=s.replace('import android.os.Build\n','import android.os.Build\nimport android.os.SystemClock\n',1)
           s=s.replace('blinkDetector.update(gaze.ear, System.currentTimeMillis())','blinkDetector.update(gaze.ear, SystemClock.elapsedRealtime())')
           s=s.replace('timestampMs = System.currentTimeMillis(),\n                            confidence = 1f,','timestampMs = SystemClock.elapsedRealtime(),\n                            confidence = gaze.confidence,')
           s=s.replace('val now = System.currentTimeMillis()\n                val armed =','val now = SystemClock.elapsedRealtime()\n                val armed =')
-          if 'private var wrongHandFiltered = false' not in s:
-              s=s.replace('private var isReceiverRegistered = false','private var isReceiverRegistered = false\n    private var wrongHandFiltered = false',1)
+          if 'private var wrongHandFiltered = false' not in s: s=s.replace('private var isReceiverRegistered = false','private var isReceiverRegistered = false\n    private var wrongHandFiltered = false',1)
           old='''                if (shouldProcess) {\n                    gestureDetector?.processHandFrame(frame)\n                } else {\n                    gestureDetector?.processHandFrame(\n                        HandFrame.EMPTY.copy(timestampMs = frame.timestampMs),\n                    )\n                }'''
           new='''                if (shouldProcess) {\n                    wrongHandFiltered = false\n                    gestureDetector?.processHandFrame(frame)\n                } else if (!wrongHandFiltered) {\n                    wrongHandFiltered = true\n                    gestureDetector?.processHandFrame(HandFrame.EMPTY.copy(timestampMs = frame.timestampMs))\n                }'''
           if old in s: s=s.replace(old,new,1)
           p.write_text(s)
 
-          # CameraService: remove GlobalScope lifecycle leakage and serialize destruction
-          # with start/pause/resume operations.
           p=Path('app/src/main/java/com/aircontrol/camera/CameraService.kt'); s=p.read_text()
           s=s.replace('import kotlinx.coroutines.GlobalScope\n','')
-          s=s.replace('''        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)''','''        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(scope = cameraStateScope, started = SharingStarted.Eagerly, initialValue = false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(scope = cameraStateScope, started = SharingStarted.Eagerly, initialValue = false)''',1)
-          # If companion scope is absent, add a process-scoped supervisor scope deliberately owned by the companion.
-          if 'cameraStateScope' not in s:
-              s=s.replace('private val _state = MutableStateFlow(ServiceState())','private val _state = MutableStateFlow(ServiceState())\n        private val cameraStateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)',1)
+          old='''        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)'''
+          new='''        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(cameraStateScope, SharingStarted.Eagerly, false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(cameraStateScope, SharingStarted.Eagerly, false)'''
+          if old in s: s=s.replace(old,new,1)
+          if 'cameraStateScope' not in s: s=s.replace('private val _state = MutableStateFlow(ServiceState())','private val _state = MutableStateFlow(ServiceState())\n        private val cameraStateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)',1)
           p.write_text(s)
 
-          # HomeViewModel uses Flow collection, so StateFlow preservation is intentional.
           print('remaining audit fixes applied')
       - name: Validate
         run: |
