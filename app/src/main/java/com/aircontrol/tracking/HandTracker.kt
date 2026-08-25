@@ -16,20 +16,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.Volatile
 
-/**
- * Wraps MediaPipe HandLandmarker for real-time hand tracking.
- *
- * Uses LIVE_STREAM mode for async processing. Attempts GPU delegate first,
- * falls back to CPU if GPU initialization fails.
- *
- * Model file: hand_landmarker.task (must be in assets/)
- * Source: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
- *
- * Timestamp mapping:
- * MediaPipe's LIVE_STREAM mode requires monotonically increasing timestamps.
- * We map our system timestamps to MediaPipe's timeline and track the mapping
- * so that result callbacks can recover the original frame timestamp.
- */
+/** Real-time MediaPipe hand tracking wrapper. */
 interface HandTracker {
     val handFrames: SharedFlow<HandFrame>
     fun initialize()
@@ -44,11 +31,10 @@ class HandTrackerImpl @Inject constructor(
 ) : HandTracker {
 
     private var handLandmarker: HandLandmarker? = null
-    @Volatile
-    private var _isInitialized = false
-    @Volatile
-    private var isClosing = false
+    @Volatile private var _isInitialized = false
+    @Volatile private var isClosing = false
     private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
         extraBufferCapacity = 32,
@@ -56,48 +42,15 @@ class HandTrackerImpl @Inject constructor(
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
-    // NOTE (Bug #6 & #7 Fix): The landmark-level OneEuroFilter previously applied
-    // here has been REMOVED. Raw MediaPipe landmarks are now emitted directly.
-    //
-    // Rationale: Filtering landmarks here AND filtering the cursor position again
-    // in CursorSmoother caused double-filtering latency — every frame was smoothed
-    // twice, adding visible lag between hand motion and cursor motion. By emitting
-    // raw landmarks, gesture detection sees the unfiltered signal (better for
-    // detecting fast swipes and pinch state changes), and the single cursor-side
-    // filter in CursorSmoother (minCutoff=0.45, beta=0.15) is the only smoothing
-    // applied to the visible cursor.
-
-    // Timestamp mapping: MediaPipe uses monotonic timestamps in microseconds.
-    // We track the offset between our system time (ms) and MediaPipe time (us).
-    @Volatile
-    private var mediaPipeTimestampBaseUs: Long = 0L
-    @Volatile
-    private var systemTimestampBaseMs: Long = 0L
-
-    // Timestamps for result callbacks. MediaPipe LIVE_STREAM callbacks are
-    // asynchronous, so using only the last submitted timestamp can attach the
-    // wrong time to older results. Keep a small FIFO queue instead.
-    private val timestampLock = Any()
-    private val pendingFrameTimestampsMs = ArrayDeque<Long>()
-
     override fun initialize() {
         if (_isInitialized) {
             Timber.w("HandTracker already initialized")
             return
         }
-
-        // Validate model file exists in assets
         if (!validateModelFile()) {
-            Timber.e("hand_landmarker.task not found in assets. " +
-                "Download from: https://storage.googleapis.com/mediapipe-models/" +
-                "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task")
+            Timber.e("hand_landmarker.task not found in assets")
             return
         }
-
-        // Initialize timestamps using monotonic clock (System.nanoTime)
-        // to avoid issues with wall-clock adjustments (e.g., NTP sync).
-        systemTimestampBaseMs = System.nanoTime() / 1_000_000L
-        mediaPipeTimestampBaseUs = System.nanoTime() / 1000L
 
         handLandmarker = tryInitializeWithDelegate(Delegate.GPU)
             ?: tryInitializeWithDelegate(Delegate.CPU)
@@ -106,46 +59,29 @@ class HandTrackerImpl @Inject constructor(
                 return
             }
 
+        lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         Timber.i("HandTracker initialized successfully")
     }
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
-        if (isClosing) return
+        if (isClosing || !_isInitialized) return
+        val landmarker = handLandmarker ?: return
 
-        val landmarker = handLandmarker ?: run {
-            Timber.v("HandLandmarker not initialized, skipping frame")
-            return
+        // MediaPipe LIVE_STREAM timestamps must be monotonically increasing.
+        // Use the camera pipeline's elapsedRealtime timestamp as the authoritative
+        // value instead of generating another clock value here.
+        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+            lastSubmittedTimestampMs + 1L
+        } else {
+            timestampMs
         }
-
-        if (!_isInitialized) return
-
-        var timestampQueued = false
-        // Use monotonic clock (System.nanoTime) for MediaPipe timestamps
-        // to guarantee strictly increasing values required by LIVE_STREAM mode.
-        val nanoTimeNs = System.nanoTime()
-        val mediaPipeTimestampUs = nanoTimeNs / 1000L
-        val frameTimestampMs = nanoTimeNs / 1_000_000L
+        lastSubmittedTimestampMs = mediaPipeTimestampMs
 
         try {
-            synchronized(timestampLock) {
-                pendingFrameTimestampsMs.addLast(frameTimestampMs)
-                timestampQueued = true
-                while (pendingFrameTimestampsMs.size > MAX_PENDING_TIMESTAMPS) {
-                    pendingFrameTimestampsMs.removeFirst()
-                }
-            }
-
-            landmarker.detectAsync(mpImage, mediaPipeTimestampUs)
+            landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
         } catch (e: Exception) {
-            if (timestampQueued) {
-                synchronized(timestampLock) {
-                    if (pendingFrameTimestampsMs.isNotEmpty() && pendingFrameTimestampsMs.last() == frameTimestampMs) {
-                        pendingFrameTimestampsMs.removeLast()
-                    }
-                }
-            }
-            Timber.e(e, "Error processing frame at timestamp %d", frameTimestampMs)
+            Timber.e(e, "Error processing hand frame at timestamp %d", mediaPipeTimestampMs)
         }
     }
 
@@ -154,7 +90,6 @@ class HandTrackerImpl @Inject constructor(
         val latch = java.util.concurrent.CountDownLatch(1)
         pendingCloseLatch = latch
         try {
-            // Wait for pending async callbacks to complete (max 200ms)
             latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)
             handLandmarker?.close()
         } catch (e: Exception) {
@@ -163,34 +98,27 @@ class HandTrackerImpl @Inject constructor(
         handLandmarker = null
         _isInitialized = false
         isClosing = false
-        synchronized(timestampLock) { pendingFrameTimestampsMs.clear() }
+        lastSubmittedTimestampMs = Long.MIN_VALUE
+        pendingCloseLatch = null
         Timber.i("HandTracker closed")
     }
 
     override fun isInitialized(): Boolean = _isInitialized
 
     @Suppress("DEPRECATION")
-    private fun handleResult(result: HandLandmarkerResult) {
-        // Signal pending close latch if we're closing
+    private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
         if (isClosing) {
             pendingCloseLatch?.countDown()
+            return
         }
 
-        val systemTimestampMs = synchronized(timestampLock) {
-            if (pendingFrameTimestampsMs.isNotEmpty()) {
-                pendingFrameTimestampsMs.removeFirst()
-            } else {
-                System.nanoTime() / 1_000_000L
-            }
-        }
-
+        val timestampMs = resultTimestampMs
         if (result.landmarks().isEmpty()) {
-            // No hand detected - emit empty frame with correct timestamp
             _handFrames.tryEmit(
                 HandFrame(
                     landmarks = emptyList(),
                     handedness = Handedness.UNKNOWN,
-                    timestampMs = systemTimestampMs,
+                    timestampMs = timestampMs,
                     confidence = 0f,
                 ),
             )
@@ -199,20 +127,12 @@ class HandTrackerImpl @Inject constructor(
 
         val landmarks = result.landmarks()[0]
         val handedness = result.handednesses()
-
         val landmark3DList = landmarks.map { lm ->
-            Landmark3D(
-                x = lm.x(),
-                y = lm.y(),
-                z = lm.z(),
-            )
+            Landmark3D(x = lm.x(), y = lm.y(), z = lm.z())
         }
 
         val handednessCategory = if (handedness.isNotEmpty() && handedness[0].isNotEmpty()) {
-            val category = handedness[0][0]
-            val label = category.categoryName()
-            when (label.uppercase()) {
-                // Front camera image is mirrored, so swap handedness
+            when (handedness[0][0].categoryName().uppercase()) {
                 "LEFT" -> Handedness.RIGHT
                 "RIGHT" -> Handedness.LEFT
                 else -> Handedness.UNKNOWN
@@ -227,29 +147,21 @@ class HandTrackerImpl @Inject constructor(
             0f
         }
 
-        // Emit raw landmarks directly — no landmark-level filtering here.
-        // (Bug #6 & #7 Fix: removed handFrameFilter to eliminate double-filtering
-        // latency. The cursor path now uses a single, more aggressive filter in
-        // CursorSmoother.)
-        val rawFrame = HandFrame(
-            landmarks = landmark3DList,
-            handedness = handednessCategory,
-            timestampMs = systemTimestampMs,
-            confidence = confidence,
+        _handFrames.tryEmit(
+            HandFrame(
+                landmarks = landmark3DList,
+                handedness = handednessCategory,
+                timestampMs = timestampMs,
+                confidence = confidence,
+            ),
         )
-
-        _handFrames.tryEmit(rawFrame)
     }
 
-    /**
-     * Validates that the hand_landmarker.task model file exists in the assets directory.
-     */
     private fun validateModelFile(): Boolean {
         return try {
-            // Samsung devices truncate assets.list; try open directly
             try { context.assets.open(MODEL_FILE).close(); true } catch (_: Exception) { false }
         } catch (e: Exception) {
-            Timber.e(e, "Error checking model file in assets")
+            Timber.e(e, "Error checking hand model file")
             false
         }
     }
@@ -260,24 +172,22 @@ class HandTrackerImpl @Inject constructor(
                 .setModelAssetPath(MODEL_FILE)
                 .setDelegate(delegate)
                 .build()
-
             val options = HandLandmarker.HandLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
                 .setRunningMode(RunningMode.LIVE_STREAM)
                 .setNumHands(NUM_HANDS)
                 .setMinHandDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, _ ->
-                    handleResult(result)
+                .setResultListener { result, resultTimestampMs ->
+                    handleResult(result, resultTimestampMs)
                 }
                 .setErrorListener { error ->
                     Timber.e(error, "HandLandmarker error (delegate=%s)", delegate)
                 }
                 .build()
-
-            val landmarker = HandLandmarker.createFromOptions(context, options)
-            Timber.i("HandLandmarker initialized with %s delegate", delegate)
-            landmarker
+            HandLandmarker.createFromOptions(context, options).also {
+                Timber.i("HandLandmarker initialized with %s delegate", delegate)
+            }
         } catch (e: Exception) {
             Timber.w(e, "Failed to initialize with %s delegate, will try fallback", delegate)
             null
@@ -285,11 +195,9 @@ class HandTrackerImpl @Inject constructor(
     }
 
     companion object {
-        // Model source: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
         private const val MODEL_FILE = "hand_landmarker.task"
         private const val NUM_HANDS = 1
         private const val MIN_DETECTION_CONFIDENCE = 0.6f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
-        private const val MAX_PENDING_TIMESTAMPS = 32
     }
 }
