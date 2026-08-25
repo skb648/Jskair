@@ -2,19 +2,19 @@
 
 > Control your device with intuitive air gestures — no touch required. Privacy-first, on-device only.
 
-![AirControl](app/src/main/res/mipmap-xxxhdpi/ic_launcher.png) <!-- If preview broken, see app/src/main/res/mipmap-xxxhdpi/ic_launcher.png locally -->
+![AirControl](app/src/main/res/mipmap-xxxhdpi/ic_launcher.png)
 
 ## ✨ Features
 - **Hand Tracking:** MediaPipe Hand Landmarker (GPU → CPU fallback), 24 FPS adaptive, 5 FPS scan when idle
 - **Gesture Engine:** Pure Kotlin module — static poses (pinch, victory, thumb, etc.) + dynamic swipes + 5-point gaze calibration
-- **Cursor:** Apple Vision Pro-level smoothing (OneEuro + dead-zone), 60fps overlay, dwell-to-click, blink-to-click
+- **Cursor:** OneEuro + dead-zone smoothing, dwell-to-click, blink-to-click
 - **Privacy:** `INTERNET` permission never requested, all processing on-device, `canRetrieveWindowContent=false`
-- **Accessibility:** `TYPE_ACCESSIBILITY_OVERLAY` (no SYSTEM_ALERT_WINDOW needed on Android 6+)
+- **Accessibility:** `TYPE_ACCESSIBILITY_OVERLAY` (no `SYSTEM_ALERT_WINDOW` needed)
 
 ## 🚀 Quick Start
-1. Install debug APK: `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
-2. Grant **Camera** + **Accessibility (AirControl)** — overlay auto-granted via accessibility
-3. Show open palm 250ms to arm → perform gestures
+1. Install the debug APK: `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
+2. Grant **Camera** + **Accessibility (AirControl)**. Notification permission is optional and only affects boot/resume notifications.
+3. Show an open palm briefly to arm, then perform gestures.
 
 ## 🔧 Build
 ```bash
@@ -30,4 +30,3 @@
 
 ## 📄 License
 Private — see `docs/release-signing.md` for signing.
-
