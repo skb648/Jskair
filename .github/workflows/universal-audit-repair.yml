@@ -1,0 +1,111 @@
+name: Universal audit repair
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Apply remaining fixes
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def must_replace(path, old, new, count=1):
+              p=Path(path); s=p.read_text()
+              if old not in s:
+                  raise SystemExit(f'Expected pattern missing: {path}: {old[:120]!r}')
+              p.write_text(s.replace(old,new,count))
+
+          # 1. Persisted default must match UserPreferences: status pill OFF.
+          must_replace(
+              'app/src/main/java/com/aircontrol/data/repository/SettingsRepositoryImpl.kt',
+              'statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: true,',
+              'statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: false,',
+          )
+
+          # 2. Remove the redundant overlay permission step from onboarding.
+          p=Path('app/src/main/java/com/aircontrol/ui/onboarding/OnboardingScreen.kt'); s=p.read_text()
+          s=s.replace('rememberPagerState(initialPage = currentStep, pageCount = { 5 })','rememberPagerState(initialPage = currentStep.coerceIn(0, 3), pageCount = { 4 })')
+          s=s.replace('''                    3 -> OverlayPermissionStep(\n                        isGranted = permissionStates.overlayGranted,\n                        onOpenSettings = {\n                            context.startActivity(\n                                viewModel.permissionsManager.requestOverlayPermission(),\n                            )\n                        },\n                    )\n                    // UU-01 Fix: Added gesture tutorial page\n                    4 -> GestureTutorialStep(''','''                    3 -> GestureTutorialStep(''')
+          s=s.replace('pageCount = 5,','pageCount = 4,')
+          s=s.replace('pagerState.currentPage < 4','pagerState.currentPage < 3')
+          s=s.replace('''            canProceed = when (pagerState.currentPage) {\n                1 -> permissionStates.cameraGranted\n                2 -> permissionStates.accessibilityGranted\n                3 -> permissionStates.overlayGranted\n                4 -> permissionStates.allGranted // Require all perms before finishing\n                else -> true\n            },''','''            canProceed = when (pagerState.currentPage) {\n                1 -> permissionStates.cameraGranted\n                2 -> permissionStates.accessibilityGranted\n                3 -> permissionStates.allGranted\n                else -> true\n            },''')
+          # Remove the now-unused composable, if present.
+          s=re.sub(r'\n@Composable\nprivate fun OverlayPermissionStep\(.*?\n@Composable\nprivate fun PermissionGrantedBadge', '\n@Composable\nprivate fun PermissionGrantedBadge', s, count=1, flags=re.S)
+          p.write_text(s)
+
+          # 3. Palm->Home must require leaving the neutral open-palm pose first.
+          p=Path('gesture-engine/src/main/kotlin/com/aircontrol/gesture/GestureEngine.kt'); s=p.read_text()
+          must_replace(p.as_posix(), '    private var palmHomeFired: Boolean = false\n', '    private var palmHomeFired: Boolean = false\n    @Volatile\n    private var palmHomeReady: Boolean = false\n', 1)
+          old='''        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {\n            if (pose == Pose.OPEN_PALM) {\n                if (!palmHolding) {\n                    palmHolding = true\n                    palmHoldStartMs = timestampMs\n                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {\n                    palmHomeFired = true\n                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))\n                }\n            } else {\n                palmHolding = false\n                palmHoldStartMs = 0L\n                palmHomeFired = false\n            }\n        } else {\n            palmHolding = false\n            palmHoldStartMs = 0L\n            palmHomeFired = false\n        }'''
+          new='''        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {\n            if (pose != Pose.OPEN_PALM) {\n                palmHomeReady = true\n                palmHolding = false\n                palmHoldStartMs = 0L\n                palmHomeFired = false\n            } else if (palmHomeReady) {\n                if (!palmHolding) {\n                    palmHolding = true\n                    palmHoldStartMs = timestampMs\n                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {\n                    palmHomeFired = true\n                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))\n                }\n            }\n        } else {\n            palmHomeReady = false\n            palmHolding = false\n            palmHoldStartMs = 0L\n            palmHomeFired = false\n        }'''
+          must_replace(p.as_posix(), old, new, 1)
+
+          # 4. Accessibility service: use monotonic time and avoid EMPTY-frame reset thrash.
+          p=Path('app/src/main/java/com/aircontrol/accessibility/GestureControlAccessibilityService.kt'); s=p.read_text()
+          must_replace(p.as_posix(),'import android.os.Build\n','import android.os.Build\nimport android.os.SystemClock\n',1)
+          s=s.replace('blinkDetector.update(gaze.ear, System.currentTimeMillis())','blinkDetector.update(gaze.ear, SystemClock.elapsedRealtime())')
+          s=s.replace('timestampMs = System.currentTimeMillis(),\n                            confidence = 1f,','timestampMs = SystemClock.elapsedRealtime(),\n                            confidence = gaze.confidence,')
+          s=s.replace('val now = System.currentTimeMillis()\n                val armed =','val now = SystemClock.elapsedRealtime()\n                val armed =')
+          must_replace(p.as_posix(),'private var isReceiverRegistered = false','private var isReceiverRegistered = false\n    private var wrongHandFiltered = false',1)
+          old='''                if (shouldProcess) {\n                    gestureDetector?.processHandFrame(frame)\n                } else {\n                    // Feed EMPTY so the engine can disarm cleanly, but only if\n                    // we were previously tracking (avoid resetting on every frame\n                    // of the wrong hand, which caused arming thrash).\n                    gestureDetector?.processHandFrame(\n                        HandFrame.EMPTY.copy(timestampMs = frame.timestampMs),\n                    )\n                }'''
+          new='''                if (shouldProcess) {\n                    wrongHandFiltered = false\n                    gestureDetector?.processHandFrame(frame)\n                } else if (!wrongHandFiltered) {\n                    wrongHandFiltered = true\n                    gestureDetector?.processHandFrame(\n                        HandFrame.EMPTY.copy(timestampMs = frame.timestampMs),\n                    )\n                }'''
+          must_replace(p.as_posix(),old,new,1)
+
+          # 5. CameraService: eliminate GlobalScope and serialize destruction with lifecycle commands.
+          p=Path('app/src/main/java/com/aircontrol/camera/CameraService.kt'); s=p.read_text()
+          must_replace(p.as_posix(),'import kotlinx.coroutines.GlobalScope\n','',1)
+          must_replace(p.as_posix(),'''        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(GlobalScope, SharingStarted.Eagerly, false)''','''        private val stateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)\n        val isRunning: StateFlow<Boolean> = _state\n            .map { it.isRunning }\n            .stateIn(stateScope, SharingStarted.Eagerly, false)\n        val isPaused: StateFlow<Boolean> = _state\n            .map { it.isPaused }\n            .stateIn(stateScope, SharingStarted.Eagerly, false)''',1)
+          must_replace(p.as_posix(),'''        serviceScope.launch(Dispatchers.IO) {\n            runCatching { stopTrackingLocked() }''','''        serviceScope.launch(Dispatchers.IO) {\n            lifecycleMutex.withLock {\n                runCatching { stopTrackingLocked() }\n            }''',1)
+          # 6. Low-RAM devices get a cheaper camera input and lower analysis ceiling.
+          must_replace(p.as_posix,'import android.app.Notification\n','import android.app.ActivityManager\nimport android.app.Notification\n',1)
+          must_replace(p.as_posix,'val resolutionSelector = ResolutionSelector.Builder()\n                    .setResolutionStrategy(\n                        ResolutionStrategy(\n                            android.util.Size(1280, 720),','''val lowRam = (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice == true\n                val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)\n                val targetSize = when {\n                    lowRam || cpuCores <= 4 -> android.util.Size(640, 480)\n                    cpuCores <= 6 -> android.util.Size(960, 540)\n                    else -> android.util.Size(1280, 720)\n                }\n                val resolutionSelector = ResolutionSelector.Builder()\n                    .setResolutionStrategy(\n                        ResolutionStrategy(\n                            targetSize,''',1)
+          must_replace(p.as_posix,'configuredFps = if (prefs.batterySaver) minOf(15, prefs.analysisFps) else prefs.analysisFps','''val lowRam = (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice == true\n                    val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)\n                    val deviceCap = when { lowRam || cpuCores <= 4 -> 12; cpuCores <= 6 -> 20; else -> 30 }\n                    configuredFps = minOf(deviceCap, if (prefs.batterySaver) minOf(15, prefs.analysisFps) else prefs.analysisFps)''',1)
+          p.write_text(s)
+
+          # 7. Bump version code deterministically for this repair release.
+          p=Path('app/build.gradle.kts'); s=p.read_text()
+          s=s.replace('val versionCodeBase = 1','val versionCodeBase = 2',1)
+          p.write_text(s)
+
+          # 8. Add a regression test for strict calibration parsing/finite coefficients.
+          test=Path('app/src/test/java/com/aircontrol/tracking/GazeCalibrationRegressionTest.kt')
+          test.parent.mkdir(parents=True, exist_ok=True)
+          test.write_text('''package com.aircontrol.tracking\n\nimport org.junit.Assert.assertFalse\nimport org.junit.Assert.assertTrue\nimport org.junit.Test\n\nclass GazeCalibrationRegressionTest {\n    @Test fun malformedStringIsRejected() {\n        assertFalse(GazeCalibration.fromString("1,2,BROKEN,4,5,6,7").isCalibrated)\n    }\n\n    @Test fun validFiniteCalibrationIsAccepted() {\n        assertTrue(GazeCalibration.fromString("1,0,0,0,1,0").isCalibrated)\n    }\n\n    @Test fun mappedCoordinatesStayInNormalizedRange() {\n        val c = GazeCalibration.fromString("2,0,-1,0,2,-1")\n        val (x,y) = c.map(1f,1f)\n        assertTrue(x in 0f..1f && y in 0f..1f)\n    }\n}\n''')
+
+          print('all requested static fixes applied')
+
+      - name: Validate
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace lintDebug
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest
+          ./gradlew --no-daemon --stacktrace assembleDebug
+          ./gradlew --no-daemon --stacktrace assembleRelease
+          git diff --check
+
+      - name: Publish repair and remove workflow
+        run: |
+          rm -f .github/workflows/universal-audit-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: harden Android compatibility and remaining audit findings"
+          git push origin HEAD:main
