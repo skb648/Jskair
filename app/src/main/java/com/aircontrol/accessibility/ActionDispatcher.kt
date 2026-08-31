@@ -26,6 +26,7 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow

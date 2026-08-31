@@ -40,6 +40,8 @@
     <string name="home_warning_accessibility_message">Accessibility enables system-wide gesture control. Without it, AirControl cannot interact with other apps.</string>
     <string name="home_warning_overlay_title">Overlay permission required</string>
     <string name="home_warning_overlay_message">Overlay permission allows AirControl to display the cursor and visual feedback over other apps.</string>
+    <string name="home_warning_notifications_title">Notification permission required</string>
+    <string name="home_warning_notifications_message">Notifications keep AirControl tracking status visible. Without it, some status alerts and boot/resume notifications will be hidden.</string>
     <string name="home_warning_fix_button">Fix Now</string>
     <string name="home_warning_rerun_button">Re-run Setup</string>
 

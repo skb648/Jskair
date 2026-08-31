@@ -167,6 +167,14 @@ fun HomeScreen(
                                             },
                                         )
                                     }
+                                    MissingPermission.NOTIFICATIONS -> {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            },
+                                        )
+                                    }
                                 }
                             },
                             onReRunOnboarding = {
@@ -502,10 +510,12 @@ private fun PermissionWarningCard(
     val title = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_title)
         MissingPermission.ACCESSIBILITY -> stringResource(R.string.home_warning_accessibility_title)
+        MissingPermission.NOTIFICATIONS -> stringResource(R.string.home_warning_notifications_title)
     }
     val message = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_message)
         MissingPermission.ACCESSIBILITY -> stringResource(R.string.home_warning_accessibility_message)
+        MissingPermission.NOTIFICATIONS -> stringResource(R.string.home_warning_notifications_message)
     }
 
     Card(

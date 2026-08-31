@@ -177,7 +177,7 @@ fun <T> SegmentedButtonGroup(
     options: List<T>,
     selectedOption: T,
     onOptionSelected: (T) -> Unit,
-    labelMapper: (T) -> String,
+    labelMapper: @Composable (T) -> String,
     modifier: Modifier = Modifier,
 ) {
     Row(

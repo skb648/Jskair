@@ -163,12 +163,13 @@ private fun CustomGestureItem(
     onDelete: () -> Unit,
 ) {
     val enabledLabel = stringResource(if (gesture.isEnabled) R.string.custom_gestures_enabled else R.string.custom_gestures_disabled)
+    val itemContentDescription = stringResource(R.string.custom_gestures_item_cd, gesture.name, enabledLabel)
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .semantics {
-                contentDescription = stringResource(R.string.custom_gestures_item_cd, gesture.name, enabledLabel)
+                contentDescription = itemContentDescription
             },
     ) {
         Row(
