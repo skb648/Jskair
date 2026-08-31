@@ -19,6 +19,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import okio.Path
 import java.io.File
 
 class SettingsRepositoryImplTest {
@@ -34,7 +35,7 @@ class SettingsRepositoryImplTest {
     fun setup() {
         val dataStoreFile = File(tempFolder.root, "test_preferences.preferences_pb")
         testDataStore = PreferenceDataStoreFactory.createWithPath(
-            produceFile = { dataStoreFile.toPath() },
+            produceFile = { Path.get(dataStoreFile.toPath()) },
         )
         // Bug #22 Fix: Pass the test scope as the applicationScope parameter.
         // SettingsRepositoryImpl now requires a CoroutineScope for background

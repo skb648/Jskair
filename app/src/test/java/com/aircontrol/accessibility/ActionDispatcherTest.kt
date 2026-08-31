@@ -38,7 +38,7 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenX at center maps to center of screen`() {
         val screenWidth = 1080
-        val result = actionDispatcher.normalizeToScreenX(0.5f, screenWidth)
+        val result = ActionDispatcher.normalizeToScreenX(0.5f, screenWidth)
         // (0.5 - 0.10) / 0.80 = 0.5 -> 540
         assertEquals(540f, result, 1f)
     }
@@ -46,8 +46,8 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenX clamps dead zones to edges`() {
         val screenWidth = 1080
-        val leftEdge = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        val rightEdge = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        val leftEdge = ActionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val rightEdge = ActionDispatcher.normalizeToScreenX(1.0f, screenWidth)
         // 0.0 is inside the left 10% dead zone -> clamps to left edge (0)
         assertEquals(0f, leftEdge, 0.01f)
         // 1.0 is inside the right 10% dead zone -> clamps to right edge (1080)
@@ -58,7 +58,7 @@ class ActionDispatcherTest {
     fun `normalizeToScreenX edge values are within screen bounds`() {
         val screenWidth = 1080
         for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
-            val result = actionDispatcher.normalizeToScreenX(v, screenWidth)
+            val result = ActionDispatcher.normalizeToScreenX(v, screenWidth)
             assertTrue("X for $v should be in bounds", result >= 0f && result <= screenWidth.toFloat())
         }
     }
@@ -66,11 +66,11 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenX is monotonically increasing`() {
         val screenWidth = 1080
-        val r0 = actionDispatcher.normalizeToScreenX(0.0f, screenWidth)
-        val r25 = actionDispatcher.normalizeToScreenX(0.25f, screenWidth)
-        val r50 = actionDispatcher.normalizeToScreenX(0.5f, screenWidth)
-        val r75 = actionDispatcher.normalizeToScreenX(0.75f, screenWidth)
-        val r100 = actionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        val r0 = ActionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val r25 = ActionDispatcher.normalizeToScreenX(0.25f, screenWidth)
+        val r50 = ActionDispatcher.normalizeToScreenX(0.5f, screenWidth)
+        val r75 = ActionDispatcher.normalizeToScreenX(0.75f, screenWidth)
+        val r100 = ActionDispatcher.normalizeToScreenX(1.0f, screenWidth)
         assertTrue(r0 <= r25)
         assertTrue(r25 <= r50)
         assertTrue(r50 <= r75)
@@ -86,7 +86,7 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY maps active zone center to screen center`() {
         val screenHeight = 2400
-        val result = actionDispatcher.normalizeToScreenY(0.65f, screenHeight)
+        val result = ActionDispatcher.normalizeToScreenY(0.65f, screenHeight)
         // (0.65 - 0.30) / 0.70 = 0.5 -> 1200
         assertEquals(1200f, result, 1f)
     }
@@ -94,8 +94,8 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY clamps top dead zone to top of screen`() {
         val screenHeight = 2400
-        val top = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val deadZoneEdge = actionDispatcher.normalizeToScreenY(0.3f, screenHeight)
+        val top = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(0.3f, screenHeight)
         assertEquals(0f, top, 0.01f)
         assertEquals(0f, deadZoneEdge, 0.01f)
     }
@@ -103,7 +103,7 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY maps bottom to bottom of screen`() {
         val screenHeight = 2400
-        val bottom = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        val bottom = ActionDispatcher.normalizeToScreenY(1.0f, screenHeight)
         assertEquals(2400f, bottom, 0.01f)
     }
 
@@ -111,7 +111,7 @@ class ActionDispatcherTest {
     fun `normalizeToScreenY edge values are within screen bounds`() {
         val screenHeight = 2400
         for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
-            val result = actionDispatcher.normalizeToScreenY(v, screenHeight)
+            val result = ActionDispatcher.normalizeToScreenY(v, screenHeight)
             assertTrue("Y for $v should be in bounds", result >= 0f && result <= screenHeight.toFloat())
         }
     }
@@ -119,11 +119,11 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY is monotonically increasing`() {
         val screenHeight = 2400
-        val r0 = actionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val r25 = actionDispatcher.normalizeToScreenY(0.25f, screenHeight)
-        val r50 = actionDispatcher.normalizeToScreenY(0.5f, screenHeight)
-        val r75 = actionDispatcher.normalizeToScreenY(0.75f, screenHeight)
-        val r100 = actionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        val r0 = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val r25 = ActionDispatcher.normalizeToScreenY(0.25f, screenHeight)
+        val r50 = ActionDispatcher.normalizeToScreenY(0.5f, screenHeight)
+        val r75 = ActionDispatcher.normalizeToScreenY(0.75f, screenHeight)
+        val r100 = ActionDispatcher.normalizeToScreenY(1.0f, screenHeight)
         assertTrue(r0 <= r25)
         assertTrue(r25 <= r50)
         assertTrue(r50 <= r75)
@@ -134,26 +134,26 @@ class ActionDispatcherTest {
 
     @Test
     fun `normalizeToScreenX 0,5 on 1080 screen gives 540`() {
-        val result = actionDispatcher.normalizeToScreenX(0.5f, 1080)
+        val result = ActionDispatcher.normalizeToScreenX(0.5f, 1080)
         assertEquals(540f, result, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenY 0,65 on 2400 screen gives 1200`() {
         // (0.65 - 0.3) / 0.7 = 0.5 -> 1200
-        val result = actionDispatcher.normalizeToScreenY(0.65f, 2400)
+        val result = ActionDispatcher.normalizeToScreenY(0.65f, 2400)
         assertEquals(1200f, result, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenX at 0 maps to 0 left dead zone`() {
-        val result = actionDispatcher.normalizeToScreenX(0.0f, 1080)
+        val result = ActionDispatcher.normalizeToScreenX(0.0f, 1080)
         assertEquals(0f, result, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenY at 0 maps to 0 top dead zone`() {
-        val result = actionDispatcher.normalizeToScreenY(0.0f, 2400)
+        val result = ActionDispatcher.normalizeToScreenY(0.0f, 2400)
         assertEquals(0f, result, 0.01f)
     }
 
@@ -394,8 +394,8 @@ class ActionDispatcherTest {
     fun `normalizeToScreenX with values outside 0-1 range is coerced to screen`() {
         val screenWidth = 1080
         // These should be coerced to screen bounds
-        val resultNeg = actionDispatcher.normalizeToScreenX(-0.5f, screenWidth)
-        val resultOver = actionDispatcher.normalizeToScreenX(1.5f, screenWidth)
+        val resultNeg = ActionDispatcher.normalizeToScreenX(-0.5f, screenWidth)
+        val resultOver = ActionDispatcher.normalizeToScreenX(1.5f, screenWidth)
 
         assertTrue("Negative X coerced to >= 0", resultNeg >= 0f)
         assertTrue("Over X coerced to <= width", resultOver <= screenWidth.toFloat())
@@ -404,8 +404,8 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY with values outside 0-1 range is coerced to screen`() {
         val screenHeight = 2400
-        val resultNeg = actionDispatcher.normalizeToScreenY(-0.5f, screenHeight)
-        val resultOver = actionDispatcher.normalizeToScreenY(1.5f, screenHeight)
+        val resultNeg = ActionDispatcher.normalizeToScreenY(-0.5f, screenHeight)
+        val resultOver = ActionDispatcher.normalizeToScreenY(1.5f, screenHeight)
 
         assertTrue("Negative Y coerced to >= 0", resultNeg >= 0f)
         assertTrue("Over Y coerced to <= height", resultOver <= screenHeight.toFloat())
