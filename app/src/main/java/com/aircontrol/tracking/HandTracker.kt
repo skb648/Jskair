@@ -52,10 +52,11 @@ class HandTrackerImpl @Inject constructor(
             return
         }
 
-        handLandmarker = tryInitializeWithDelegate(Delegate.GPU)
-            ?: tryInitializeWithDelegate(Delegate.CPU)
+        // CPU is the portable production default. GPU delegates can terminate the
+        // entire process inside OEM graphics drivers before Kotlin can catch an error.
+        handLandmarker = tryInitializeWithDelegate(Delegate.CPU)
             ?: run {
-                Timber.e("Failed to initialize HandLandmarker with both GPU and CPU delegates")
+                Timber.e("Failed to initialize HandLandmarker with the portable CPU delegate")
                 return
             }
 
@@ -178,8 +179,8 @@ class HandTrackerImpl @Inject constructor(
                 .setNumHands(NUM_HANDS)
                 .setMinHandDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, _ ->
-                    handleResult(result, lastSubmittedTimestampMs)
+                .setResultListener { result, timestampMs ->
+                    handleResult(result, timestampMs)
                 }
                 .setErrorListener { error ->
                     Timber.e(error, "HandLandmarker error (delegate=%s)", delegate)
@@ -189,7 +190,7 @@ class HandTrackerImpl @Inject constructor(
                 Timber.i("HandLandmarker initialized with %s delegate", delegate)
             }
         } catch (e: Exception) {
-            Timber.w(e, "Failed to initialize with %s delegate, will try fallback", delegate)
+            Timber.w(e, "Failed to initialize with %s delegate, initialization failed", delegate)
             null
         }
     }

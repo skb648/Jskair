@@ -338,4 +338,5 @@
 
     <!-- Calibration measurement progress content description -->
     <string name="calibration_measurement_progress_cd">Measurement progress %1$d%%</string>
+    <string name="accessibility_start_failed_toast">AirControl accessibility could not start. Return to the app and retry.</string>
 </resources>

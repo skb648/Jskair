@@ -87,6 +87,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        isVisible = true
+    }
+
+    override fun onStop() {
+        isVisible = false
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         val explicitResume = startTrackingOnResume
@@ -154,6 +164,10 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_OPEN_SETTINGS = "com.aircontrol.action.OPEN_SETTINGS"
         const val ACTION_RESUME_TRACKING = "com.aircontrol.action.RESUME_TRACKING"
+        @Volatile
+        var isVisible: Boolean = false
+            private set
+
         private const val SPLASH_MAX_WAIT_MS = 1500L
     }
 }

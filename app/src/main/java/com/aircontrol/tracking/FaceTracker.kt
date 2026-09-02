@@ -65,10 +65,11 @@ class FaceTrackerImpl @Inject constructor(
             return
         }
 
-        faceLandmarker = tryInitializeWithDelegate(Delegate.GPU)
-            ?: tryInitializeWithDelegate(Delegate.CPU)
+        // Prefer predictable compatibility over OEM GPU-driver crashes. Eye tracking
+        // is optional and only initialized when enabled.
+        faceLandmarker = tryInitializeWithDelegate(Delegate.CPU)
             ?: run {
-                Timber.e("Failed to initialize FaceLandmarker with both GPU and CPU delegates")
+                Timber.e("Failed to initialize FaceLandmarker with the portable CPU delegate")
                 return
             }
         lastSubmittedTimestampMs = Long.MIN_VALUE
@@ -231,8 +232,8 @@ class FaceTrackerImpl @Inject constructor(
                 .setMinFaceDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinFacePresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, _ ->
-                    handleResult(result, lastSubmittedTimestampMs)
+                .setResultListener { result, timestampMs ->
+                    handleResult(result, timestampMs)
                 }
                 .setErrorListener { error ->
                     Timber.e(error, "FaceLandmarker error (delegate=%s)", delegate)
@@ -242,7 +243,7 @@ class FaceTrackerImpl @Inject constructor(
                 Timber.i("FaceLandmarker initialized with %s delegate", delegate)
             }
         } catch (e: Exception) {
-            Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, will try fallback", delegate)
+            Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, initialization failed", delegate)
             null
         }
     }

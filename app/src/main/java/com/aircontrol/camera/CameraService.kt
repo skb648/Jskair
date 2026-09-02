@@ -288,7 +288,7 @@ class CameraService : LifecycleService() {
                 val resolutionSelector = ResolutionSelector.Builder()
                     .setResolutionStrategy(
                         ResolutionStrategy(
-                            android.util.Size(1280, 720),
+                            android.util.Size(640, 480),
                             ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
                         )
                     ).build()
@@ -389,9 +389,15 @@ class CameraService : LifecycleService() {
 
             val mpImage = imageProxyToMPImage(imageProxy)
             if (mpImage != null) {
-                handTracker.processFrame(mpImage, now)
-                if (eyeTrackingEnabled && faceTracker.isInitialized()) {
-                    faceTracker.processFrame(mpImage, now)
+                try {
+                    handTracker.processFrame(mpImage, now)
+                    if (eyeTrackingEnabled && faceTracker.isInitialized()) {
+                        faceTracker.processFrame(mpImage, now)
+                    }
+                } finally {
+                    // MPImage owns reference-counted native storage. Explicit close
+                    // prevents native-memory growth during continuous tracking.
+                    mpImage.close()
                 }
             }
         } catch (e: Exception) {
@@ -549,7 +555,7 @@ class CameraService : LifecycleService() {
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
                     val resolutionSelector = ResolutionSelector.Builder()
                         .setResolutionStrategy(
-                            ResolutionStrategy(android.util.Size(1280, 720),
+                            ResolutionStrategy(android.util.Size(640, 480),
                                 ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
                         ).build()
                     val analysis = ImageAnalysis.Builder()

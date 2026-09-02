@@ -164,31 +164,37 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
 
-        publishConnectionState(true)
+        try {
+            // Init keyguard cache.
+            val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            cachedKeyguardLocked = km?.isKeyguardLocked ?: false
 
-        // Init keyguard cache.
-        val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
-        cachedKeyguardLocked = km?.isKeyguardLocked ?: false
-
-        Timber.i("GestureControlAccessibilityService connected")
-
-        // Attach dispatcher and register visual-feedback callback (fix #6: cleared on detach).
-        actionDispatcher?.attachService(this)
-        actionDispatcher?.onGestureDispatched = { actionName ->
-            serviceScope.launch(Dispatchers.Main) {
-                cursorOverlay?.ripple()
+            // Attach dispatcher and register visual-feedback callback.
+            actionDispatcher?.attachService(this)
+            actionDispatcher?.onGestureDispatched = { actionName ->
+                serviceScope.launch(Dispatchers.Main) { cursorOverlay?.ripple() }
+                Timber.d("Gesture dispatched: %s — cursor ripple", actionName)
             }
-            Timber.d("Gesture dispatched: %s — cursor ripple", actionName)
+
+            updateScreenMetrics()
+            createOverlays()
+            startTrackingPipeline()
+            registerScreenStateReceiver()
+
+            // Publish readiness only after every initialization step succeeds.
+            publishConnectionState(true)
+            Timber.i("GestureControlAccessibilityService connected")
+        } catch (failure: Throwable) {
+            // A malformed OEM WindowManager/receiver implementation must not crash
+            // MainActivity or bounce the user out of onboarding.
+            Timber.e(failure, "Accessibility service initialization failed")
+            publishConnectionState(false)
+            runCatching { unregisterScreenStateReceiver() }
+            runCatching { stopTrackingPipeline() }
+            runCatching { removeOverlays() }
+            runCatching { actionDispatcher?.detachService() }
+            Toast.makeText(this, R.string.accessibility_start_failed_toast, Toast.LENGTH_LONG).show()
         }
-
-        updateScreenMetrics()
-        createOverlays()
-
-        // Only the CameraService owns thermal monitoring to avoid double throttling
-        // (fix #24). We do NOT create a second ThermalMonitor here.
-
-        startTrackingPipeline()
-        registerScreenStateReceiver()
 
         // The settings collector is the authority for starting/stopping the camera.
         // This prevents accessibility reconnect or unlock from overriding the user's
@@ -582,10 +588,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // ---------- Camera service helpers ----------
 
     private fun startCameraService() {
+        // Camera is a while-in-use permission. Starting a new camera foreground
+        // service while only Android Settings is visible is rejected on Android 14+
+        // and unreliable on OEM builds. MainActivity.onResume performs the start.
+        if (cameraServiceManager?.isTracking() != true && !com.aircontrol.MainActivity.isVisible) {
+            Timber.i("Camera start deferred until AirControl is visible")
+            return
+        }
         runCatching {
             cameraServiceManager?.startTracking()
             Timber.i("Camera service start requested from accessibility service")
-        }.onFailure { Timber.e(it, "Failed to start camera service") }
+        }.onFailure { Timber.e(it, "Failed to start CameraService") }
     }
 
     private fun stopCameraService() {
