@@ -243,21 +243,23 @@ class DynamicGestureDetectorTest {
         )
 
         // Detect first swipe
-        var firstDetected = false
+        var firstDetectedAt: Long? = null
         for (frame in frames1) {
             val result = detector.process(frame)
             if (result.detected) {
-                firstDetected = true
+                firstDetectedAt = frame.timestampMs
                 break
             }
         }
-        assertTrue(firstDetected)
+        assertTrue(firstDetectedAt != null)
 
-        // Immediately try another swipe — should be in cooldown
+        // Keep every frame of the second candidate strictly inside the cooldown.
         val frames2 = generateSwipeFrames(
             startX = 0.3f, startY = 0.5f,
             endX = 0.7f, endY = 0.5f,
-            startTimestampMs = 1300L, // Right after first swipe
+            startTimestampMs = firstDetectedAt!! + 1L,
+            durationMs = config.swipeCooldownMs - 2L,
+            frameCount = 10,
         )
         var secondDetected = false
         for (frame in frames2) {

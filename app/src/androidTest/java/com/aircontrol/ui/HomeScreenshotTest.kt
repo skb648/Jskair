@@ -1,6 +1,7 @@
 package com.aircontrol.ui
 
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aircontrol.ui.home.HomeScreen
 import org.junit.Rule

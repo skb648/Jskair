@@ -36,7 +36,7 @@ android {
         targetSdk = 35
         versionCode = resolvedVersionCode
         versionName = "1.0.1"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "com.aircontrol.HiltTestRunner"
     }
 
     buildTypes {
@@ -150,6 +150,7 @@ dependencies {
     testImplementation(libs.mockito.core)
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.turbine)
+    testImplementation(libs.robolectric)
     androidTestImplementation(composeBom)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -13,7 +14,10 @@
          it triggers a Play policy declaration for zero functional gain). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Fix #45: INTERNET permission removed since the app declares no network access. -->
+    <!-- MediaPipe tasks-core transitively contributes Google Data Transport permissions.
+         AirControl performs all inference on-device, so remove them from the final APK. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
 
     <application
         android:name=".AirControlApp"

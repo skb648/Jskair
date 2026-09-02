@@ -244,7 +244,7 @@ class GestureStateMachine(config: GestureEngineConfig) {
 
     private fun transitionTo(state: GestureEngineState) {
         currentState = state
-        if (state != GestureEngineState.ARMING) {
+        if (state == GestureEngineState.DISARMED) {
             armingProgress = 0f
         }
     }

@@ -121,14 +121,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // screen where USER_PRESENT may not fire).
                     if (!cachedKeyguardLocked) {
                         startTrackingPipeline()
-                        startCameraService()
+                        if (currentPreferences.gesturesEnabled) startCameraService()
                     }
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     Timber.i("User unlocked — fully active")
                     cachedKeyguardLocked = false
                     startTrackingPipeline()
-                    startCameraService()
+                    if (currentPreferences.gesturesEnabled) startCameraService()
                 }
             }
         }
@@ -184,10 +184,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
         startTrackingPipeline()
         registerScreenStateReceiver()
 
-        // Only start the camera service if we're not on the keyguard.
-        if (!cachedKeyguardLocked) {
-            startCameraService()
-        }
+        // The settings collector is the authority for starting/stopping the camera.
+        // This prevents accessibility reconnect or unlock from overriding the user's
+        // master Off switch.
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -236,6 +235,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             settingsRepository?.userPreferences?.collect { prefs ->
                 currentPreferences = prefs
+                if (!cachedKeyguardLocked && prefs.gesturesEnabled &&
+                    cameraServiceManager?.isTracking() != true) startCameraService()
+                if (!prefs.gesturesEnabled && cameraServiceManager?.isTracking() == true) stopCameraService()
 
                 if (lastAppliedSensitivity != prefs.sensitivity) {
                     gestureDetector?.updateSensitivity(prefs.sensitivity)
@@ -375,8 +377,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launch {
             faceTracker?.gazePoints?.collect { gaze ->
                 try {
-                    if (!currentPreferences.eyeTrackingEnabled || !currentPreferences.cursorEnabled)
-                        return@collect
+                    if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
+                        !currentPreferences.cursorEnabled) return@collect
                     if (!gaze.isDetected) {
                         withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                         cursorController?.hide()
@@ -663,13 +665,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.notifyHover() }
         }
 
-        if (currentPreferences.dwellEnabled && !dwellFired &&
+        if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired &&
             stillMs >= currentPreferences.dwellDurationMs
         ) {
             dwellFired = true
             actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight)
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
-        } else if (currentPreferences.dwellEnabled && !dwellFired) {
+        } else if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired) {
             val progress = (stillMs.toFloat() / currentPreferences.dwellDurationMs)
                 .coerceIn(0f, 1f)
             // Throttle dwell ring updates to ~30fps to avoid main-thread spam (fix #62).

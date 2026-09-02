@@ -42,3 +42,6 @@ reports/
 
 # CI
 .gitlab-ci.yml.bak
+
+# Local release signing material (never commit)
+release-signing/

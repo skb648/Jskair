@@ -3,6 +3,7 @@ package com.aircontrol.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -29,7 +30,7 @@ class SettingsPersistenceTest {
         var preferences by mutableStateOf(UserPreferences())
 
         composeTestRule.setContent {
-            androidx.compose.material3.Column {
+            androidx.compose.foundation.layout.Column {
                 androidx.compose.material3.Text(
                     text = "Sensitivity: ${preferences.sensitivity}",
                     modifier = androidx.compose.ui.Modifier.testTag("sensitivity"),
@@ -70,7 +71,7 @@ class SettingsPersistenceTest {
         var preferences by mutableStateOf(UserPreferences())
 
         composeTestRule.setContent {
-            androidx.compose.material3.Column {
+            androidx.compose.foundation.layout.Column {
                 androidx.compose.material3.Text(
                     text = if (preferences.gesturesEnabled) "Gestures: ON" else "Gestures: OFF",
                     modifier = androidx.compose.ui.Modifier.testTag("gestures"),

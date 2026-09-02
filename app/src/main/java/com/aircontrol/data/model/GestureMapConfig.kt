@@ -49,12 +49,6 @@ data class GestureMapConfig(
 
             val result = defaults.map { default ->
                 existingByKey[default.key]?.copy(label = default.label) ?: default
-            }.toMutableList()
-            // Preserve user-added entries not in defaults
-            existingByKey.forEach { (key, entry) ->
-                if (key !in result.map { it.key }) {
-                    result.add(entry)
-                }
             }
 
             return GestureMapConfig(

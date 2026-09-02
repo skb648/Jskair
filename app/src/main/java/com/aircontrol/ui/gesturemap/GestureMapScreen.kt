@@ -411,7 +411,7 @@ private fun ActionSelectionSheet(
             }
 
             // Action list
-            val actions = GestureAction.entries.filter { it != GestureAction.DRAG }
+            val actions = GestureAction.entries
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()

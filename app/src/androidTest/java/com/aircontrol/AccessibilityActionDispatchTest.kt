@@ -52,21 +52,21 @@ class AccessibilityActionDispatchTest {
 
     @Test
     fun normalizeToScreenX_centerOn1080Screen() {
-        val result = actionDispatcher.normalizeToScreenX(0.5f, 1080)
+        val result = ActionDispatcher.normalizeToScreenX(0.5f, 1080)
         assertEquals(540f, result, 1f)
     }
 
     @Test
     fun normalizeToScreenY_centerOn2400Screen() {
         // Center of the Y active zone is normY = 0.65: (0.65 - 0.3)/0.7 = 0.5 -> 1200
-        val result = actionDispatcher.normalizeToScreenY(0.65f, 2400)
+        val result = ActionDispatcher.normalizeToScreenY(0.65f, 2400)
         assertEquals(1200f, result, 1f)
     }
 
     @Test
     fun normalizeToScreenX_clampsDeadZonesToEdges() {
-        val left = actionDispatcher.normalizeToScreenX(0.0f, 1080)
-        val right = actionDispatcher.normalizeToScreenX(1.0f, 1080)
+        val left = ActionDispatcher.normalizeToScreenX(0.0f, 1080)
+        val right = ActionDispatcher.normalizeToScreenX(1.0f, 1080)
         // 0.0 is in the left dead zone -> left edge; 1.0 in right dead zone -> right edge
         assertEquals(0f, left, 1f)
         assertEquals(1080f, right, 1f)
@@ -74,8 +74,8 @@ class AccessibilityActionDispatchTest {
 
     @Test
     fun normalizeToScreenY_topDeadZoneClampsToTop() {
-        val top = actionDispatcher.normalizeToScreenY(0.0f, 2400)
-        val bottom = actionDispatcher.normalizeToScreenY(1.0f, 2400)
+        val top = ActionDispatcher.normalizeToScreenY(0.0f, 2400)
+        val bottom = ActionDispatcher.normalizeToScreenY(1.0f, 2400)
         // Top 40% dead zone clamps to screen top (0); bottom maps to full height
         assertEquals(0f, top, 1f)
         assertEquals(2400f, bottom, 1f)
@@ -83,16 +83,16 @@ class AccessibilityActionDispatchTest {
 
     @Test
     fun normalizeToScreenX_edgeValuesWithinScreenBounds() {
-        val result0 = actionDispatcher.normalizeToScreenX(0.0f, 1080)
-        val result1 = actionDispatcher.normalizeToScreenX(1.0f, 1080)
+        val result0 = ActionDispatcher.normalizeToScreenX(0.0f, 1080)
+        val result1 = ActionDispatcher.normalizeToScreenX(1.0f, 1080)
         assert(result0 >= 0f && result0 <= 1080f)
         assert(result1 >= 0f && result1 <= 1080f)
     }
 
     @Test
     fun normalizeToScreenY_edgeValuesWithinScreenBounds() {
-        val result0 = actionDispatcher.normalizeToScreenY(0.0f, 2400)
-        val result1 = actionDispatcher.normalizeToScreenY(1.0f, 2400)
+        val result0 = ActionDispatcher.normalizeToScreenY(0.0f, 2400)
+        val result1 = ActionDispatcher.normalizeToScreenY(1.0f, 2400)
         assert(result0 >= 0f && result1 <= 2400f)
     }
 
@@ -101,10 +101,10 @@ class AccessibilityActionDispatchTest {
     @Test
     fun defaultGestureMapHasExpectedActions() {
         val map = actionDispatcher.getGestureMap()
-        assertEquals(GestureAction.SCROLL_RIGHT, map[ActionDispatcher.KEY_SWIPE_LEFT])
-        assertEquals(GestureAction.SCROLL_LEFT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
-        assertEquals(GestureAction.SCROLL_DOWN, map[ActionDispatcher.KEY_SWIPE_UP])
-        assertEquals(GestureAction.SCROLL_UP, map[ActionDispatcher.KEY_SWIPE_DOWN])
+        assertEquals(GestureAction.SCROLL_LEFT, map[ActionDispatcher.KEY_SWIPE_LEFT])
+        assertEquals(GestureAction.SCROLL_RIGHT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
+        assertEquals(GestureAction.SCROLL_UP, map[ActionDispatcher.KEY_SWIPE_UP])
+        assertEquals(GestureAction.SCROLL_DOWN, map[ActionDispatcher.KEY_SWIPE_DOWN])
         assertEquals(GestureAction.TAP, map[ActionDispatcher.KEY_POSE_PINCH])
         assertEquals(GestureAction.NONE, map[ActionDispatcher.KEY_POSE_POINTING])
         assertEquals(GestureAction.MEDIA_PLAY_PAUSE, map[ActionDispatcher.KEY_POSE_VICTORY])

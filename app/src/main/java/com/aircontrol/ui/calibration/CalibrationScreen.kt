@@ -96,7 +96,7 @@ fun CalibrationScreen(
                 },
                 actions = {
                     if (uiState.step != CalibrationStep.COMPLETE) {
-                        TextButton(onClick = { viewModel.skipCalibration() }) {
+                        TextButton(onClick = { viewModel.skipCalibration(); onNavigateBack() }) {
                             Text(stringResource(R.string.calibration_skip), color = TextSecondary)
                         }
                     }
@@ -133,7 +133,7 @@ fun CalibrationScreen(
                 when (step) {
                     CalibrationStep.INTRO -> IntroStep(
                         onStart = { viewModel.startCalibration() },
-                        onSkip = { viewModel.skipCalibration() },
+                        onSkip = { viewModel.skipCalibration(); onNavigateBack() },
                     )
                     CalibrationStep.PALM_DETECT -> PalmDetectStep(
                         handDetected = uiState.handDetected,

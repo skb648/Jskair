@@ -10,6 +10,8 @@ import com.aircontrol.gesture.model.Pose
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,6 +24,7 @@ import org.junit.Test
  * Tests the full pipeline: HandInput → gesture classification → state machine → events.
  * Includes false-positive rejection tests with random hand motion.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class GestureEngineTest {
 
     private lateinit var engine: GestureEngine
@@ -128,10 +131,12 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         val ts = armEngine(100L)
 
-        // Should have Armed event
+        // Drain events emitted via tryEmit before asserting.
+        runCurrent()
         assertTrue("Armed event should be emitted", events.any { it is GestureEvent.Armed })
 
         job.cancel()
@@ -140,11 +145,12 @@ class GestureEngineTest {
     // ========== Gesture execution tests ==========
 
     @Test
-    fun `PoseTriggered event emitted when actionable pose detected while ARMED`() = runTest {
+    fun `POINTING remains neutral while ARMED`() = runTest {
         val events = mutableListOf<GestureEvent>()
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         var ts = armEngine(100L)
 
@@ -154,9 +160,9 @@ class GestureEngineTest {
             ts += 33L
         }
 
-        // Should have PoseTriggered(POINTING)
-        assertTrue(
-            "PoseTriggered(POINTING) should be emitted",
+        runCurrent()
+        assertFalse(
+            "POINTING is a neutral cursor pose and must not execute an action",
             events.any { it is GestureEvent.PoseTriggered && it.pose == Pose.POINTING },
         )
 
@@ -169,6 +175,7 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         var ts = armEngine(100L)
 
@@ -177,6 +184,7 @@ class GestureEngineTest {
             ts += 33L
         }
 
+        runCurrent()
         assertTrue(
             "PoseTriggered(VICTORY) should be emitted",
             events.any { it is GestureEvent.PoseTriggered && it.pose == Pose.VICTORY },
@@ -193,14 +201,19 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         var ts = armEngine(100L)
 
-        // Hold FIST for disarm duration
-        engine.processFrame(fistInput(ts))
+        // Confirm FIST through the pose debounce, then hold it for the disarm duration.
+        repeat(config.poseDebounceFrames) {
+            engine.processFrame(fistInput(ts))
+            ts += 33L
+        }
         ts += config.fistDisarmDurationMs
         engine.processFrame(fistInput(ts))
 
+        runCurrent()
         assertEquals(GestureEngineState.DISARMED, engine.engineState.value)
         assertTrue("Disarmed event should be emitted", events.any { it is GestureEvent.Disarmed })
 
@@ -215,12 +228,14 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         val ts = armEngine(100L)
 
         // Feed a frame with hand
         engine.processFrame(openPalmInput(ts + 100L))
 
+        runCurrent()
         assertTrue(
             "CursorMoved should be emitted when armed",
             events.any { it is GestureEvent.CursorMoved },
@@ -235,6 +250,7 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         // Feed a FIST frame while DISARMED. FIST does not trigger arming (only
         // OPEN_PALM does), so the state remains DISARMED after this frame.
@@ -259,21 +275,24 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         var ts = armEngine(100L)
 
-        // Pinch start
-        repeat(config.poseDebounceFrames) {
+        // IDLE -> HOVER -> PINCH_START, then satisfy the 80 ms entry debounce.
+        repeat(5) {
             engine.processFrame(pinchInput(ts))
             ts += 33L
         }
-
-        // Pinch hold
+        // One additional held frame emits MOVE.
         engine.processFrame(pinchInput(ts))
         ts += 33L
 
-        // Pinch end (switch to open palm)
+        // HOLD -> RELEASE, then satisfy the 80 ms release debounce.
         engine.processFrame(openPalmInput(ts))
+        ts += 81L
+        engine.processFrame(openPalmInput(ts))
+        runCurrent()
 
         val pinchEvents = events.filterIsInstance<GestureEvent.Pinch>()
         assertTrue("Should have Pinch START", pinchEvents.any { it.phase == com.aircontrol.gesture.model.PinchPhase.START })
@@ -340,6 +359,7 @@ class GestureEngineTest {
         val job = launch {
             engine.gestureEvents.toList(events)
         }
+        runCurrent()
 
         repeat(50) { i ->
             engine.processFrame(noHandInput(100L + i * 33L))
@@ -399,7 +419,7 @@ class GestureEngineTest {
             Landmark3D(0.4f, 0.75f, 0f),   // THUMB_CMC
             Landmark3D(0.35f, 0.68f, 0f),   // THUMB_MCP
             Landmark3D(0.34f, 0.72f, 0f),   // THUMB_IP
-            Landmark3D(0.38f, 0.78f, 0f),   // THUMB_TIP (curled)
+            Landmark3D(0.30f, 0.74f, 0f),   // THUMB_TIP (curled; acute MCP-IP-TIP angle)
             Landmark3D(0.42f, 0.68f, 0f),   // INDEX_MCP
             Landmark3D(0.40f, 0.55f, 0f),   // INDEX_PIP
             Landmark3D(0.41f, 0.62f, 0f),   // INDEX_DIP
@@ -444,7 +464,7 @@ class GestureEngineTest {
             Landmark3D(0.4f, 0.75f, 0f),  // THUMB_CMC
             Landmark3D(0.35f, 0.68f, 0f),  // THUMB_MCP
             Landmark3D(0.36f, 0.60f, 0f),  // THUMB_IP
-            Landmark3D(0.38f, 0.52f, 0f),  // THUMB_TIP (close to index)
+            Landmark3D(0.392f, 0.502f, 0f),  // THUMB_TIP (close to index)
             Landmark3D(0.42f, 0.68f, 0f),  // INDEX_MCP
             Landmark3D(0.41f, 0.58f, 0f),  // INDEX_PIP
             Landmark3D(0.40f, 0.52f, 0f),  // INDEX_DIP

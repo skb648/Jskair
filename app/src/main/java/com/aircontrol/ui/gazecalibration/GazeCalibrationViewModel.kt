@@ -25,6 +25,7 @@ data class GazeCalibrationState(
     val isComplete: Boolean = false,
     val error: Boolean = false,
     val eyeTrackingDisabled: Boolean = false,
+    val prerequisitesChecked: Boolean = false,
 )
 
 /**
@@ -60,12 +61,14 @@ class GazeCalibrationViewModel @Inject constructor(
             val prefs = settingsRepository.userPreferences.first()
             _uiState.value = _uiState.value.copy(
                 eyeTrackingDisabled = !prefs.eyeTrackingEnabled,
+                prerequisitesChecked = true,
             )
         }
     }
 
     /** Re-checks eye tracking (called when the user returns to the screen). */
     fun refreshEyeTracking() {
+        _uiState.value = _uiState.value.copy(prerequisitesChecked = false)
         checkEyeTracking()
     }
 
@@ -77,7 +80,7 @@ class GazeCalibrationViewModel @Inject constructor(
      */
     fun collectCurrentPoint() {
         if (_uiState.value.isCollecting || _uiState.value.isComplete) return
-        if (_uiState.value.eyeTrackingDisabled) return
+        if (!_uiState.value.prerequisitesChecked || _uiState.value.eyeTrackingDisabled) return
         val index = _uiState.value.currentPointIndex
         _uiState.value = _uiState.value.copy(isCollecting = true, error = false)
 
@@ -149,7 +152,6 @@ class GazeCalibrationViewModel @Inject constructor(
         screenPoints.clear()
         _uiState.value = GazeCalibrationState(totalPoints = CALIBRATION_POINTS.size)
         checkEyeTracking()
-        collectCurrentPoint()
     }
 
     companion object {

@@ -315,12 +315,12 @@ class ActionDispatcher @Inject constructor(
     fun getGestureMap(): Map<String, GestureAction> = gestureMap.toMap()
 
     fun dispatchDwellTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
-        if (!currentPreferences.dwellEnabled) return false
+        if (!currentPreferences.gesturesEnabled || !currentPreferences.dwellEnabled) return false
         return performFeedbackTap(cursorX, cursorY, screenWidth, screenHeight, "dwell_tap")
     }
 
     fun dispatchBlinkTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
-        if (!currentPreferences.blinkClickEnabled) return false
+        if (!currentPreferences.gesturesEnabled || !currentPreferences.blinkClickEnabled) return false
         return performFeedbackTap(cursorX, cursorY, screenWidth, screenHeight, "blink_tap")
     }
 
@@ -689,10 +689,11 @@ class ActionDispatcher @Inject constructor(
         dragCurrentX = clampedX
         dragCurrentY = clampedY
 
-        val stroke = if (lastDragStroke == null) {
+        val previousStroke = lastDragStroke
+        val stroke = if (previousStroke == null) {
             GestureDescription.StrokeDescription(path, 0L, DRAG_STEP_DURATION_MS, true)
         } else {
-            lastDragStroke!!.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
+            previousStroke.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
         }
         lastDragStroke = stroke
 
@@ -711,9 +712,10 @@ class ActionDispatcher @Inject constructor(
             lineTo(x, y)
         }
 
-        val stroke = if (lastDragStroke != null) {
+        val previousStroke = lastDragStroke
+        val stroke = if (previousStroke != null) {
             // Continue from the last stroke so Android sees a single continuous drag.
-            lastDragStroke!!.continueStroke(path, 0L, DRAG_END_DURATION_MS, false)
+            previousStroke.continueStroke(path, 0L, DRAG_END_DURATION_MS, false)
         } else {
             GestureDescription.StrokeDescription(path, 0L, DRAG_END_DURATION_MS)
         }

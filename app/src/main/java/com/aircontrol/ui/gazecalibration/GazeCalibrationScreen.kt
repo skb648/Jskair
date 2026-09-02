@@ -55,8 +55,8 @@ fun GazeCalibrationScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Auto-collect only when a NEW point becomes active (not on error changes).
-    LaunchedEffect(state.currentPointIndex) {
-        if (!state.isComplete && !state.eyeTrackingDisabled) {
+    LaunchedEffect(state.currentPointIndex, state.prerequisitesChecked) {
+        if (state.prerequisitesChecked && !state.isComplete && !state.eyeTrackingDisabled) {
             viewModel.collectCurrentPoint()
         }
     }
@@ -88,6 +88,7 @@ fun GazeCalibrationScreen(
             contentAlignment = Alignment.Center,
         ) {
             when {
+                !state.prerequisitesChecked -> CircularProgressIndicator(color = ElectricBlue)
                 state.eyeTrackingDisabled -> {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

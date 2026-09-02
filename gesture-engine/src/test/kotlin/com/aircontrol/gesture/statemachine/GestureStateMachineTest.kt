@@ -115,7 +115,7 @@ class GestureStateMachineTest {
     fun `ARMED transitions to EXECUTING on actionable pose`() {
         armSystem()
 
-        val result = stateMachine.process(Pose.POINTING, true, 2000L)
+        val result = stateMachine.process(Pose.VICTORY, true, 2000L)
         assertEquals(GestureEngineState.EXECUTING, stateMachine.currentState)
         assertTrue(result.shouldExecute)
     }
@@ -226,7 +226,7 @@ class GestureStateMachineTest {
     @Test
     fun `EXECUTING transitions to COOLDOWN`() {
         armSystem()
-        stateMachine.process(Pose.POINTING, true, 2000L)
+        stateMachine.process(Pose.VICTORY, true, 2000L)
         assertEquals(GestureEngineState.EXECUTING, stateMachine.currentState)
 
         // Next frame → COOLDOWN
@@ -239,7 +239,7 @@ class GestureStateMachineTest {
     @Test
     fun `COOLDOWN transitions to ARMED after duration if hand present`() {
         armSystem()
-        stateMachine.process(Pose.POINTING, true, 2000L) // → EXECUTING
+        stateMachine.process(Pose.VICTORY, true, 2000L) // → EXECUTING
         stateMachine.process(Pose.NONE, true, 2001L) // → COOLDOWN
 
         // Before cooldown ends
@@ -254,7 +254,7 @@ class GestureStateMachineTest {
     @Test
     fun `COOLDOWN transitions to DISARMED after duration if no hand`() {
         armSystem()
-        stateMachine.process(Pose.POINTING, true, 2000L) // → EXECUTING
+        stateMachine.process(Pose.VICTORY, true, 2000L) // → EXECUTING
         stateMachine.process(Pose.NONE, true, 2001L) // → COOLDOWN
 
         // After cooldown, no hand detected
@@ -308,7 +308,7 @@ class GestureStateMachineTest {
         armSystem()
 
         // ARMED → EXECUTING
-        val result1 = stateMachine.process(Pose.POINTING, true, 2000L)
+        val result1 = stateMachine.process(Pose.VICTORY, true, 2000L)
         assertTrue(result1.shouldExecute)
 
         // EXECUTING → COOLDOWN (not a new execution)

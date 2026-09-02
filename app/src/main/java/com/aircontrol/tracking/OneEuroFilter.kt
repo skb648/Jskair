@@ -51,8 +51,9 @@ class OneEuroFilter(
         prevTimestampMs = timestampMs
 
         // Estimate derivative
-        val dValue = if (prevValue != null) {
-            (value - prevValue!!) / dt
+        val previousValue = prevValue
+        val dValue = if (previousValue != null) {
+            (value - previousValue) / dt
         } else {
             0f
         }

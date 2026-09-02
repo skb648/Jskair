@@ -64,15 +64,16 @@ class PermissionsFlowTest {
     }
 
     @Test
-    fun permissionStatesAllGrantedIsFalseWhenAnyMissing() {
+    fun permissionStatesAllGrantedRequiresCameraAndAccessibility() {
         val missingCamera = PermissionStates(cameraGranted = false, accessibilityGranted = true, overlayGranted = true)
         assertFalse(missingCamera.allGranted)
 
         val missingAccessibility = PermissionStates(cameraGranted = true, accessibilityGranted = false, overlayGranted = true)
         assertFalse(missingAccessibility.allGranted)
 
-        val missingOverlay = PermissionStates(cameraGranted = true, accessibilityGranted = true, overlayGranted = false)
-        assertFalse(missingOverlay.allGranted)
+        // Accessibility overlays do not require SYSTEM_ALERT_WINDOW.
+        val overlayFlagIsInformational = PermissionStates(cameraGranted = true, accessibilityGranted = true, overlayGranted = false)
+        assertTrue(overlayFlagIsInformational.allGranted)
     }
 
     @Test
@@ -81,11 +82,11 @@ class PermissionsFlowTest {
             cameraGranted = false,
             accessibilityGranted = true,
             overlayGranted = false,
+            notificationsGranted = true,
         )
         val missing = states.missingPermissions
-        assertEquals(2, missing.size)
+        assertEquals(1, missing.size)
         assertTrue(missing.contains(MissingPermission.CAMERA))
-        assertTrue(missing.contains(MissingPermission.OVERLAY))
     }
 
     @Test
@@ -94,6 +95,7 @@ class PermissionsFlowTest {
             cameraGranted = true,
             accessibilityGranted = true,
             overlayGranted = true,
+            notificationsGranted = true,
         )
         assertTrue(states.missingPermissions.isEmpty())
     }

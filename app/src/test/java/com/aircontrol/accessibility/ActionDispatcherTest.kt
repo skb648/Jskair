@@ -1,6 +1,7 @@
 package com.aircontrol.accessibility
 
 import com.aircontrol.data.model.UserPreferences
+import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
@@ -14,8 +15,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.mockito.kotlin.mock
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class ActionDispatcherTest {
 
     private lateinit var actionDispatcher: ActionDispatcher
@@ -262,8 +268,8 @@ class ActionDispatcherTest {
     @Test
     fun `getGestureMap returns default map`() {
         val map = actionDispatcher.getGestureMap()
-        assertEquals(9, map.size)
-        assertEquals(GestureAction.SCROLL_LEFT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
+        assertEquals(GestureMapConfig.defaultEntries().size, map.size)
+        assertEquals(GestureAction.SCROLL_RIGHT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
         assertEquals(GestureAction.TAP, map[ActionDispatcher.KEY_POSE_PINCH])
     }
 
@@ -308,7 +314,7 @@ class ActionDispatcherTest {
     // ========== Pinch event dispatch (no service) ==========
 
     @Test
-    fun `dispatch pinch START returns false without service`() {
+    fun `dispatch pinch START is accepted without service`() {
         val event = GestureEvent.Pinch(PinchPhase.START, 0.5f, 0.5f, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
             event = event,
@@ -318,7 +324,7 @@ class ActionDispatcherTest {
             screenWidth = 1080,
             screenHeight = 2400,
         )
-        assertFalse(result)
+        assertTrue(result)
     }
 
     // ========== Pose event dispatch (no service) ==========

@@ -231,7 +231,7 @@ class GestureMapConfigTest {
         assertEquals(GestureAction.TAP, migrated.entries.find { it.key == "pose_pinch" }?.action)
         // New entries get default actions
         assertEquals(
-            GestureAction.SCROLL_LEFT,
+            GestureAction.SCROLL_RIGHT,
             migrated.entries.find { it.key == "swipe_right" }?.action,
         )
         // Removed entry is gone
@@ -267,7 +267,7 @@ class GestureMapConfigTest {
             "NONE", "SCROLL_UP", "SCROLL_DOWN", "SCROLL_LEFT", "SCROLL_RIGHT",
             "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS",
             "VOLUME_UP", "VOLUME_DOWN", "MEDIA_PLAY_PAUSE", "SCREENSHOT",
-            "LOCK_SCREEN", "TAP", "LONG_PRESS", "DRAG",
+            "LOCK_SCREEN", "TAP", "DOUBLE_TAP", "LONG_PRESS", "DRAG",
         )
         val actualActions = GestureAction.entries.map { it.name }.toSet()
         assertEquals(expectedActions, actualActions)

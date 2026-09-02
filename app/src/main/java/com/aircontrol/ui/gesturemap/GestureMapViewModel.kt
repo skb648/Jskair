@@ -23,6 +23,7 @@ data class ConflictInfo(
     val existingAction: GestureAction,
     val newKey: String,
     val newAction: GestureAction,
+    val displacedAction: GestureAction,
 )
 
 @HiltViewModel
@@ -74,6 +75,7 @@ class GestureMapViewModel @Inject constructor(
                 existingAction = existingEntry.action,
                 newKey = entry.key,
                 newAction = action,
+                displacedAction = entry.action,
             )
         } else {
             // No conflict, apply directly
@@ -87,9 +89,9 @@ class GestureMapViewModel @Inject constructor(
         val entry = _selectedEntry.value ?: return
 
         if (swap) {
-            // Swap: new entry gets the action, old entry gets NONE
+            // True swap: preserve both assignments rather than silently discarding one.
             viewModelScope.launch {
-                settingsRepository.updateGestureAction(conflict.existingKey, GestureAction.NONE.name)
+                settingsRepository.updateGestureAction(conflict.existingKey, conflict.displacedAction.name)
                 settingsRepository.updateGestureAction(entry.key, conflict.newAction.name)
             }
         } else {

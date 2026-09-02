@@ -6,6 +6,9 @@ import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.HandTracker
+import com.aircontrol.gestures.GestureDetector
+import com.aircontrol.gesture.model.Pose
+import com.aircontrol.service.CameraServiceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +46,8 @@ data class CalibrationUiState(
 class CalibrationViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val handTracker: HandTracker,
+    private val gestureDetector: GestureDetector,
+    private val cameraServiceManager: CameraServiceManager,
 ) : ViewModel() {
 
     val userPreferences: StateFlow<UserPreferences> = settingsRepository.userPreferences
@@ -57,16 +62,22 @@ class CalibrationViewModel @Inject constructor(
 
     // Collected hand size samples for averaging
     private val handSizeSamples = Collections.synchronizedList(mutableListOf<Float>())
-    private val pinchDistanceSamples = Collections.synchronizedList(mutableListOf<Float>())
     private var measurementCount = 0
     private val REQUIRED_MEASUREMENTS = 20
 
     // Tracking job for hand frames
     private var handFrameJob: kotlinx.coroutines.Job? = null
     private var measuringJob: kotlinx.coroutines.Job? = null
+    private var gestureTestJob: kotlinx.coroutines.Job? = null
+    @Volatile private var latestFrame: HandFrame = HandFrame.EMPTY
+    private var startedCameraForCalibration = false
 
     fun startCalibration() {
-        _uiState.value = _uiState.value.copy(step = CalibrationStep.PALM_DETECT)
+        if (!cameraServiceManager.isTracking()) {
+            cameraServiceManager.startTracking()
+            startedCameraForCalibration = true
+        }
+        _uiState.value = CalibrationUiState(step = CalibrationStep.PALM_DETECT)
         startMonitoringHandFrames()
     }
 
@@ -86,6 +97,7 @@ class CalibrationViewModel @Inject constructor(
         handFrameJob?.cancel()
         handFrameJob = viewModelScope.launch {
             handTracker.handFrames.collect { frame ->
+                latestFrame = frame
                 _uiState.value = _uiState.value.copy(
                     handDetected = frame.isDetected,
                     canProceed = frame.isDetected && _uiState.value.step == CalibrationStep.PALM_DETECT,
@@ -98,7 +110,6 @@ class CalibrationViewModel @Inject constructor(
         // Real measurement from HandTracker — collect hand frame samples
         // and compute hand size (wrist to middle MCP) and pinch distance (thumb tip to index tip)
         handSizeSamples.clear()
-        pinchDistanceSamples.clear()
         measurementCount = 0
 
         measuringJob?.cancel()
@@ -116,19 +127,10 @@ class CalibrationViewModel @Inject constructor(
                     (middleMcp.z - wrist.z) * (middleMcp.z - wrist.z),
                 )
 
-                // Calculate pinch distance: thumb tip (4) to index tip (8) in normalized units
-                val thumbTip = frame.landmarks[4]
-                val indexTip = frame.landmarks[8]
-                val pinchDistNorm = kotlin.math.sqrt(
-                    (thumbTip.x - indexTip.x) * (thumbTip.x - indexTip.x) +
-                    (thumbTip.y - indexTip.y) * (thumbTip.y - indexTip.y) +
-                    (thumbTip.z - indexTip.z) * (thumbTip.z - indexTip.z),
-                )
-
-                // Only accept reasonable values (filter outliers)
-                if (handSizeNorm > 0.05f && handSizeNorm < 0.8f && pinchDistNorm > 0.001f && pinchDistNorm < 0.5f) {
+                // This phase measures only hand scale while the palm is open. Pinch
+                // distance is captured later, while the user performs a real pinch.
+                if (handSizeNorm > 0.05f && handSizeNorm < 0.8f && frame.confidence >= 0.5f) {
                     handSizeSamples.add(handSizeNorm)
-                    pinchDistanceSamples.add(pinchDistNorm)
                     measurementCount++
 
                     val progress = (measurementCount.toFloat() / REQUIRED_MEASUREMENTS).coerceAtMost(1f)
@@ -143,23 +145,18 @@ class CalibrationViewModel @Inject constructor(
                             val trim = (sorted.size * 0.2).toInt().coerceAtLeast(0)
                             sorted.drop(trim).dropLast(trim).average().toFloat()
                         }
-                        val avgPinchDistNorm = pinchDistanceSamples.sorted().let { sorted ->
-                            val trim = (sorted.size * 0.2).toInt().coerceAtLeast(0)
-                            sorted.drop(trim).dropLast(trim).average().toFloat()
-                        }
-
-                        // Convert normalized to mm using standard proportion
-                        // Average hand size wrist-to-middle-MCP ≈ 95mm
+                        // The absolute millimetre value is an estimate; recognition
+                        // uses the dimensionless pinch/hand ratio, captured below.
                         val handSizeMm = (avgHandSizeNorm / 0.20f) * 95f
-                        val pinchDistanceMm = (avgPinchDistNorm / avgHandSizeNorm) * handSizeMm
 
                         _uiState.value = _uiState.value.copy(
                             handSizeMm = handSizeMm,
-                            pinchDistanceMm = pinchDistanceMm,
-                            canProceed = true,
+                            pinchDistanceMm = 0f,
+                            canProceed = false,
                             step = CalibrationStep.TEST_GESTURES,
                         )
-                        Timber.i("Calibration measured: handSize=%.1fmm, pinchDist=%.1fmm", handSizeMm, pinchDistanceMm)
+                        startGestureVerification()
+                        Timber.i("Hand scale measured: estimatedHandSize=%.1fmm", handSizeMm)
                         measuringJob?.cancel() // Cancel self when done
                         return@collect // Done measuring
                     }
@@ -168,25 +165,72 @@ class CalibrationViewModel @Inject constructor(
         }
     }
 
+    private fun startGestureVerification() {
+        gestureTestJob?.cancel()
+        gestureTestJob = viewModelScope.launch {
+            gestureDetector.currentPose.collect { pose ->
+                val expected = when (_uiState.value.testGesturesCompleted) {
+                    0 -> Pose.OPEN_PALM
+                    1 -> Pose.FIST
+                    2 -> Pose.PINCH
+                    else -> null
+                }
+                if (pose == expected) {
+                    if (pose == Pose.PINCH) captureRealPinchDistance()
+                    onTestGestureRecognized(pose.name)
+                }
+            }
+        }
+    }
+
+    private fun captureRealPinchDistance() {
+        val frame = latestFrame
+        if (frame.landmarks.size < 21 || _uiState.value.handSizeMm <= 0f) return
+        val wrist = frame.landmarks[0]
+        val middleMcp = frame.landmarks[9]
+        val thumbTip = frame.landmarks[4]
+        val indexTip = frame.landmarks[8]
+        val handNorm = kotlin.math.sqrt(
+            (middleMcp.x - wrist.x) * (middleMcp.x - wrist.x) +
+                (middleMcp.y - wrist.y) * (middleMcp.y - wrist.y),
+        )
+        val pinchNorm = kotlin.math.sqrt(
+            (thumbTip.x - indexTip.x) * (thumbTip.x - indexTip.x) +
+                (thumbTip.y - indexTip.y) * (thumbTip.y - indexTip.y),
+        )
+        if (handNorm > 0.05f && pinchNorm > 0f) {
+            val safeRatio = (pinchNorm / handNorm).coerceIn(0.12f, 0.45f)
+            _uiState.value = _uiState.value.copy(
+                pinchDistanceMm = safeRatio * _uiState.value.handSizeMm,
+            )
+        }
+    }
+
     fun onTestGestureRecognized(gestureName: String) {
+        if (_uiState.value.testGesturesCompleted == 2 && _uiState.value.pinchDistanceMm <= 0f) {
+            captureRealPinchDistance()
+        }
         val current = _uiState.value
         if (current.testGesturesCompleted < current.testGesturesTotal) {
             val newCount = current.testGesturesCompleted + 1
             _uiState.value = current.copy(
                 testGesturesCompleted = newCount,
                 lastTestGestureName = gestureName,
-                canProceed = newCount >= current.testGesturesTotal,
+                canProceed = newCount >= current.testGesturesTotal &&
+                    _uiState.value.pinchDistanceMm > 0f,
             )
         }
     }
 
     fun skipCalibration() {
-        handFrameJob?.cancel()
+        stopCalibrationJobs()
         _uiState.value = _uiState.value.copy(step = CalibrationStep.COMPLETE)
+        releaseCalibrationCameraIfNeeded()
     }
 
     fun completeCalibration() {
-        handFrameJob?.cancel()
+        stopCalibrationJobs()
+        if (_uiState.value.handSizeMm <= 0f || _uiState.value.pinchDistanceMm <= 0f) return
         _uiState.value = _uiState.value.copy(step = CalibrationStep.COMPLETE)
         // Persist calibration data to DataStore
         viewModelScope.launch {
@@ -195,13 +239,27 @@ class CalibrationViewModel @Inject constructor(
                 pinchDistanceMm = _uiState.value.pinchDistanceMm,
             )
         }
+        releaseCalibrationCameraIfNeeded()
         Timber.i("Calibration complete and persisted: handSize=%.1fmm, pinchDist=%.1fmm",
             _uiState.value.handSizeMm, _uiState.value.pinchDistanceMm)
     }
 
-    override fun onCleared() {
-        super.onCleared()
+    private fun stopCalibrationJobs() {
         handFrameJob?.cancel()
         measuringJob?.cancel()
+        gestureTestJob?.cancel()
+    }
+
+    private fun releaseCalibrationCameraIfNeeded() {
+        if (startedCameraForCalibration && !userPreferences.value.gesturesEnabled) {
+            cameraServiceManager.stopTracking()
+        }
+        startedCameraForCalibration = false
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopCalibrationJobs()
+        releaseCalibrationCameraIfNeeded()
     }
 }

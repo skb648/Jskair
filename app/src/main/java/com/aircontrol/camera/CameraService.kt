@@ -30,17 +30,13 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -91,14 +87,18 @@ class CameraService : LifecycleService() {
         // running/paused state without a service binding.
         private val _state = MutableStateFlow(ServiceState())
         val serviceState: StateFlow<ServiceState> = _state.asStateFlow()
-        val isRunning: StateFlow<Boolean> = _state
-            .map { it.isRunning }
-            .stateIn(GlobalScope, SharingStarted.Eagerly, false)
-        val isPaused: StateFlow<Boolean> = _state
-            .map { it.isPaused }
-            .stateIn(GlobalScope, SharingStarted.Eagerly, false)
+        private val _isRunning = MutableStateFlow(false)
+        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+        private val _isPaused = MutableStateFlow(false)
+        val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
 
-        fun resetState() { _state.value = ServiceState() }
+        private fun publishState(state: ServiceState) {
+            _state.value = state
+            _isRunning.value = state.isRunning
+            _isPaused.value = state.isPaused
+        }
+
+        fun resetState() = publishState(ServiceState())
     }
 
     // Dependencies
@@ -252,7 +252,7 @@ class CameraService : LifecycleService() {
             stopSelf()
             return
         }
-        _state.value = ServiceState(isRunning = true, isPaused = false)
+        publishState(ServiceState(isRunning = true, isPaused = false))
 
         withContext(Dispatchers.Default) { handTracker.initialize() }
 
@@ -303,7 +303,7 @@ class CameraService : LifecycleService() {
                 provider.unbindAll()
                 provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
             }
-            _state.value = ServiceState(isRunning = true, isPaused = false)
+            publishState(ServiceState(isRunning = true, isPaused = false))
             userPaused = false
             thermalPaused = false
             lastProcessedFrameMs = SystemClock.elapsedRealtime()
@@ -334,7 +334,7 @@ class CameraService : LifecycleService() {
             runCatching { faceTracker.close() }
         }
         adaptiveFpsController.reset()
-        _state.value = ServiceState(isRunning = false, isPaused = false)
+        publishState(ServiceState(isRunning = false, isPaused = false))
         userPaused = false
         thermalPaused = false
         postRecoveryFps = 0
@@ -347,7 +347,7 @@ class CameraService : LifecycleService() {
     private suspend fun pauseTrackingLocked() {
         if (!_state.value.isRunning) return
         userPaused = true
-        _state.value = _state.value.copy(isPaused = true)
+        publishState(_state.value.copy(isPaused = true))
         withContext(Dispatchers.Main.immediate) { imageAnalysis?.clearAnalyzer() }
         updateNotification(isPaused = true)
         Timber.i("Tracking paused by user")
@@ -365,7 +365,7 @@ class CameraService : LifecycleService() {
             Timber.i("Resume requested but keyguard locked; staying paused")
             return
         }
-        _state.value = _state.value.copy(isPaused = false)
+        publishState(_state.value.copy(isPaused = false))
         lastFrameTimestampMs = 0L
         lastProcessedFrameMs = SystemClock.elapsedRealtime()
         val executor = analysisExecutor ?: return
@@ -414,12 +414,12 @@ class CameraService : LifecycleService() {
             } else { targetW = sourceBitmap.width; targetH = sourceBitmap.height }
 
             if (reusableTransformBitmap == null || reusableBitmapWidth != targetW ||
-                reusableBitmapHeight != targetH || reusableTransformBitmap!!.isRecycled) {
+                reusableBitmapHeight != targetH || reusableTransformBitmap?.isRecycled == true) {
                 reusableTransformBitmap?.recycle()
                 reusableTransformBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
                 reusableBitmapWidth = targetW; reusableBitmapHeight = targetH
             }
-            val targetBitmap = reusableTransformBitmap!!
+            val targetBitmap = checkNotNull(reusableTransformBitmap)
             if (cachedRotationDegrees != rotationDegrees || cachedMatrix == null) {
                 val m = android.graphics.Matrix()
                 when (rotationDegrees) {
@@ -432,7 +432,7 @@ class CameraService : LifecycleService() {
             }
             val canvas = android.graphics.Canvas(targetBitmap)
             canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-            canvas.drawBitmap(sourceBitmap, cachedMatrix!!, null)
+            canvas.drawBitmap(sourceBitmap, checkNotNull(cachedMatrix), null)
             BitmapImageBuilder(targetBitmap).build()
         } catch (e: Exception) {
             Timber.e(e, "imageProxyToMPImage failed")

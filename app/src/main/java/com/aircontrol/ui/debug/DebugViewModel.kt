@@ -279,7 +279,7 @@ class DebugViewModel @Inject constructor(
             if (reusableDebugBitmap == null ||
                 debugBitmapWidth != targetWidth ||
                 debugBitmapHeight != targetHeight ||
-                reusableDebugBitmap!!.isRecycled
+                reusableDebugBitmap?.isRecycled == true
             ) {
                 reusableDebugBitmap?.recycle()
                 reusableDebugBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
@@ -287,7 +287,7 @@ class DebugViewModel @Inject constructor(
                 debugBitmapHeight = targetHeight
             }
 
-            val targetBitmap = reusableDebugBitmap!!
+            val targetBitmap = checkNotNull(reusableDebugBitmap)
 
             val matrix = Matrix()
             when (rotationDegrees) {

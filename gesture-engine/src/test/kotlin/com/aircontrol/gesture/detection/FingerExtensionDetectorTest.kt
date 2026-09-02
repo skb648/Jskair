@@ -63,7 +63,7 @@ class FingerExtensionDetectorTest {
         } else {
             // Curled: IP and tip bend inward (toward palm)
             thumbIp = Landmark3D(0.34f, 0.72f, 0f)
-            thumbTip = Landmark3D(0.38f, 0.78f, 0f)
+            thumbTip = Landmark3D(0.30f, 0.74f, 0f)
         }
 
         // Index finger
@@ -289,7 +289,7 @@ class FingerExtensionDetectorTest {
         // Build a marginally extended finger that would fail at default sensitivity
         val wrist = Landmark3D(0.5f, 0.8f, 0f)
         val pip = Landmark3D(0.5f, 0.5f, 0f)
-        val tip = Landmark3D(0.5f, 0.49f, 0f) // Just barely past PIP
+        val tip = Landmark3D(0.5f, 0.56f, 0f) // ratio 0.8: fails at 1.0, passes at ~0.67
 
         // At default sensitivity (threshold=1.0), this should fail
         assertFalse(detector.isFingerExtended(tip, pip, wrist, 1.0f))

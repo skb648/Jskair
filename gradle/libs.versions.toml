@@ -22,6 +22,7 @@ espresso = "3.6.1"
 mockito = "5.14.2"
 mockito-kotlin = "5.4.0"
 turbine = "1.2.0"
+robolectric = "4.14.1"
 
 [libraries]
 # Compose BOM
@@ -86,9 +87,11 @@ hilt-android-testing = { group = "com.google.dagger", name = "hilt-android-testi
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockito-kotlin" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-lint = { id = "com.android.lint", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

@@ -3,8 +3,10 @@ package com.aircontrol.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.aircontrol.accessibility.GestureAction
@@ -89,7 +91,7 @@ class GestureRemapFlowTest {
         val action = GestureAction.HOME
 
         composeTestRule.setContent {
-            androidx.compose.material3.Column {
+            androidx.compose.foundation.layout.Column {
                 androidx.compose.material3.Text(
                     text = "\"$existingLabel\" is currently mapped to ${action.name}",
                 )

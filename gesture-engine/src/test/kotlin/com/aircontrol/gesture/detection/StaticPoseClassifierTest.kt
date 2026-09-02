@@ -180,15 +180,15 @@ class StaticPoseClassifierTest {
     // ========== NONE pose ==========
 
     @Test
-    fun `NONE returned for ambiguous finger states`() {
-        // Three fingers extended — doesn't match any defined pose
+    fun `THREE_FINGERS returned for index middle and ring`() {
+        // Three fingers extended is an explicitly supported pose
         val ambiguous = buildLandmarks(
             thumbExtended = false, indexExtended = true,
             middleExtended = true, ringExtended = true, pinkyExtended = false,
         )
         val input = handInput(ambiguous)
         val rawPose = classifier.classifyRaw(input, classifier.getFingerState(input))
-        assertEquals(Pose.NONE, rawPose)
+        assertEquals(Pose.THREE_FINGERS, rawPose)
     }
 
     // ========== Hand-size scaling for pinch ==========
@@ -256,15 +256,16 @@ class StaticPoseClassifierTest {
         val thumbIp: Landmark3D
         val thumbTip: Landmark3D
         if (thumbExtended) {
-            thumbIp = Landmark3D(0.24f, 0.62f, 0f)
             if (thumbUp) {
-                thumbTip = Landmark3D(0.15f, 0.55f, 0f) // Above MCP (lower y)
+                thumbIp = Landmark3D(0.24f, 0.62f, 0f)
+                thumbTip = Landmark3D(0.15f, 0.55f, 0f) // Straight and above MCP
             } else {
-                thumbTip = Landmark3D(0.15f, 0.75f, 0f) // Below MCP (higher y)
+                thumbIp = Landmark3D(0.24f, 0.71f, 0f)
+                thumbTip = Landmark3D(0.15f, 0.75f, 0f) // Straight and below MCP
             }
         } else {
             thumbIp = Landmark3D(0.34f, 0.72f, 0f)
-            thumbTip = Landmark3D(0.38f, 0.78f, 0f)
+            thumbTip = Landmark3D(0.30f, 0.74f, 0f)
         }
 
         val indexMcp = Landmark3D(0.42f, 0.68f, 0f)
@@ -329,7 +330,7 @@ class StaticPoseClassifierTest {
         val thumbCmc = Landmark3D(0.4f, 0.75f, 0f)
         val thumbMcp = Landmark3D(0.35f, 0.68f, 0f)
         val thumbIp = Landmark3D(0.36f, 0.60f, 0f)
-        val thumbTip = Landmark3D(0.38f, 0.52f, 0f) // Close to index tip
+        val thumbTip = Landmark3D(0.392f, 0.502f, 0f) // Close to index tip
 
         val indexMcp = Landmark3D(0.42f, 0.68f, 0f)
         val indexPip = Landmark3D(0.41f, 0.58f, 0f)

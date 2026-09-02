@@ -409,7 +409,7 @@ class SettingsRepositoryImpl @Inject constructor(
         holdDuration = preferences[PreferencesKeys.HOLD_DURATION] ?: 600,
         batterySaver = preferences[PreferencesKeys.BATTERY_SAVER] ?: false,
         startOnBoot = preferences[PreferencesKeys.START_ON_BOOT] ?: false,
-        statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: true,
+        statusPillEnabled = preferences[PreferencesKeys.STATUS_PILL_ENABLED] ?: false,
         calibratedHandSizeMm = preferences[PreferencesKeys.CALIBRATED_HAND_SIZE_MM] ?: 0f,
         calibratedPinchDistanceMm = preferences[PreferencesKeys.CALIBRATED_PINCH_DISTANCE_MM] ?: 0f,
         isCalibrated = preferences[PreferencesKeys.IS_CALIBRATED] ?: false,

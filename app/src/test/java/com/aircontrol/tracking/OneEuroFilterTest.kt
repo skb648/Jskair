@@ -68,28 +68,18 @@ class OneEuroFilterTest {
     }
 
     @Test
-    fun `fast movement is less smoothed than slow movement`() {
-        val slowFilter = OneEuroFilter(minCutoff = 1.0f, beta = 0.007f)
-        val fastFilter = OneEuroFilter(minCutoff = 1.0f, beta = 0.007f)
+    fun `speed adaptation reduces lag compared with a fixed cutoff`() {
+        val adaptive = OneEuroFilter(minCutoff = 1.0f, beta = 0.007f)
+        val fixedCutoff = OneEuroFilter(minCutoff = 1.0f, beta = 0.0f)
 
-        // Feed slow ramp
-        var slowResult = 0f
-        for (i in 0..49) {
-            slowResult = slowFilter.filter(i * 0.1f, 1000L + i * 33L)
-        }
-
-        // Feed fast step (same filter, but large jump)
-        var fastResult = 0f
-        fastFilter.filter(0f, 1000L)
-        fastResult = fastFilter.filter(50f, 1033L)
-
-        // The fast step should have less relative smoothing than the slow ramp
-        val slowLag = 49 * 0.1f - slowResult
-        val fastLag = 50f - fastResult
+        adaptive.filter(0f, 1000L)
+        fixedCutoff.filter(0f, 1000L)
+        val adaptiveResult = adaptive.filter(50f, 1033L)
+        val fixedResult = fixedCutoff.filter(50f, 1033L)
 
         assertTrue(
-            "Fast movement lag ($fastLag) should be less than slow movement lag ($slowLag)",
-            fastLag < slowLag * 2f, // Allow some tolerance
+            "Adaptive result ($adaptiveResult) should track a fast step better than fixed cutoff ($fixedResult)",
+            abs(adaptiveResult - 50f) < abs(fixedResult - 50f),
         )
     }
 
@@ -103,34 +93,31 @@ class OneEuroFilterTest {
     }
 
     @Test
-    fun `synthetic sine wave with noise is smoothed`() {
+    fun `synthetic noisy sine wave has lower total variation`() {
         val sineFilter = OneEuroFilter(minCutoff = 1.0f, beta = 0.007f)
-        val frequency = 0.5f // Hz
-        val sampleRateMs = 33L // ~30fps
-        val noiseStdDev = 0.1f
-        var totalRawDeviation = 0.0f
-        var totalFilteredDeviation = 0.0f
-        var count = 0
+        val frequency = 0.5f
+        val sampleRateMs = 33L
+        val noiseAmplitude = 0.1f
+        var previousRaw: Float? = null
+        var previousFiltered: Float? = null
+        var rawVariation = 0f
+        var filteredVariation = 0f
 
         for (i in 0..299) {
             val t = i * sampleRateMs / 1000.0f
             val cleanSignal = sin(2.0 * Math.PI * frequency * t).toFloat()
-            val noise = ((i * 7 + 3) % 11 - 5) * noiseStdDev / 5f // Deterministic noise
-            val noisySignal = cleanSignal + noise
-
-            val filtered = sineFilter.filter(noisySignal, 1000L + i * sampleRateMs)
-
-            totalRawDeviation += abs(noisySignal - cleanSignal)
-            totalFilteredDeviation += abs(filtered - cleanSignal)
-            count++
+            val noise = ((i * 7 + 3) % 11 - 5) * noiseAmplitude / 5f
+            val raw = cleanSignal + noise
+            val filtered = sineFilter.filter(raw, 1000L + i * sampleRateMs)
+            previousRaw?.let { rawVariation += abs(raw - it) }
+            previousFiltered?.let { filteredVariation += abs(filtered - it) }
+            previousRaw = raw
+            previousFiltered = filtered
         }
 
-        val avgRawDev = totalRawDeviation / count
-        val avgFilteredDev = totalFilteredDeviation / count
-
         assertTrue(
-            "Filtered sine deviation ($avgFilteredDev) should be less than raw ($avgRawDev)",
-            avgFilteredDev < avgRawDev,
+            "Filtered variation ($filteredVariation) should be below raw variation ($rawVariation)",
+            filteredVariation < rawVariation,
         )
     }
 

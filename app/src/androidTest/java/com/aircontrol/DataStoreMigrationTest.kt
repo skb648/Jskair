@@ -35,8 +35,12 @@ class DataStoreMigrationTest {
     lateinit var settingsRepository: SettingsRepository
 
     @Before
-    fun setup() {
+    fun setup() = runTest {
         hiltRule.inject()
+        // Hilt's singleton DataStore is shared by tests in this process. Restore
+        // the values touched by this class so test order cannot affect outcomes.
+        settingsRepository.resetGestureMapToDefaults()
+        settingsRepository.updateGesturesEnabled(true)
     }
 
     @Test
@@ -81,7 +85,7 @@ class DataStoreMigrationTest {
 
         val config = settingsRepository.gestureMapConfig.first()
         assertEquals(
-            GestureAction.SCROLL_RIGHT,
+            GestureAction.SCROLL_LEFT,
             config.entries.find { it.key == "swipe_left" }?.action,
         )
     }

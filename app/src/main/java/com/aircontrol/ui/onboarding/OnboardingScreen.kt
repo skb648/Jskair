@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -78,7 +80,7 @@ fun OnboardingScreen(
 ) {
     val permissionStates by viewModel.permissionStates.collectAsState()
     val currentStep by viewModel.currentStep.collectAsState()
-    val pagerState = rememberPagerState(initialPage = currentStep, pageCount = { 5 })
+    val pagerState = rememberPagerState(initialPage = currentStep.coerceIn(0, 3), pageCount = { 4 })
     // Sync pager if ViewModel externally changes step (deep-link)
     androidx.compose.runtime.LaunchedEffect(currentStep) {
         if (pagerState.currentPage != currentStep) pagerState.animateScrollToPage(currentStep)
@@ -155,42 +157,26 @@ fun OnboardingScreen(
                             )
                         },
                     )
-                    3 -> OverlayPermissionStep(
-                        isGranted = permissionStates.overlayGranted,
-                        onOpenSettings = {
-                            context.startActivity(
-                                viewModel.permissionsManager.requestOverlayPermission(),
-                            )
-                        },
-                    )
-                    // UU-01 Fix: Added gesture tutorial page
-                    4 -> GestureTutorialStep(
-                        onGetStarted = {
-                            viewModel.completeOnboarding()
-                            onGetStarted()
-                        },
-                        allPermissionsGranted = permissionStates.cameraGranted &&
-                            permissionStates.accessibilityGranted &&
-                            permissionStates.overlayGranted,
+                    3 -> GestureTutorialStep(
+                        allPermissionsGranted = permissionStates.allGranted,
                     )
                 }
             }
         }
 
         PageIndicator(
-            pageCount = 5,
+            pageCount = 4,
             currentPage = pagerState.currentPage,
             modifier = Modifier.padding(vertical = Dimens.paddingMedium),
         )
 
         NavigationControls(
             currentPage = pagerState.currentPage,
-            pageCount = 5,
+            pageCount = 4,
             canProceed = when (pagerState.currentPage) {
                 1 -> permissionStates.cameraGranted
                 2 -> permissionStates.accessibilityGranted
-                3 -> permissionStates.overlayGranted
-                4 -> permissionStates.allGranted // Require all perms before finishing
+                3 -> permissionStates.allGranted // Require camera + accessibility before finishing
                 else -> true
             },
             onPrevious = {
@@ -200,7 +186,7 @@ fun OnboardingScreen(
             },
             onNext = {
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                if (pagerState.currentPage < 4) {
+                if (pagerState.currentPage < 3) {
                     scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
                 }
             },
@@ -235,7 +221,7 @@ private fun WelcomeStep() {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -280,7 +266,7 @@ private fun CameraPermissionStep(
     val haptics = LocalHapticFeedback.current
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -343,7 +329,7 @@ private fun AccessibilityPermissionStep(
     val haptics = LocalHapticFeedback.current
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -404,7 +390,7 @@ private fun OverlayPermissionStep(
     val haptics = LocalHapticFeedback.current
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -836,11 +822,10 @@ private fun OverlayIllustration(isGranted: Boolean) {
 
 @Composable
 private fun GestureTutorialStep(
-    onGetStarted: () -> Unit,
     allPermissionsGranted: Boolean,
 ) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -902,17 +887,6 @@ private fun GestureTutorialStep(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
         }
 
-        Button(
-            onClick = onGetStarted,
-            enabled = allPermissionsGranted,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(Dimens.buttonCornerRadius),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-            ),
-        ) {
-            Text(text = stringResource(R.string.onboarding_get_started))
-        }
     }
 }
 

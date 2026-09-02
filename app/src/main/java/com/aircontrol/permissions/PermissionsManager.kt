@@ -36,6 +36,7 @@ data class PermissionStates(
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
             if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
+            if (!notificationsGranted) add(MissingPermission.NOTIFICATIONS)
         }
 }
 

@@ -18,10 +18,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.junit.rules.TemporaryFolder
-import okio.Path
+import okio.Path.Companion.toOkioPath
 import java.io.File
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class SettingsRepositoryImplTest {
 
     @get:Rule
@@ -35,7 +41,7 @@ class SettingsRepositoryImplTest {
     fun setup() {
         val dataStoreFile = File(tempFolder.root, "test_preferences.preferences_pb")
         testDataStore = PreferenceDataStoreFactory.createWithPath(
-            produceFile = { Path.get(dataStoreFile.toPath()) },
+            produceFile = { dataStoreFile.toOkioPath() },
         )
         // Bug #22 Fix: Pass the test scope as the applicationScope parameter.
         // SettingsRepositoryImpl now requires a CoroutineScope for background

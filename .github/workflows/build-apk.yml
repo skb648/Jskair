@@ -51,14 +51,16 @@ jobs:
           retention-days: 14
 
       - name: Run unit tests
-        # Tests are currently non-blocking so a stale/failing unit test (from an
-        # earlier refactor) does not prevent the debug APK artifact from building.
-        # Remove `continue-on-error` once all unit tests pass.
-        continue-on-error: true
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+        run: ./gradlew --no-daemon --stacktrace :gesture-engine:test :app:testDebugUnitTest
 
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Verify privacy-sensitive permissions are absent
+        run: |
+          permissions="$($ANDROID_HOME/build-tools/35.0.0/aapt dump permissions app/build/outputs/apk/debug/app-debug.apk)"
+          ! grep -q 'android.permission.INTERNET' <<< "$permissions"
+          ! grep -q 'android.permission.ACCESS_NETWORK_STATE' <<< "$permissions"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -69,7 +71,7 @@ jobs:
           retention-days: 14
 
   build-release-apk:
-    name: Build Release APK (unsigned)
+    name: Build Signed Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -91,8 +93,38 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Build release APK (unsigned, no keystore)
+      - name: Restore release signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "KEYSTORE_BASE64 secret is missing"; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/release.keystore
+
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          test -n "$KEY_ALIAS"
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Verify APK signature
+        run: $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify privacy-sensitive permissions are absent
+        run: |
+          permissions="$($ANDROID_HOME/build-tools/35.0.0/aapt dump permissions app/build/outputs/apk/release/app-release.apk)"
+          ! grep -q 'android.permission.INTERNET' <<< "$permissions"
+          ! grep -q 'android.permission.ACCESS_NETWORK_STATE' <<< "$permissions"
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
@@ -134,11 +166,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run instrumented tests on emulator
-        # Instrumented (emulator) tests are currently non-blocking: several
-        # androidTest files reference removed APIs / missing Compose-test imports,
-        # and emulator runs are flaky. They must NOT prevent the APK artifact build.
-        # Remove `continue-on-error` once the androidTest suite compiles and passes.
-        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
