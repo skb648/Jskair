@@ -4,6 +4,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -49,6 +51,7 @@ class OnboardingFlowTest {
                 repeat(pageCount) { index ->
                     androidx.compose.foundation.layout.Box(
                         modifier = androidx.compose.ui.Modifier
+                            .size(8.dp)
                             .testTag("page_indicator_$index"),
                     )
                 }
