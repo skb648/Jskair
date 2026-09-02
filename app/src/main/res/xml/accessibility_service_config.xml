@@ -6,10 +6,11 @@
      which routes into the in-app Settings screen. -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes=""
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags=""
+    android:accessibilityFlags="flagDefault"
     android:canPerformGestures="true"
+    android:notificationTimeout="100"
     android:canRetrieveWindowContent="false"
     android:description="@string/accessibility_service_description"
     android:settingsActivity="com.aircontrol.SettingsDeepLinkActivity" />

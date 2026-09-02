@@ -30,8 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.aircontrol.camera.CameraService
 import com.aircontrol.data.repository.SettingsRepository
+import com.aircontrol.permissions.PermissionsManager
+import com.aircontrol.service.CameraServiceManager
 import com.aircontrol.ui.navigation.AirControlNavHost
 import com.aircontrol.ui.navigation.AirControlRoute
 import com.aircontrol.ui.theme.AirControlTheme
@@ -39,6 +40,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -46,6 +48,12 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var settingsRepository: SettingsRepository
+
+    @Inject
+    lateinit var permissionsManager: PermissionsManager
+
+    @Inject
+    lateinit var cameraServiceManager: CameraServiceManager
 
     private var startDestinationOverride: String? = null
     private var startTrackingOnResume = false
@@ -81,11 +89,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (startTrackingOnResume) {
-            startTrackingOnResume = false
-            startService(Intent(this, CameraService::class.java).apply {
-                action = CameraService.ACTION_START
-            })
+        val explicitResume = startTrackingOnResume
+        startTrackingOnResume = false
+
+        // Camera permission is while-in-use on Android 14+. Start the camera FGS
+        // from this visible activity rather than relying only on a background
+        // AccessibilityService callback, which Samsung and other OEMs may reject.
+        lifecycleScope.launch {
+            permissionsManager.refreshAllPermissions()
+            val ready = withTimeoutOrNull(2_500L) {
+                permissionsManager.permissionStates.first { it.allGranted }
+            }
+            val prefs = settingsRepository.userPreferences.first()
+            if (ready != null && (prefs.gesturesEnabled || explicitResume) &&
+                !cameraServiceManager.isTracking()) {
+                cameraServiceManager.startTracking()
+            }
         }
     }
 

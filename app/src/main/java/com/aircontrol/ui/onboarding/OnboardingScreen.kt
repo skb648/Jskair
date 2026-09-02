@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -62,11 +63,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.aircontrol.R
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.theme.ElectricBlue
@@ -87,7 +91,25 @@ fun OnboardingScreen(
     }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val haptics = LocalHapticFeedback.current
+
+    // Refresh every time the app returns from Android Settings. LaunchedEffect(Unit)
+    // alone does not rerun because the onboarding composable stays alive while the
+    // Settings activity is on top.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshPermissions()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val accessibilitySettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.refreshPermissions()
+    }
 
     // Android 13+ POST_NOTIFICATIONS for boot resume notification
     val notificationLauncher = rememberLauncherForActivityResult(
@@ -152,7 +174,7 @@ fun OnboardingScreen(
                     2 -> AccessibilityPermissionStep(
                         isGranted = permissionStates.accessibilityGranted,
                         onOpenSettings = {
-                            context.startActivity(
+                            accessibilitySettingsLauncher.launch(
                                 viewModel.permissionsManager.requestAccessibilityPermission(),
                             )
                         },

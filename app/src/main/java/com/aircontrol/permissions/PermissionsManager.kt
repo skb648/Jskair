@@ -1,11 +1,17 @@
 package com.aircontrol.permissions
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
 import android.net.Uri
 import android.provider.Settings
+import android.text.TextUtils
 import android.view.accessibility.AccessibilityManager
+import com.aircontrol.accessibility.GestureControlAccessibilityService
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -55,14 +61,43 @@ class PermissionsManager @Inject constructor(
     private val _cameraGranted = MutableStateFlow(checkCameraPermission())
     val cameraGranted: StateFlow<Boolean> = _cameraGranted
 
-    private val _accessibilityGranted = MutableStateFlow(checkAccessibilityPermission())
-    val accessibilityGranted: StateFlow<Boolean> = _accessibilityGranted
+    private val _accessibilityEnabled = MutableStateFlow(checkAccessibilityPermission())
+    val accessibilityEnabled: StateFlow<Boolean> = _accessibilityEnabled
+
+    // Require both the persisted Android setting and a live bound service. This
+    // distinguishes genuine readiness from Samsung/OEM "Not working" states.
+    val accessibilityGranted: StateFlow<Boolean> = combine(
+        _accessibilityEnabled,
+        GestureControlAccessibilityService.isConnected,
+    ) { enabled, connected -> enabled && connected }
+        .stateIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            initialValue = _accessibilityEnabled.value &&
+                GestureControlAccessibilityService.isConnected.value,
+        )
 
     private val _overlayGranted = MutableStateFlow(true)
     val overlayGranted: StateFlow<Boolean> = _overlayGranted
 
     private val _notificationsGranted = MutableStateFlow(checkNotificationPermission())
     val notificationsGranted: StateFlow<Boolean> = _notificationsGranted
+
+    private val accessibilityObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            _accessibilityEnabled.value = checkAccessibilityPermission()
+        }
+    }
+
+    init {
+        // Individual accessibility-service changes do not always trigger the global
+        // AccessibilityStateChangeListener, so observe the authoritative secure list.
+        context.contentResolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
+            false,
+            accessibilityObserver,
+        )
+    }
 
     val permissionStates: StateFlow<PermissionStates> = combine(
         _cameraGranted,
@@ -88,12 +123,12 @@ class PermissionsManager @Inject constructor(
 
     fun refreshAllPermissions() {
         _cameraGranted.value = checkCameraPermission()
-        _accessibilityGranted.value = checkAccessibilityPermission()
+        _accessibilityEnabled.value = checkAccessibilityPermission()
         _notificationsGranted.value = checkNotificationPermission()
         Timber.d(
             "Permissions refreshed: camera=%s, accessibility=%s, notifications=%s",
             _cameraGranted.value,
-            _accessibilityGranted.value,
+            accessibilityGranted.value,
             _notificationsGranted.value,
         )
     }
@@ -148,11 +183,46 @@ class PermissionsManager @Inject constructor(
     }
 
     private fun checkAccessibilityPermission(): Boolean {
+        val expected = ComponentName(context, GestureControlAccessibilityService::class.java)
         val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
-        val enabled = am?.getEnabledAccessibilityServiceList(
-            AccessibilityServiceInfo.FEEDBACK_GENERIC,
-        )?.any { it.resolveInfo.serviceInfo.packageName == context.packageName } ?: false
-        Timber.v("Accessibility permission check: %s", enabled)
+
+        // Primary public API: use ALL_MASK and match the exact component, not only
+        // package name. FEEDBACK_GENERIC is inconsistently filtered on some OEMs.
+        val managerMatch = runCatching {
+            am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                ?.any { info ->
+                    val serviceInfo = info.resolveInfo.serviceInfo
+                    serviceInfo.packageName == expected.packageName &&
+                        ComponentName(serviceInfo.packageName, serviceInfo.name) == expected
+                } == true
+        }.getOrDefault(false)
+
+        // OEM fallback: Samsung and others can expose an out-of-date manager list
+        // briefly after returning from Settings. Parse the authoritative secure list.
+        val secureMatch = runCatching {
+            val raw = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            ) ?: return@runCatching false
+            val splitter = TextUtils.SimpleStringSplitter(':')
+            splitter.setString(raw)
+            var found = false
+            while (splitter.hasNext()) {
+                if (ComponentName.unflattenFromString(splitter.next()) == expected) {
+                    found = true
+                    break
+                }
+            }
+            found
+        }.getOrDefault(false)
+
+        val enabled = managerMatch || secureMatch
+        Timber.v(
+            "Accessibility enabled check: manager=%s secure=%s connected=%s",
+            managerMatch,
+            secureMatch,
+            GestureControlAccessibilityService.isConnected.value,
+        )
         return enabled
     }
 

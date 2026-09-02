@@ -30,6 +30,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 import java.util.Collections
 
@@ -155,10 +158,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Timber.e(e, "Failed to inject dependencies into accessibility service")
             // Surface the error to the user so they know the service is inert (fix #65).
+            publishConnectionState(false)
             Toast.makeText(this, R.string.injection_failed_toast, Toast.LENGTH_LONG).show()
             disableSelf()
             return
         }
+
+        publishConnectionState(true)
 
         // Init keyguard cache.
         val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
@@ -200,12 +206,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         // Tear down BEFORE calling super.onDestroy() (fix #64).
         Timber.i("GestureControlAccessibilityService destroyed")
+        publishConnectionState(false)
         unregisterScreenStateReceiver()
         stopTrackingPipeline()
         removeOverlays()
         actionDispatcher?.onGestureDispatched = null // fix #6: clear callback
         actionDispatcher?.detachService()
-        gestureDetector?.close()
+        // GestureDetector is application-scoped. Closing it here permanently cancels
+        // its internal scope, so toggling accessibility Off/On in the same process
+        // reconnects to a dead detector. Reset transient state instead.
+        gestureDetector?.reset()
         gestureDetector = null
         cursorController?.hide()
         stopCameraService()
@@ -723,6 +733,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        // Real runtime connection state. OEM settings can report a service as enabled
+        // even after its process failed to bind; onboarding observes this signal too.
+        private val _isConnected = MutableStateFlow(false)
+        val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+        private fun publishConnectionState(connected: Boolean) {
+            _isConnected.value = connected
+        }
+
         // Fix #30: reduced from 300ms to 80ms so the cursor doesn't visibly stall.
         private const val CURSOR_FREEZE_MS_GESTURE = 80L
         private const val CURSOR_FREEZE_MS_PINCH = 50L
