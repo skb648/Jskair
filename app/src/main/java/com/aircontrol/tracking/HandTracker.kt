@@ -179,8 +179,8 @@ class HandTrackerImpl @Inject constructor(
                 .setNumHands(NUM_HANDS)
                 .setMinHandDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, timestampMs ->
-                    handleResult(result, timestampMs)
+                .setResultListener { result, _ ->
+                    handleResult(result, result.timestampMs())
                 }
                 .setErrorListener { error ->
                     Timber.e(error, "HandLandmarker error (delegate=%s)", delegate)

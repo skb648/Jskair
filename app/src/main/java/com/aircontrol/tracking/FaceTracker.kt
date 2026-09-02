@@ -232,8 +232,8 @@ class FaceTrackerImpl @Inject constructor(
                 .setMinFaceDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinFacePresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                .setResultListener { result, timestampMs ->
-                    handleResult(result, timestampMs)
+                .setResultListener { result, _ ->
+                    handleResult(result, result.timestampMs())
                 }
                 .setErrorListener { error ->
                     Timber.e(error, "FaceLandmarker error (delegate=%s)", delegate)
