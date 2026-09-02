@@ -101,7 +101,7 @@ class PermissionsManager @Inject constructor(
 
     val permissionStates: StateFlow<PermissionStates> = combine(
         _cameraGranted,
-        _accessibilityGranted,
+        accessibilityGranted,
         _notificationsGranted,
     ) { camera, accessibility, notifications ->
         PermissionStates(
@@ -115,7 +115,7 @@ class PermissionsManager @Inject constructor(
         started = SharingStarted.Eagerly,
         initialValue = PermissionStates(
             cameraGranted = _cameraGranted.value,
-            accessibilityGranted = _accessibilityGranted.value,
+            accessibilityGranted = accessibilityGranted.value,
             overlayGranted = true,
             notificationsGranted = _notificationsGranted.value,
         ),
