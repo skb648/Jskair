@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Fix #46, #47, #98: we don't read window content, so remove the contradictory
-     flags (flagRetrieveInteractiveWindows / flagIncludeNotImportantViews) and
-     stop subscribing to accessibility events (empty eventTypes, no
-     notificationTimeout). settingsActivity points to SettingsDeepLinkActivity
-     which routes into the in-app Settings screen. -->
+<!-- Fix #46, #47, #98 (+ note from the reliability pass): we never read window
+     content, so the contradictory flags (flagRetrieveInteractiveWindows /
+     flagIncludeNotImportantViews) are absent and canRetrieveWindowContent=false.
+     onAccessibilityEvent() is intentionally empty - gestures come from the camera
+     pipeline, not from accessibility events. typeWindowStateChanged is still
+     declared on purpose: with no event type at all some OEM skins treat the
+     service as an idle/low-priority a11y client, which is precisely the class of
+     bug where the service "shows On in Settings but does nothing". The single
+     event type costs one ignored binder callback per window change.
+     settingsActivity points to SettingsDeepLinkActivity, which routes into the
+     in-app Settings screen. -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
