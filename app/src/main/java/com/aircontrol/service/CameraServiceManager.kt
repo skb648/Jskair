@@ -35,6 +35,20 @@ class CameraServiceManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
 ) {
     /**
+     * Whether the accessibility service's watchdog may bring the camera session
+     * back after it disappears.
+     *
+     * Normally true - that is the whole point of the watchdog (a session killed by
+     * memory pressure or a camera-hal crash must not stay dead). It is turned off
+     * while something else needs exclusive ownership of the camera, e.g. the debug
+     * screen, which binds the camera itself and would otherwise lose it again five
+     * seconds later to the watchdog. Deliberate user stops do not need this: they
+     * turn the master switch off, which the watchdog already honours.
+     */
+    @Volatile
+    var autoReviveEnabled: Boolean = true
+
+    /**
      * Starts the camera tracking foreground service.
      * Safe to call multiple times — CameraService handles idempotency internally.
      */

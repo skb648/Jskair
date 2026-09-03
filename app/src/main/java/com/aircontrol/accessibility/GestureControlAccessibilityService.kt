@@ -806,6 +806,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 val isTracking = cameraServiceManager?.isTracking() == true
                 val keyguard = keyguardLocked()
                 when {
+                    // Screen locked: the session stays down until the unlock
+                    // broadcast, which calls wakeTracking(). Reviving behind a
+                    // lock screen would burn the camera (and battery) for nobody,
+                    // and a camera FGS start while locked is exactly what some
+                    // OEM policies reject.
+                    wantsTracking && !isTracking && keyguard -> Unit
+                    wantsTracking && !isTracking &&
+                        cameraServiceManager?.autoReviveEnabled == false -> {
+                        // Someone else owns the camera on purpose (debug screen).
+                        Timber.v("Watchdog: camera revive suppressed (exclusive camera user)")
+                    }
                     wantsTracking && !isTracking -> {
                         Timber.w("Watchdog: gestures enabled but the camera session is dead — reviving")
                         startCameraService()

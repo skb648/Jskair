@@ -50,6 +50,7 @@ import javax.inject.Inject
 class DebugViewModel @Inject constructor(
     private val handTracker: HandTracker,
     private val gestureDetector: GestureDetector,
+    private val cameraServiceManager: com.aircontrol.service.CameraServiceManager,
 ) : ViewModel() {
 
     private val _handFrame = MutableStateFlow(HandFrame.EMPTY)
@@ -118,6 +119,12 @@ class DebugViewModel @Inject constructor(
 
         handTracker.initialize()
         _isServiceRunning.value = true
+
+        // This screen binds the camera itself. Without this the accessibility
+        // watchdog - which exists to revive a dead session - would start
+        // CameraService again a few seconds later and steal the camera away from
+        // the very screen used to diagnose tracking problems.
+        cameraServiceManager.autoReviveEnabled = false
 
         // Collect hand frames for skeleton overlay and FPS measurement
         trackingJobs.add(viewModelScope.launch {
@@ -337,6 +344,8 @@ class DebugViewModel @Inject constructor(
         handTracker.close()
         gestureDetector.reset()
         _isServiceRunning.value = false
+
+        cameraServiceManager.autoReviveEnabled = true
 
         if (wasServiceRunning) {
             val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
