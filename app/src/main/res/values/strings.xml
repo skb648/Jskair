@@ -217,6 +217,8 @@
     <string name="debug_camera_preview_desc">Live camera preview with hand tracking skeleton overlay</string>
     <string name="debug_engine_state_label">State: %s</string>
     <string name="debug_pose_label">Pose: %s</string>
+    <string name="debug_guard_failures_label">Recovered failures: %1$d</string>
+    <string name="debug_guard_failures_none">No recovered failures</string>
     <string name="debug_gesture_label_desc">Currently recognized gesture name</string>
 
     <!-- Common -->

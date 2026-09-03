@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.camera.view.PreviewView
@@ -83,6 +84,8 @@ fun DebugScreen(
     val engineState by viewModel.engineState.collectAsState()
     val currentPose by viewModel.currentPose.collectAsState()
     val armingProgress by viewModel.armingProgress.collectAsState()
+    val guardFailures by viewModel.guardFailures.collectAsState()
+    val guardLog by viewModel.guardLog.collectAsState()
 
     val context = LocalContext.current
     @Suppress("DEPRECATION")
@@ -134,6 +137,8 @@ fun DebugScreen(
                 handedness = handFrame.handedness,
                 engineState = engineState,
                 currentPose = currentPose,
+                guardFailures = guardFailures,
+                guardLog = guardLog,
             )
 
             // Camera preview with skeleton overlay
@@ -201,6 +206,8 @@ private fun StatsBar(
     handedness: Handedness,
     engineState: GestureEngineState,
     currentPose: Pose,
+    guardFailures: Int,
+    guardLog: List<String>,
 ) {
     Card(
         modifier = Modifier
@@ -320,6 +327,41 @@ private fun StatsBar(
                     style = MaterialTheme.typography.labelMedium,
                     color = poseColor,
                 )
+            }
+
+            // Third row: resilience. Failures here are recovered from, not crashes, but a
+            // number that keeps climbing means something is fighting the pipeline.
+            Spacer(modifier = Modifier.height(Dimens.spacing4))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = if (guardFailures == 0) {
+                        stringResource(R.string.debug_guard_failures_none)
+                    } else {
+                        stringResource(R.string.debug_guard_failures_label, guardFailures)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (guardFailures == 0) {
+                        SuccessGreen
+                    } else if (guardFailures < 4) {
+                        WarningOrange
+                    } else {
+                        ErrorRed
+                    },
+                )
+                val last = guardLog.firstOrNull()
+                if (last != null) {
+                    Text(
+                        text = last,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false).padding(start = Dimens.paddingSmall),
+                    )
+                }
             }
         }
     }

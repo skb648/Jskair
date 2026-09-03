@@ -167,4 +167,14 @@ class CrashGuardTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `recent failures are newest first and bounded`() {
+        val before = CrashGuard.failures
+        repeat(12) { CrashGuard.report("collector-$it", IllegalStateException("boom-$it")) }
+        val recent = CrashGuard.recentFailures
+        assertTrue("the debug log must stay bounded, was ${'$'}{recent.size}", recent.size <= 8)
+        assertEquals("collector-11: IllegalStateException: boom-11", recent.first())
+        assertTrue(CrashGuard.failures >= before + 12)
+    }
 }

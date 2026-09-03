@@ -29,9 +29,19 @@ import java.util.concurrent.atomic.AtomicInteger
 object CrashGuard {
 
     private val failureCount = AtomicInteger(0)
+    private val recent = java.util.concurrent.ConcurrentLinkedDeque<String>()
 
     /** Number of pipeline failures swallowed since process start (debug screen). */
     val failures: Int get() = failureCount.get()
+
+    /**
+     * The last few failures as "context: ExceptionClass: message", newest first.
+     *
+     * A swallowed failure is deliberately silent for the user - that is the point - but it
+     * must not be silent for whoever is asked "why is my cursor laggy on a Redmi 10". This is
+     * what the debug screen shows, so an isolated collector is diagnosable from the device.
+     */
+    val recentFailures: List<String> get() = recent.toList()
 
     /** Invoked when a collector dies for good, for user-visible surfacing. */
     @Volatile
@@ -39,6 +49,8 @@ object CrashGuard {
 
     fun report(context: String, error: Throwable) {
         failureCount.incrementAndGet()
+        recent.addFirst("$context: ${error.javaClass.simpleName}: ${error.message}")
+        while (recent.size > RECENT_LIMIT) recent.pollLast()
         Timber.e(error, "Pipeline failure in %s (total=%d)", context, failureCount.get())
     }
 
@@ -111,5 +123,6 @@ suspend fun <T> Flow<T>.collectGuarded(
     }
 }
 
+private const val RECENT_LIMIT = 8
 private const val MAX_RESTARTS = 6
 private const val RESTART_BASE_MS = 1_000L

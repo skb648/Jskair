@@ -24,12 +24,15 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.HandTracker
+import com.aircontrol.util.CrashGuard
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.util.concurrent.Executors
@@ -81,6 +84,13 @@ class DebugViewModel @Inject constructor(
     private val _armingProgress = MutableStateFlow(0f)
     val armingProgress: StateFlow<Float> = _armingProgress
 
+    // Crash-guard accounting: how often a collector died and was restarted, and what it was
+    private val _guardFailures = MutableStateFlow(0)
+    val guardFailures: StateFlow<Int> = _guardFailures
+
+    private val _guardLog = MutableStateFlow<List<String>>(emptyList())
+    val guardLog: StateFlow<List<String>> = _guardLog
+
     // FPS measurement
     private var frameCount = 0
     private var lastFpsMeasureTimeMs = 0L
@@ -125,6 +135,17 @@ class DebugViewModel @Inject constructor(
         // CameraService again a few seconds later and steal the camera away from
         // the very screen used to diagnose tracking problems.
         cameraServiceManager.autoReviveEnabled = false
+
+        // Guard counters on their own ticker: a pipeline that stopped producing frames is
+        // exactly the case where "how many collectors died?" matters, so this cannot hang off
+        // the frame window below.
+        trackingJobs.add(viewModelScope.launch {
+            while (isActive) {
+                _guardFailures.value = CrashGuard.failures
+                _guardLog.value = CrashGuard.recentFailures
+                delay(1000L)
+            }
+        })
 
         // Collect hand frames for skeleton overlay and FPS measurement
         trackingJobs.add(viewModelScope.launch {
