@@ -13,7 +13,7 @@ val resolvedVersionCode = versionCodeFromEnv ?: versionCodeBase
 
 android {
     namespace = "com.aircontrol"
-    compileSdk = 35
+    compileSdk = 37
 
     signingConfigs {
         create("release") {
@@ -33,7 +33,7 @@ android {
     defaultConfig {
         applicationId = "com.aircontrol"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = resolvedVersionCode
         versionName = "1.0.1"
         testInstrumentationRunner = "com.aircontrol.HiltTestRunner"

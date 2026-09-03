@@ -271,7 +271,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun wakeTracking() {
         startTrackingPipeline()
         cameraRetryAttempt = 0
-        if (currentPreferences.gesturesEnabled) startCameraService()
+        if (currentPreferences.gesturesEnabled && MainActivity.isVisible) startCameraService()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -343,7 +343,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
             settingsRepository?.userPreferences?.collectGuarded("settings") { prefs ->
                 currentPreferences = prefs
                 if (!cachedKeyguardLocked && prefs.gesturesEnabled &&
-                    cameraServiceManager?.isTracking() != true) startCameraService()
+                    MainActivity.isVisible && cameraServiceManager?.isTracking() != true) startCameraService()
                 if (!prefs.gesturesEnabled && cameraServiceManager?.isTracking() == true) stopCameraService()
 
                 if (lastAppliedSensitivity != prefs.sensitivity) {
@@ -760,6 +760,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun startCameraService() {
         if (!currentPreferences.gesturesEnabled) return
+        if (!MainActivity.isVisible) {
+            Timber.v("Camera start deferred: AirControl Activity is not visible")
+            return
+        }
         if (cameraServiceManager?.isTracking() == true) {
             runCatching { cameraServiceManager?.resumeTracking() }
             cameraRetryAttempt = 0
@@ -784,7 +788,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         cameraRetryJob?.cancel()
         cameraRetryJob = serviceScope.launchGuarded("camera retry") {
             delay(retryDelayMs)
-            if (currentPreferences.gesturesEnabled && cameraServiceManager?.isTracking() != true) {
+            if (currentPreferences.gesturesEnabled && MainActivity.isVisible &&
+                cameraServiceManager?.isTracking() != true) {
                 startCameraService()
             }
         }
@@ -817,9 +822,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // Someone else owns the camera on purpose (debug screen).
                         Timber.v("Watchdog: camera revive suppressed (exclusive camera user)")
                     }
-                    wantsTracking && !isTracking -> {
-                        Timber.w("Watchdog: gestures enabled but the camera session is dead — reviving")
+                    wantsTracking && !isTracking && MainActivity.isVisible -> {
+                        Timber.w("Watchdog: gestures enabled and Activity is visible — reviving camera")
                         startCameraService()
+                    }
+                    wantsTracking && !isTracking -> {
+                        Timber.v("Watchdog: camera restart deferred until AirControl is visible")
                     }
                     !wantsTracking && isTracking -> stopCameraService()
                 }

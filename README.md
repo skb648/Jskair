@@ -23,7 +23,7 @@
 ```bash
 ./gradlew lintDebug testDebugUnitTest assembleDebug
 ```
-`compileSdk 35`, `minSdk 26`, Kotlin 2.0.21, AGP 8.9.2, Gradle 8.11.1
+`compileSdk 37`, `minSdk 26`, targetSdk 37, Kotlin 2.2.10, AGP 9.1.1, Gradle 9.3.1
 
 ## 🧠 Behaviour worth knowing
 

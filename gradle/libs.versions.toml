@@ -1,7 +1,7 @@
 [versions]
-agp = "8.9.2"
-kotlin = "2.0.21"
-ksp = "2.0.21-1.0.28"
+agp = "9.1.1"
+kotlin = "2.2.10"
+ksp = "2.2.10-2.0.2"
 compose-bom = "2025.05.00"
 hilt = "2.53.1"
 hilt-navigation-compose = "1.2.0"
@@ -22,7 +22,7 @@ espresso = "3.6.1"
 mockito = "5.14.2"
 mockito-kotlin = "5.4.0"
 turbine = "1.2.0"
-robolectric = "4.14.1"
+robolectric = "4.17"
 
 [libraries]
 # Compose BOM

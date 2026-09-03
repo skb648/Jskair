@@ -299,7 +299,8 @@ class CameraService : LifecycleService() {
             stopSelf()
             return
         }
-        publishState(ServiceState(isRunning = true, isPaused = false))
+        // Service is starting; report a live session only after CameraX binds.
+        publishState(ServiceState(isRunning = false, isPaused = false))
 
         withContext(Dispatchers.Default) { handTracker.initialize() }
         // Fix A-1b: never pretend the session is live if the model could not be
@@ -346,6 +347,7 @@ class CameraService : LifecycleService() {
                 stopTrackingLocked()
                 return
             }
+            // CameraX bind succeeded; now report the session as live.
             publishState(ServiceState(isRunning = true, isPaused = false))
             userPaused = false
             thermalPaused = false
