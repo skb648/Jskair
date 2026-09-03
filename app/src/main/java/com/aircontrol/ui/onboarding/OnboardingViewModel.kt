@@ -19,6 +19,20 @@ class OnboardingViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
+    init {
+        // Fix B-3: onboarding is a setup flow too. Accessibility is usually already
+        // enabled by the time the user is here (the permission step asks for it), so
+        // without this a stray swipe scrolled the tutorial and a pose could leave the
+        // user out of onboarding mid-setup. Pointer taps stay allowed - see
+        // ActionDispatcher.actionAllowed().
+        com.aircontrol.ui.Suppression.acquire()
+    }
+
+    override fun onCleared() {
+        com.aircontrol.ui.Suppression.release()
+        super.onCleared()
+    }
+
     companion object {
         private const val KEY_CURRENT_STEP = "current_step"
     }

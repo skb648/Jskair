@@ -651,8 +651,12 @@ class CameraService : LifecycleService() {
 
     private fun startThermalMonitoring() {
         thermalMonitor.startMonitoring()
-        thermalMonitoringJob = serviceScope.launch {
-            thermalMonitor.thermalStatus.collect { applyThermalThrottling(it) }
+        // Fix B-2: guarded like the rest of the pipeline. applyThrottling touches
+        // the camera use-case (resolution/fps), which can throw on some OEM HALs
+        // while the camera is mid-reconfiguration; losing thermal throttling (or
+        // the process) is worse than one skipped update, so retry.
+        thermalMonitoringJob = serviceScope.launchGuarded("thermal", restart = true) {
+            thermalMonitor.thermalStatus.collectGuarded("thermal") { applyThermalThrottling(it) }
         }
     }
 
