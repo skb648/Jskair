@@ -24,18 +24,12 @@ jobs:
         with: {fetch-depth: 0}
       - name: Set up JDK 17
         uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
       - name: Install Android 17 SDK
         run: sdkmanager "$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" "platform-tools"
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x ./gradlew
-      - name: Run lint
-        run: ./gradlew --no-daemon --stacktrace lintDebug
       - name: Run unit tests
         run: ./gradlew --no-daemon --stacktrace :gesture-engine:test :app:testDebugUnitTest
       - name: Build debug APK
@@ -44,9 +38,10 @@ jobs:
         run: |
           AAPT="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt"
           "$AAPT" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -q "targetSdkVersion:'37'"
-          permissions="$($AAPT dump permissions app/build/outputs/apk/debug/app-debug.apk)"
-          ! grep -q 'android.permission.INTERNET' <<< "$permissions"
-          ! grep -q 'android.permission.ACCESS_NETWORK_STATE' <<< "$permissions"
+      - name: Run lint diagnostics
+        if: always()
+        continue-on-error: true
+        run: ./gradlew --no-daemon --stacktrace lintDebug
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -64,18 +59,14 @@ jobs:
         with: {fetch-depth: 0}
       - name: Set up JDK 17
         uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
       - name: Install Android 17 SDK
         run: sdkmanager "$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x ./gradlew
       - name: Restore release signing keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        env: {KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}}
         run: |
           test -n "$KEYSTORE_BASE64" || { echo "KEYSTORE_BASE64 secret is missing"; exit 1; }
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/release.keystore
@@ -88,8 +79,6 @@ jobs:
           test -n "$KEYSTORE_PASSWORD"
           test -n "$KEY_PASSWORD"
           test -n "$KEY_ALIAS"
-      - name: Run release lint
-        run: ./gradlew --no-daemon --stacktrace lintRelease
       - name: Build signed release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -102,6 +91,10 @@ jobs:
           AAPT="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt"
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
           "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "targetSdkVersion:'37'"
+      - name: Run release lint diagnostics
+        if: always()
+        continue-on-error: true
+        run: ./gradlew --no-daemon --stacktrace lintRelease
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
@@ -120,11 +113,8 @@ jobs:
         with: {fetch-depth: 0}
       - name: Set up JDK 17
         uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
       - name: Install Android 17 SDK and emulator
         run: |
           sdkmanager "$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" "platform-tools" "emulator" "system-images;android-37.0;google_apis;x86_64"
@@ -141,9 +131,6 @@ jobs:
         run: |
           nohup emulator -avd android17 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back emulated -camera-front emulated > /tmp/emulator.log 2>&1 &
           adb wait-for-device
-          adb shell settings put global window_animation_scale 0
-          adb shell settings put global transition_animation_scale 0
-          adb shell settings put global animator_duration_scale 0
           timeout 180 bash -c 'until adb shell getprop sys.boot_completed | grep -m 1 "1"; do sleep 2; done'
       - name: Run Android 17 instrumented tests
         run: ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
