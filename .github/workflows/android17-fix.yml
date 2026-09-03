@@ -10,13 +10,20 @@ permissions:
 
 jobs:
   migrate:
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'chore: apply Android 17 camera fixes')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Skip generated follow-up commits
+        shell: bash
+        run: |
+          if git log -1 --pretty=%s | grep -Fxq 'chore: apply Android 17 camera fixes'; then
+            echo 'Migration commit already applied.'
+            exit 0
+          fi
 
       - name: Apply Android 17 and camera lifecycle fixes
         shell: bash
@@ -31,7 +38,6 @@ jobs:
                   raise SystemExit(f'Expected text not found in {path}: {old[:100]!r}')
               p.write_text(s.replace(old, new, count))
 
-          # Android 17 / API 37 toolchain.
           replace('gradle/libs.versions.toml', 'agp = "8.9.2"', 'agp = "9.1.1"')
           replace('gradle/libs.versions.toml', 'kotlin = "2.0.21"', 'kotlin = "2.2.10"')
           replace('gradle/libs.versions.toml', 'ksp = "2.0.21-1.0.28"', 'ksp = "2.2.10-2.0.2"')
@@ -40,30 +46,24 @@ jobs:
           replace('app/build.gradle.kts', 'compileSdk = 35', 'compileSdk = 37')
           replace('app/build.gradle.kts', 'targetSdk = 35', 'targetSdk = 37')
 
-          # AGP 9: retain the project's existing Kotlin/KSP plugins while opting out
-          # of built-in Kotlin until the project is fully migrated to that DSL.
           gp = Path('gradle.properties')
           g = gp.read_text()
           if 'android.builtInKotlin=false' not in g:
               g += '\n# Keep the existing explicit Kotlin/KSP plugins compatible with AGP 9.x.\nandroid.builtInKotlin=false\n'
               gp.write_text(g)
 
-          # Camera is a hard requirement for AirControl's primary feature.
-          replace('app/src/main/AndroidManifest.xml', 'android:name="android.hardware.camera"\n        android:required="false"', 'android:name="android.hardware.camera"\n        android:required="true"')
+          replace('app/src/main/AndroidManifest.xml',
+                  'android:name="android.hardware.camera"\n        android:required="false"',
+                  'android:name="android.hardware.camera"\n        android:required="true"')
 
-          # CameraService: do not advertise the session as running before CameraX
-          # actually binds. This prevents the rest of the app/watchdog from treating
-          # a failed camera open as a healthy session.
           camera = 'app/src/main/java/com/aircontrol/camera/CameraService.kt'
           replace(camera,
                   '        publishState(ServiceState(isRunning = true, isPaused = false))\n\n        withContext(Dispatchers.Default) { handTracker.initialize() }',
-                  '        // The service is only STARTING at this point. Do not publish\n        // isRunning=true until CameraX has successfully bound below.\n        publishState(ServiceState(isRunning = false, isPaused = false))\n\n        withContext(Dispatchers.Default) { handTracker.initialize() }')
+                  '        // Service is starting; report a live session only after CameraX binds.\n        publishState(ServiceState(isRunning = false, isPaused = false))\n\n        withContext(Dispatchers.Default) { handTracker.initialize() }')
           replace(camera,
                   '            publishState(ServiceState(isRunning = true, isPaused = false))\n            userPaused = false',
-                  '            // CameraX bind succeeded; only now report a live session.\n            publishState(ServiceState(isRunning = true, isPaused = false))\n            userPaused = false')
+                  '            // CameraX bind succeeded; now report the session as live.\n            publishState(ServiceState(isRunning = true, isPaused = false))\n            userPaused = false')
 
-          # AccessibilityService: it must not create a camera FGS from the background.
-          # Android 14+ treats CAMERA as while-in-use; Android requires the FGS to be\n          # created from a visible activity unless an explicit exemption applies.
           a11y = 'app/src/main/java/com/aircontrol/accessibility/GestureControlAccessibilityService.kt'
           replace(a11y,
                   'if (!cachedKeyguardLocked && prefs.gesturesEnabled &&\n                    cameraServiceManager?.isTracking() != true) startCameraService()',
@@ -73,7 +73,7 @@ jobs:
                   'if (currentPreferences.gesturesEnabled && MainActivity.isVisible) startCameraService()')
           replace(a11y,
                   'wantsTracking && !isTracking -> {\n                        Timber.w("Watchdog: gestures enabled but the camera session is dead — reviving")\n                        startCameraService()\n                    }',
-                  'wantsTracking && !isTracking && MainActivity.isVisible -> {\n                        Timber.w("Watchdog: gestures enabled and Activity is visible — reviving camera")\n                        startCameraService()\n                    }\n                    wantsTracking && !isTracking -> {\n                        // Camera FGS creation is UI-initiated work on Android 14+.\n                        // MainActivity.onResume() owns the foreground restart when the\n                        // user next brings AirControl to the foreground.\n                        Timber.v("Watchdog: camera restart deferred until AirControl is visible")\n                    }')
+                  'wantsTracking && !isTracking && MainActivity.isVisible -> {\n                        Timber.w("Watchdog: gestures enabled and Activity is visible — reviving camera")\n                        startCameraService()\n                    }\n                    wantsTracking && !isTracking -> {\n                        Timber.v("Watchdog: camera restart deferred until AirControl is visible")\n                    }')
           replace(a11y,
                   '    private fun startCameraService() {\n        if (!currentPreferences.gesturesEnabled) return',
                   '    private fun startCameraService() {\n        if (!currentPreferences.gesturesEnabled) return\n        if (!MainActivity.isVisible) {\n            Timber.v("Camera start deferred: AirControl Activity is not visible")\n            return\n        }')
@@ -81,7 +81,6 @@ jobs:
                   'if (currentPreferences.gesturesEnabled && cameraServiceManager?.isTracking() != true) {\n                startCameraService()\n            }',
                   'if (currentPreferences.gesturesEnabled && MainActivity.isVisible &&\n                cameraServiceManager?.isTracking() != true) {\n                startCameraService()\n            }')
 
-          # Keep the documented build/version matrix accurate.
           readme = Path('README.md')
           r = readme.read_text()
           r = r.replace('`compileSdk 35`, `minSdk 26`, Kotlin 2.0.21, AGP 8.9.2, Gradle 8.11.1',
@@ -89,16 +88,17 @@ jobs:
           readme.write_text(r)
           PY
 
-      - name: Validate changed files
+      - name: Validate changes
+        shell: bash
         run: |
-          test -f app/src/main/java/com/aircontrol/camera/CameraService.kt
-          test -f app/src/main/java/com/aircontrol/accessibility/GestureControlAccessibilityService.kt
           grep -q 'compileSdk = 37' app/build.gradle.kts
           grep -q 'targetSdk = 37' app/build.gradle.kts
           grep -q 'agp = "9.1.1"' gradle/libs.versions.toml
           grep -q 'gradle-9.3.1-bin.zip' gradle/wrapper/gradle-wrapper.properties
+          grep -q 'MainActivity.isVisible' app/src/main/java/com/aircontrol/accessibility/GestureControlAccessibilityService.kt
+          git diff --check
 
-      - name: Commit and push
+      - name: Commit source changes
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -106,14 +106,13 @@ jobs:
           git add app gradle gradle.properties README.md
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo "No source changes to commit."
+            echo 'No source changes to commit.'
             exit 0
           fi
-          git commit -m "chore: apply Android 17 camera fixes"
+          git commit -m 'chore: apply Android 17 camera fixes'
           git push origin HEAD:main
 
-      - name: Remove migration workflow
-        if: success()
+      - name: Remove one-shot migration workflow
         shell: bash
         run: |
           git fetch origin main
@@ -121,5 +120,5 @@ jobs:
           rm -f .github/workflows/android17-fix.yml
           git add .github/workflows/android17-fix.yml
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "chore: remove one-shot Android 17 migration workflow"
+          git commit -m 'chore: remove one-shot Android 17 migration workflow'
           git push origin HEAD:main
