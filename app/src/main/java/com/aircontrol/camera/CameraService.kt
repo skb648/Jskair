@@ -68,6 +68,9 @@ import java.util.concurrent.TimeUnit
 class CameraService : LifecycleService() {
 
     companion object {
+        /** Analysis resolution; small on purpose, it is fed to a landmark model. */
+        private const val ANALYSIS_WIDTH = 640
+        private const val ANALYSIS_HEIGHT = 480
         const val CHANNEL_ID = "aircontrol_tracking"
 
         /** How often the watchdog checks the pipeline (ms). */
@@ -135,6 +138,13 @@ class CameraService : LifecycleService() {
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageAnalysis: ImageAnalysis? = null
+    /**
+     * False whenever the camera device is released - while the screen is off or while
+     * we are thermally paused. The session stays alive (same foreground service, same
+     * trackers), only the sensor is given back, which is what turns the system's
+     * "camera in use" indicator off and stops the HAL powering the sensor in a pocket.
+     */
+    @Volatile private var cameraBound = false
 
     @Volatile private var userPaused = false
     @Volatile private var thermalPaused = false
@@ -327,30 +337,14 @@ class CameraService : LifecycleService() {
         }
 
         try {
-            val provider = withContext(Dispatchers.Default) {
-                ProcessCameraProvider.getInstance(this@CameraService).get()
-            }
-            withContext(Dispatchers.Main.immediate) {
-                cameraProvider = provider
-                val cameraSelector = CameraSelector.Builder()
-                    .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
-                val resolutionSelector = ResolutionSelector.Builder()
-                    .setResolutionStrategy(
-                        ResolutionStrategy(
-                            android.util.Size(640, 480),
-                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
-                        )
-                    ).build()
-                val executor = analysisExecutor ?: return@withContext
-                val analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(resolutionSelector)
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build().also { img ->
-                        img.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
-                    }
-                imageAnalysis = analysis
-                provider.unbindAll()
-                provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
+            if (!bindAnalysisUseCase()) {
+                // A bind failure here is a device/permission problem, not a transient one.
+                // Tear the session down and let the accessibility-side retry bring it back:
+                // a half-started service that reports "running" is what used to leave people
+                // with gestures that never work until they reopened the app.
+                Timber.e("Could not open the front camera; tearing the session down for a retry")
+                stopTrackingLocked()
+                return
             }
             publishState(ServiceState(isRunning = true, isPaused = false))
             userPaused = false
@@ -362,6 +356,54 @@ class CameraService : LifecycleService() {
         } catch (e: Exception) {
             Timber.e(e, "Failed to start camera")
             stopTrackingLocked()
+        }
+    }
+
+    /**
+     * Binds (or re-binds) the front camera analysis use case to this service's lifecycle.
+     *
+     * One place for start, restart-after-stall and resume-from-pause, so a pause that released
+     * the camera comes back exactly the way a cold start does - including the analyzer, which
+     * is what a resumed session was missing when the binding code lived only in the start path.
+     */
+    private suspend fun bindAnalysisUseCase(): Boolean {
+        val executor = analysisExecutor
+        if (executor == null) {
+            Timber.e("Analysis executor is gone; cannot bind the camera")
+            return false
+        }
+        return try {
+            val provider = cameraProvider
+                ?: withContext(Dispatchers.Default) {
+                    ProcessCameraProvider.getInstance(this@CameraService).get()
+                }
+            cameraProvider = provider
+            withContext(Dispatchers.Main.immediate) {
+                val cameraSelector = CameraSelector.Builder()
+                    .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
+                val resolutionSelector = ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            android.util.Size(ANALYSIS_WIDTH, ANALYSIS_HEIGHT),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                        )
+                    ).build()
+                val analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(resolutionSelector)
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build().also { img ->
+                        img.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
+                    }
+                imageAnalysis = analysis
+                provider.unbindAll()
+                provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
+                cameraBound = true
+            }
+            true
+        } catch (e: Exception) {
+            cameraBound = false
+            Timber.e(e, "Failed to bind the analysis use case")
+            false
         }
     }
 
@@ -378,6 +420,7 @@ class CameraService : LifecycleService() {
             .onFailure { Timber.e(it, "unbindAll failed") }
         cameraProvider = null
         imageAnalysis = null
+        cameraBound = false
         withContext(Dispatchers.Default) {
             runCatching { handTracker.close() }
             runCatching { faceTracker.close() }
@@ -397,7 +440,16 @@ class CameraService : LifecycleService() {
         if (!_state.value.isRunning) return
         userPaused = true
         publishState(_state.value.copy(isPaused = true))
-        withContext(Dispatchers.Main.immediate) { imageAnalysis?.clearAnalyzer() }
+        withContext(Dispatchers.Main.immediate) {
+            imageAnalysis?.clearAnalyzer()
+            // Hand the sensor back while paused. Keeping the capture session open with the
+            // analyzer detached still lit the privacy indicator and kept the camera HAL
+            // powered (visible as heat and a few percent an hour overnight in a pocket), and
+            // on Android 12+ it is the indicator that makes a camera app look like a spy app.
+            runCatching { cameraProvider?.unbindAll() }
+                .onFailure { Timber.e(it, "unbindAll on pause failed") }
+            cameraBound = false
+        }
         updateNotification(isPaused = true)
         Timber.i("Tracking paused by user")
     }
@@ -417,9 +469,19 @@ class CameraService : LifecycleService() {
         publishState(_state.value.copy(isPaused = false))
         lastFrameTimestampMs = 0L
         lastProcessedFrameMs = SystemClock.elapsedRealtime()
-        val executor = analysisExecutor ?: return
-        withContext(Dispatchers.Main.immediate) {
-            imageAnalysis?.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
+        if (cameraBound && imageAnalysis != null) {
+            val executor = analysisExecutor ?: return
+            withContext(Dispatchers.Main.immediate) {
+                imageAnalysis?.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
+            }
+        } else if (!bindAnalysisUseCase()) {
+            // The camera refused to come back (another app took it, or the provider is in a
+            // bad state after the screen was off for a long time). Tear the session down so
+            // the retry logic starts it cleanly instead of leaving a paused service that
+            // reports itself healthy forever.
+            Timber.e("Camera did not come back after the pause; restarting the session")
+            stopTrackingLocked()
+            return
         }
         updateNotification(isPaused = false)
         Timber.i("Tracking resumed")
@@ -613,37 +675,20 @@ class CameraService : LifecycleService() {
 
     private suspend fun restartCamera() {
         runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
+            .onFailure { Timber.e(it, "unbindAll on restart failed") }
         imageAnalysis = null
+        cameraBound = false
         lastProcessedFrameMs = SystemClock.elapsedRealtime()
         withContext(Dispatchers.Default) {
             runCatching { handTracker.close(); handTracker.initialize() }
             if (eyeTrackingEnabled) runCatching { faceTracker.close(); faceTracker.initialize() }
         }
         restartJob = serviceScope.launch {
-            try {
-                val executor = analysisExecutor ?: return@launch
-                withContext(Dispatchers.Main.immediate) {
-                    val provider = cameraProvider ?: withContext(Dispatchers.Default) {
-                        ProcessCameraProvider.getInstance(this@CameraService).get()
-                    }
-                    cameraProvider = provider
-                    val cameraSelector = CameraSelector.Builder()
-                        .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
-                    val resolutionSelector = ResolutionSelector.Builder()
-                        .setResolutionStrategy(
-                            ResolutionStrategy(android.util.Size(640, 480),
-                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
-                        ).build()
-                    val analysis = ImageAnalysis.Builder()
-                        .setResolutionSelector(resolutionSelector)
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build().also { it.setAnalyzer(executor) { ip -> processImageFrame(ip) } }
-                    imageAnalysis = analysis
-                    provider.unbindAll()
-                    provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
-                }
-                Timber.i("Camera restarted")
-            } catch (e: Exception) { Timber.e(e, "Restart failed") }
+            // Fix: a restart that failed silently used to leave a "running" session with no
+            // analyzer attached - exactly the frozen-cursor state it was meant to clear. The
+            // shared binder is used so a restart cannot drift from a cold start.
+            if (bindAnalysisUseCase()) Timber.i("Camera restarted")
+            else Timber.e("Camera restart failed; the watchdog keeps trying")
         }
     }
 

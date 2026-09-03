@@ -41,11 +41,15 @@ Things the app does on purpose, all of them adjustable in Settings:
   firing on it by default threw people out of their apps. When enabled, it needs a still palm.
 - **Pinch clicks land on the dot** you see, not on where the raw fingertip was a frame earlier, and
   "ignore pinches while moving" scales with the sensitivity slider instead of being a fixed wall.
-- **Calibration and custom-gesture capture suppress actions** while those screens are open, so
-  tapping *Next* with a pinch does not also tap the screen behind it.
-- **Screen off pauses, it does not stop**: the camera session stays alive and resumes in a few
-  hundred ms after unlock (restarting a camera foreground service from the background is illegal
-  on Android 14+ and blocked outright by some OEM skins).
+- **Setup screens keep the pointer, drop the navigation**: while calibration, gaze calibration,
+  custom-gesture capture or onboarding is open, tapping *Next* with a pinch lands on that screen
+  once and nothing else - Home, Back, Recents, the notification shade, volume and lock are refused,
+  so a stray pinch can never leave the screen you are setting up or act on the app behind it.
+- **Screen off pauses, it does not stop**: the service stays up (restarting a camera foreground
+  service from the background is illegal on Android 14+ and blocked outright by some OEM skins),
+  but the camera *device* is handed back while the screen is off. The system's "camera in use"
+  indicator therefore goes dark and the sensor stops powering in a pocket; unlocking rebinds it in
+  about a second without you touching anything.
 - **Notification "Stop" turns the master switch off** on purpose, so the watchdog does not
   immediately restart what you just stopped.
 

@@ -217,3 +217,6 @@ Complete ALL items before tagging a release. Mark each with ✅ or ❌ and add n
 | R10 | Tablet (or foldable) in landscape, then rotate to portrait mid-session | cursor mapping and overlay positions recompute, no frozen dot |
 | R11 | Data cleared / corrupt preferences (adb shell rm of the datastore file) | app opens with defaults, no crash loop |
 | R12 | Device with no camera permission granted | onboarding explains it, no crash when the service starts |
+| R13 | Armed, screen off for 1 min | the system camera indicator goes off while the screen is off; on unlock tracking resumes by itself in ~1 s, no app reopen |
+| R14 | During onboarding, pinch the pointer onto *Next* and also sweep hard | *Next* fires once; the sweep does not scroll the app behind it, no Back/Home fires |
+| R15 | Camera held by another app (open the system Camera while AirControl is armed), then close it | AirControl rebinds and the cursor returns without a manual restart |
