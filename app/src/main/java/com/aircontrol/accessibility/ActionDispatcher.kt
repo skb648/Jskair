@@ -356,6 +356,26 @@ class ActionDispatcher @Inject constructor(
     fun getGestureMap(): Map<String, GestureAction> = gestureMap.toMap()
 
     /**
+     * Which actions may still run while [Suppression] is active. See
+     * [executeAction] for why the split is "stays on this screen" vs "leaves it".
+     *
+     * Internal so the policy is directly testable; production callers go through
+     * [executeAction] / [dispatchSwipe].
+     */
+    internal fun actionAllowed(action: GestureAction): Boolean =
+        !com.aircontrol.ui.Suppression.isSuppressed() ||
+            when (action) {
+                GestureAction.TAP,
+                GestureAction.DOUBLE_TAP,
+                GestureAction.LONG_PRESS,
+                GestureAction.DRAG,
+                GestureAction.NONE,
+                -> true
+
+                else -> false
+            }
+
+    /**
      * Drops all in-flight synthetic-gesture state.
      *
      * Fix B-6: the system interrupts a dispatched gesture whenever it needs the
@@ -509,6 +529,14 @@ class ActionDispatcher @Inject constructor(
             SwipeDirection.RIGHT -> gestureMap[KEY_SWIPE_RIGHT] ?: GestureAction.NONE
             SwipeDirection.UP -> gestureMap[KEY_SWIPE_UP] ?: GestureAction.NONE
             SwipeDirection.DOWN -> gestureMap[KEY_SWIPE_DOWN] ?: GestureAction.NONE
+        }
+
+        // Fix B-3 (policy): the scroll branches below bypass executeAction(), so
+        // the setup-flow filter has to be applied here too - otherwise a swipe
+        // during calibration still scrolled the screen away.
+        if (!actionAllowed(action)) {
+            Timber.d("Suppressed swipe action %s while a setup flow is on screen", action)
+            return false
         }
 
         return when (action) {
@@ -951,6 +979,19 @@ class ActionDispatcher @Inject constructor(
         screenWidth: Int,
         screenHeight: Int,
     ): Boolean {
+        // Fix B-3 (policy): while one of AirControl's own setup flows is on screen
+        // (hand calibration, gaze calibration, custom-gesture capture) the user is
+        // performing the very gestures that are mapped to actions. Blocking every
+        // action was the wrong answer for our audience - someone who cannot touch
+        // the glass *needs* their pinch-tap to press "Next" - and blocking nothing
+        // was worse: Home/Back/scroll pulled the screen out from under them
+        // mid-calibration. So: pointer-local actions survive, everything that
+        // leaves the screen does not.
+        if (!actionAllowed(action)) {
+            Timber.d("Suppressed %s while a setup flow is on screen", action)
+            return false
+        }
+
         return when (action) {
             GestureAction.BACK -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
             GestureAction.HOME -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
@@ -965,10 +1006,18 @@ class ActionDispatcher @Inject constructor(
             GestureAction.TAP -> dispatchTap(cursorX, cursorY, screenWidth, screenHeight)
             GestureAction.DOUBLE_TAP -> dispatchDoubleTap(cursorX, cursorY, screenWidth, screenHeight)
             GestureAction.LONG_PRESS -> dispatchLongPress(cursorX, cursorY, screenWidth, screenHeight)
-            GestureAction.SCROLL_UP -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = true)
-            GestureAction.SCROLL_DOWN -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = false)
-            GestureAction.SCROLL_LEFT -> dispatchHorizontalScroll(screenWidth, screenHeight, scrollLeft = true)
-            GestureAction.SCROLL_RIGHT -> dispatchHorizontalScroll(screenWidth, screenHeight, scrollLeft = false)
+            GestureAction.SCROLL_UP -> dispatchScrollGesture(
+                screenWidth, screenHeight, scrollUp = true, anchorX = normalizeToScreenX(cursorX, screenWidth),
+            )
+            GestureAction.SCROLL_DOWN -> dispatchScrollGesture(
+                screenWidth, screenHeight, scrollUp = false, anchorX = normalizeToScreenX(cursorX, screenWidth),
+            )
+            GestureAction.SCROLL_LEFT -> dispatchHorizontalScroll(
+                screenWidth, screenHeight, scrollLeft = true, anchorY = normalizeToScreenY(cursorY, screenHeight),
+            )
+            GestureAction.SCROLL_RIGHT -> dispatchHorizontalScroll(
+                screenWidth, screenHeight, scrollLeft = false, anchorY = normalizeToScreenY(cursorY, screenHeight),
+            )
             GestureAction.DRAG -> false
             GestureAction.NONE -> {
                 Timber.v("No action mapped for this gesture")

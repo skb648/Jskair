@@ -163,6 +163,59 @@ class ActionDispatcherTest {
         assertEquals(0f, result, 0.01f)
     }
 
+    // ========== setup-flow suppression policy (Fix B-3) ==========
+
+    @Test
+    fun `every action is allowed outside a setup flow`() {
+        com.aircontrol.ui.Suppression.resetForTest()
+        for (action in GestureAction.values()) {
+            assertTrue(
+                "$action must be allowed when no calibration screen is open",
+                actionDispatcher.actionAllowed(action),
+            )
+        }
+    }
+
+    @Test
+    fun `during calibration only pointer-local actions survive`() {
+        com.aircontrol.ui.Suppression.resetForTest()
+        com.aircontrol.ui.Suppression.acquire()
+        try {
+            // The user has to be able to press the calibration screen's own buttons.
+            for (action in listOf(
+                GestureAction.TAP,
+                GestureAction.DOUBLE_TAP,
+                GestureAction.LONG_PRESS,
+                GestureAction.DRAG,
+                GestureAction.NONE,
+            )) {
+                assertTrue("$action must still work", actionDispatcher.actionAllowed(action))
+            }
+            // Everything that leaves the screen would yank the flow away.
+            for (action in listOf(
+                GestureAction.HOME,
+                GestureAction.BACK,
+                GestureAction.RECENTS,
+                GestureAction.NOTIFICATIONS,
+                GestureAction.QUICK_SETTINGS,
+                GestureAction.VOLUME_UP,
+                GestureAction.VOLUME_DOWN,
+                GestureAction.MEDIA_PLAY_PAUSE,
+                GestureAction.SCREENSHOT,
+                GestureAction.LOCK_SCREEN,
+                GestureAction.SCROLL_UP,
+                GestureAction.SCROLL_DOWN,
+                GestureAction.SCROLL_LEFT,
+                GestureAction.SCROLL_RIGHT,
+            )) {
+                assertFalse("$action must be suppressed", actionDispatcher.actionAllowed(action))
+            }
+        } finally {
+            com.aircontrol.ui.Suppression.release()
+        }
+        assertTrue("actions resume when the flow closes", actionDispatcher.actionAllowed(GestureAction.HOME))
+    }
+
     // ========== dispatch() behavior without service attached ==========
 
     @Test

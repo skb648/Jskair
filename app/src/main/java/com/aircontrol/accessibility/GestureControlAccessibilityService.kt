@@ -701,20 +701,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Fix B-3: while the user is inside our own calibration screens, the
-        // service must not dispatch real taps onto those very screens (buttons
-        // were being pressed by the user's own gestures mid-calibration, and the
-        // gaze dwell added to this made it much worse). Cursor feedback keeps
-        // running so calibration still "sees" the hand; only the actions stop.
-        if (com.aircontrol.ui.Suppression.isSuppressed()) {
-            if (event is GestureEvent.Pinch &&
-                event.phase == com.aircontrol.gesture.model.PinchPhase.END
-            ) {
-                (cursorController as? com.aircontrol.control.CursorControllerImpl)
-                    ?.releaseClick()
-            }
-            return
-        }
+        // Fix B-3: actions taken while one of our own setup flows is on screen are
+        // filtered by ActionDispatcher.actionAllowed() - pinch/dwell/blink taps
+        // still work (the user needs them to drive the calibration UI), while
+        // Home/Back/Recents/scroll/volume are refused so the screen cannot be pulled
+        // away mid-calibration. Nothing is skipped here: cursor bookkeeping, the
+        // click pin and the dwell ring all have to keep running.
 
         val engineState = gestureDetector?.engineState?.value ?: return
 
