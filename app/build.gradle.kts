@@ -5,7 +5,6 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Deterministic version code that does not depend on git.
 val versionCodeBase = 1
 val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
 val resolvedVersionCode = versionCodeFromEnv ?: versionCodeBase
@@ -18,12 +17,9 @@ android {
         create("release") {
             val ksFile = file("release.keystore")
             if (ksFile.exists()) storeFile = ksFile
-            val ksPass = System.getenv("KEYSTORE_PASSWORD") ?: ""
-            val keyPass = System.getenv("KEY_PASSWORD") ?: ""
-            val keyAlias = System.getenv("KEY_ALIAS") ?: "release"
-            storePassword = ksPass
-            keyPassword = keyPass
-            this.keyAlias = keyAlias
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            this.keyAlias = System.getenv("KEY_ALIAS") ?: "release"
             enableV3Signing = true
             enableV4Signing = true
         }
@@ -42,10 +38,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isCrunchPngs = true
             val keystoreFile = file("release.keystore")
             val ksPassword = System.getenv("KEYSTORE_PASSWORD")
@@ -53,10 +46,7 @@ android {
             if (hasKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             } else if (gradle.startParameter.taskNames.any { "Release" in it } && System.getenv("CI") != "true") {
-                throw GradleException(
-                    "Release build requires release.keystore + KEYSTORE_PASSWORD env var. " +
-                        "See CONTRIBUTING.md for release signing instructions.",
-                )
+                throw GradleException("Release build requires release.keystore + KEYSTORE_PASSWORD env var. See CONTRIBUTING.md for release signing instructions.")
             }
         }
         debug {
@@ -124,6 +114,7 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.service)
+    implementation(libs.lifecycle.process)
     implementation(libs.navigation.compose)
     implementation(libs.hilt.android)
     ksp(libs.hilt.android.compiler)
