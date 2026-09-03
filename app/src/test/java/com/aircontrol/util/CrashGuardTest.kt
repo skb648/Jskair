@@ -135,12 +135,11 @@ class CrashGuardTest {
         assertFalse(Suppression.isSuppressed())
 
         Suppression.acquire()
-        val second = Suppression.acquire()
+        Suppression.acquire()
         assertTrue("actions are suppressed while any flow is open", Suppression.isSuppressed())
 
         Suppression.release()
         assertTrue("still suppressed while the second flow is open", Suppression.isSuppressed())
-        assertTrue(second > 0)
 
         Suppression.release()
         assertFalse(Suppression.isSuppressed())

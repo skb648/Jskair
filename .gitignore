@@ -45,3 +45,6 @@ reports/
 
 # Local release signing material (never commit)
 release-signing/
+
+# Kotlin incremental build session dir
+.kotlin/

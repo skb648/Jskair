@@ -25,22 +25,20 @@ object Suppression {
 
     fun isSuppressed(): Boolean = isSuppressedFlow
 
-    /** Marks a flow as foreground. Returns the token to pass to [release]. */
-    fun acquire(): Int {
+    /** Marks one setup flow as being on screen. Must be paired with [release]. */
+    fun acquire() {
         active.incrementAndGet()
-        return active.get()
     }
 
+    /**
+     * Marks one flow as gone. Under-counting is impossible by construction (the
+     * counter never goes below zero), which matters because a negative count
+     * would keep [isSuppressed] true forever after a stray [release] - silently
+     * disabling every gesture until the app is restarted.
+     */
     fun release() {
-        val next = active.updateAndGet { if (it > 0) it - 1 else 0 }
-        if (next == 0) {
-            onUnsuppressed?.invoke()
-        }
+        active.updateAndGet { if (it > 0) it - 1 else 0 }
     }
-
-    /** Hook for the service to flush/prime UI state once actions resume. */
-    @Volatile
-    var onUnsuppressed: (() -> Unit)? = null
 
     /** Test helper. */
     fun resetForTest() = active.set(0)

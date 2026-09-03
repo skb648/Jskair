@@ -278,10 +278,6 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Intentionally empty: we don't use accessibility events (fix #47).
     }
 
-    override fun onInterrupt() {
-        Timber.w("Accessibility service interrupted")
-    }
-
     override fun onDestroy() {
         // Tear down BEFORE calling super.onDestroy() (fix #64).
         Timber.i("GestureControlAccessibilityService destroyed")
@@ -301,6 +297,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
         stopCameraService()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * The system took the screen away mid-gesture (incoming call, user touch,
+     * shade swipe). Drop the synthetic-gesture state so the next pinch starts a
+     * clean stroke chain instead of throwing on a dead continued stroke (Fix B-6),
+     * and release the frozen cursor so the dot is not left stuck.
+     */
+    override fun onInterrupt() {
+        // AccessibilityService.onInterrupt() is abstract, so there is no super
+        // implementation to call.
+        Timber.w("Accessibility service interrupted - clearing in-flight gesture state")
+        runCatching { actionDispatcher?.resetTransientGestureState() }
+            .onFailure { CrashGuard.report("interrupt reset", it) }
+        cursorFreezeJob?.cancel()
+        cursorFreezeJob = null
+        isCursorFrozen = false
+        (cursorController as? com.aircontrol.control.CursorControllerImpl)?.let {
+            it.releaseClick()
+            it.clearPinClick()
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

@@ -355,6 +355,25 @@ class ActionDispatcher @Inject constructor(
      */
     fun getGestureMap(): Map<String, GestureAction> = gestureMap.toMap()
 
+    /**
+     * Drops all in-flight synthetic-gesture state.
+     *
+     * Fix B-6: the system interrupts a dispatched gesture whenever it needs the
+     * screen back (incoming-call UI, the user touching the display, a shade
+     * swipe). A drag is a *chain* of continuing strokes, so once the chain is
+     * interrupted every later `continueStroke()` on the dead stroke throws
+     * IllegalArgumentException - which used to leave drags permanently broken (and
+     * spam an exception per frame) until the service was restarted. The service
+     * calls this from onInterrupt() so the next pinch starts a fresh chain.
+     */
+    fun resetTransientGestureState() {
+        synchronized(this) {
+            lastDragStroke = null
+            isDragging = false
+            pinchIsDrag = false
+        }
+    }
+
     fun dispatchDwellTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.gesturesEnabled || !currentPreferences.dwellEnabled) return false
         return performFeedbackTap(cursorX, cursorY, screenWidth, screenHeight, "dwell_tap")
@@ -1073,14 +1092,28 @@ class ActionDispatcher @Inject constructor(
                     Timber.w("Gesture '%s' cancelled, retrying (%d/%d)", label, retryCount, MAX_RETRIES)
                     // Build a fresh GestureDescription for the retry — re-dispatching
                     // the completed/cancelled one can corrupt the gesture.
-                    service.dispatchGesture(gesture, this, null)
+                    // This runs on a Binder thread with nothing above it to catch a
+                    // throw, so it must never be allowed to propagate.
+                    val again = runCatching { service.dispatchGesture(gesture, this, null) }
+                        .getOrDefault(false)
+                    if (!again) Timber.w("Gesture '%s' retry could not be dispatched", label)
                 } else {
                     Timber.w("Gesture '%s' cancelled, max retries reached", label)
                 }
             }
         }
 
-        result = service.dispatchGesture(gesture, callback, null)
+        // dispatchGesture is documented to return false when it cannot accept the
+        // gesture, but OEM implementations also throw here (IllegalArgumentException
+        // for a stale continued stroke, SecurityException on a locked device). An
+        // exception out of here used to escape into the collector that drives every
+        // gesture, so a single bad frame could take the pipeline down.
+        result = runCatching { service.dispatchGesture(gesture, callback, null) }
+            .getOrElse { error ->
+                Timber.w(error, "Gesture '%s' threw while dispatching - dropping it", label)
+                resetTransientGestureState()
+                false
+            }
         Timber.v("Gesture '%s' dispatch result: %s", label, result)
         return result
     }
