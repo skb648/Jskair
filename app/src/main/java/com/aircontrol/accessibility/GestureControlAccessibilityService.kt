@@ -271,7 +271,21 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun wakeTracking() {
         startTrackingPipeline()
         cameraRetryAttempt = 0
-        if (currentPreferences.gesturesEnabled && MainActivity.isVisible) startCameraService()
+        if (!currentPreferences.gesturesEnabled) return
+
+        // Unlocking is a background event. If the existing camera foreground
+        // service is still alive but paused, resume its already-created FGS here;
+        // this does not create a new camera FGS and is safe after unlock. If the
+        // service is gone entirely, defer creation of a new camera FGS until the
+        // visible Activity owns the foreground-start opportunity.
+        if (cameraServiceManager?.isTracking() == true) {
+            runCatching { cameraServiceManager?.resumeTracking() }
+                .onFailure { Timber.e(it, "Failed to resume existing camera service after unlock") }
+        } else if (MainActivity.isVisible) {
+            startCameraService()
+        } else {
+            Timber.v("Unlock: camera service absent; new camera FGS deferred until AirControl is visible")
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
