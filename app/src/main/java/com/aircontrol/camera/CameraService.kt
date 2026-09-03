@@ -634,7 +634,17 @@ class CameraService : LifecycleService() {
             while (isActive) {
                 delay(WATCHDOG_PERIOD_MS)
                 val s = _state.value
-                if (!s.isRunning || s.isPaused || userPaused || thermalPaused) continue
+                if (!s.isRunning || thermalPaused) continue
+                if (s.isPaused || userPaused) {
+                    // A pause releases the camera and normally ends via ACTION_RESUME from the
+                    // screen-on receiver. If that broadcast is ever missed - doze, an OEM that
+                    // reorders or swallows them - the session would sit paused with no camera
+                    // forever: gestures dead and nothing left to restart it. Recover it here,
+                    // but only when the device is plainly awake, so this cannot fight a
+                    // legitimate pause (thermal, "Resume" on the notification, keyguard).
+                    if (userPaused && !cameraBound) revivePausedSessionIfNeeded()
+                    continue
+                }
 
                 // Fix A-1b: a dead MediaPipe tracker is invisible to the stall
                 // detector below, because frames keep reaching the analyzer (and keep
@@ -671,6 +681,16 @@ class CameraService : LifecycleService() {
                 }
             }
         }
+    }
+
+    /** Resume a session that is paused with the camera released, but only when it is safe. */
+    private suspend fun revivePausedSessionIfNeeded() {
+        val pm = getSystemService(POWER_SERVICE) as? android.os.PowerManager
+        val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val awake = pm?.isInteractive == true && km?.isKeyguardLocked == false
+        if (!awake) return
+        Timber.w("Paused with no camera while the screen is awake; resuming the session")
+        resumeTrackingLocked()
     }
 
     private suspend fun restartCamera() {
