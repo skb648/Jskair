@@ -55,6 +55,7 @@ private object PreferencesKeys {
     val DWELL_DURATION_MS = intPreferencesKey("dwell_duration_ms")
     val STATIONARY_CLICK_ENABLED = booleanPreferencesKey("stationary_click_enabled")
     val PALM_HOME_ENABLED = booleanPreferencesKey("palm_home_enabled")
+    val SWIPE_REQUIRES_OPEN_HAND = booleanPreferencesKey("swipe_requires_open_hand")
     val SIT_BACK_MODE = booleanPreferencesKey("sit_back_mode")
     val REDUCED_MOTION = booleanPreferencesKey("reduced_motion")
     val CURSOR_GAIN = intPreferencesKey("cursor_gain")
@@ -395,6 +396,13 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Custom gesture %s: enabled=%s", gestureId, enabled)
     }
 
+    override suspend fun updateSwipeRequiresOpenHand(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SWIPE_REQUIRES_OPEN_HAND] = enabled
+        }
+        Timber.d("Updated swipeRequiresOpenHand: %s", enabled)
+    }
+
     private fun mapPreferences(preferences: Preferences): UserPreferences = UserPreferences(
         gesturesEnabled = preferences[PreferencesKeys.GESTURES_ENABLED] ?: true,
         sensitivity = preferences[PreferencesKeys.SENSITIVITY] ?: 50,
@@ -416,7 +424,10 @@ class SettingsRepositoryImpl @Inject constructor(
         dwellEnabled = preferences[PreferencesKeys.DWELL_ENABLED] ?: false,
         dwellDurationMs = preferences[PreferencesKeys.DWELL_DURATION_MS] ?: 800,
         stationaryClickEnabled = preferences[PreferencesKeys.STATIONARY_CLICK_ENABLED] ?: true,
-        palmHomeEnabled = preferences[PreferencesKeys.PALM_HOME_ENABLED] ?: true,
+        palmHomeEnabled = preferences[PreferencesKeys.PALM_HOME_ENABLED] ?: false,
+        // Fix A-11: on by default. "The page scrolled when I only moved the
+        // pointer" was the most common accidental action.
+        swipeRequiresOpenHand = preferences[PreferencesKeys.SWIPE_REQUIRES_OPEN_HAND] ?: true,
         sitBackMode = preferences[PreferencesKeys.SIT_BACK_MODE] ?: false,
         reducedMotion = preferences[PreferencesKeys.REDUCED_MOTION] ?: false,
         cursorGain = preferences[PreferencesKeys.CURSOR_GAIN] ?: 50,

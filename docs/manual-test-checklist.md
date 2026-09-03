@@ -200,3 +200,20 @@ Complete ALL items before tagging a release. Mark each with ✅ or ❌ and add n
 | Product | | | |
 
 **Release blocked until ALL critical tests pass on ≥3 devices from the matrix.**
+
+## Regression checks for the reliability round
+
+| # | Scenario | Expected |
+|---|----------|----------|
+| R1 | Enable Accessibility from Settings while AirControl is in the background | service stays alive, no "app closed itself", camera starts within ~2 s |
+| R2 | Toggle Accessibility off and on again 5x quickly | no crash, cursor overlay reappears, arm/disarm still works |
+| R3 | Force-stop AirControl from Settings, then lock and unlock the phone | the accessibility service reconnects and gestures work again without opening the app |
+| R4 | Kill the app from Recents while armed | gestures keep working (a11y service is the owner); camera session is revived by the watchdog |
+| R5 | Move the pointer across a list with a pointing hand | nothing scrolls; an open-palm sweep does scroll, at the column under the cursor |
+| R6 | Close the hand into a fist for ~1 s while armed | device unlocks nothing, app disarms, volume does NOT change |
+| R7 | Thumb-up deliberately, holding still | volume up fires once |
+| R8 | Open the palm during hand calibration and pinch "Next" | the calibration screen advances once; no stray taps on the underlying UI |
+| R9 | Notification: tap Stop | tracking stops and stays stopped; the master switch in the app reads Off |
+| R10 | Tablet (or foldable) in landscape, then rotate to portrait mid-session | cursor mapping and overlay positions recompute, no frozen dot |
+| R11 | Data cleared / corrupt preferences (adb shell rm of the datastore file) | app opens with defaults, no crash loop |
+| R12 | Device with no camera permission granted | onboarding explains it, no crash when the service starts |

@@ -9,7 +9,12 @@ object Dimens {
     val spacing8 = 8.dp
     val spacing12 = 12.dp
     val spacing16 = 16.dp
-    val spacing20 = 24.dp // 8dp grid: 20→24 for alignment
+    /**
+     * Fix F-6: this was 24.dp behind a name that says 20 - identical to
+     * [spacing24], so any layout that picked "the in-between size" silently got
+     * the larger one and rhythm drifted across screens. 20.dp on the 4dp sub-grid.
+     */
+    val spacing20 = 20.dp
     val spacing24 = 24.dp
     val spacing32 = 32.dp
     val spacing48 = 48.dp

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.os.Build
+import android.os.SystemClock
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
@@ -19,6 +20,9 @@ import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.tracking.CursorSmoother
+import com.aircontrol.util.CrashGuard
+import com.aircontrol.util.collectGuarded
+import com.aircontrol.util.launchGuarded
 import com.aircontrol.tracking.Handedness
 import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.Landmark3D
@@ -28,6 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,7 +54,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var cursorController: CursorController? = null
     private var cameraServiceManager: com.aircontrol.service.CameraServiceManager? = null
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // CrashGuard.handler keeps a throwing collector from taking the process down
+    // (see util/CrashGuard.kt) — the previous scope had no handler at all, so any
+    // OEM hiccup inside a collector killed the whole app.
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CrashGuard.handler,
+    )
+
+    /** Camera restart backoff, so a rejected foreground-service start self-heals. */
+    @Volatile private var cameraRetryAttempt: Int = 0
+    private var cameraWatchdogJob: Job? = null
+    private var cameraRetryJob: Job? = null
 
     // Overlays (must only be touched on the main thread).
     private var cursorOverlay: CursorOverlay? = null
@@ -110,28 +125,30 @@ class GestureControlAccessibilityService : AccessibilityService() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
-                    Timber.i("Screen off — stopping camera service")
+                    Timber.i("Screen off — pausing the camera, keeping the session alive")
                     cachedKeyguardLocked = true
                     stopTrackingPipeline()
-                    stopCameraService()
+                    // Fix A-1: pause the *analysis*, not the service. The foreground
+                    // service stays running, so coming back after an unlock only has to
+                    // resume the analyzer — it does NOT have to start a camera foreground
+                    // service from the background, which Android 14+ and Samsung/MIUI
+                    // reject. Previously the camera was stopped here and the restart was
+                    // gated on "the app is on screen", so every single unlock killed
+                    // gestures until the user opened AirControl again.
+                    runCatching { cameraServiceManager?.pauseTracking() }
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    Timber.i("Screen on — updating keyguard state; not starting camera until USER_PRESENT")
                     // Re-query keyguard state on SCREEN_ON (fix #25).
                     val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
                     cachedKeyguardLocked = km?.isKeyguardLocked ?: true
-                    // Start pipeline only if unlocked (e.g., for devices with no secure lock
-                    // screen where USER_PRESENT may not fire).
-                    if (!cachedKeyguardLocked) {
-                        startTrackingPipeline()
-                        if (currentPreferences.gesturesEnabled) startCameraService()
-                    }
+                    Timber.i("Screen on — keyguardLocked=%s", cachedKeyguardLocked)
+                    // Some devices never send USER_PRESENT (no secure lock screen).
+                    if (!cachedKeyguardLocked) wakeTracking()
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     Timber.i("User unlocked — fully active")
                     cachedKeyguardLocked = false
-                    startTrackingPipeline()
-                    if (currentPreferences.gesturesEnabled) startCameraService()
+                    wakeTracking()
                 }
             }
         }
@@ -155,12 +172,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
             settingsRepository = entryPoint.settingsRepository()
             cursorController = entryPoint.cursorController()
             cameraServiceManager = entryPoint.cameraServiceManager()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Timber.e(e, "Failed to inject dependencies into accessibility service")
-            // Surface the error to the user so they know the service is inert (fix #65).
+            // Fix C-1 (crash on enabling accessibility): never call disableSelf()
+            // here. Hilt's singleton graph is only briefly unavailable while the
+            // process is cold-starting by the system; disabling the service made the
+            // accessibility toggle snap back off and the user was bounced out of
+            // Settings with nothing working. Retry instead.
             publishConnectionState(false)
-            Toast.makeText(this, R.string.injection_failed_toast, Toast.LENGTH_LONG).show()
-            disableSelf()
+            scheduleInjectionRetry()
             return
         }
 
@@ -181,6 +201,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
             startTrackingPipeline()
             registerScreenStateReceiver()
 
+            isInitializedOk = true
+            startCameraWatchdog()
+
+            // A collector that gave up after all of its retries means part of the
+            // pipeline is dead. Say so out loud instead of silently doing nothing -
+            // that silence is exactly what gets reported as "the app stopped
+            // working" - and clear the hook in onDestroy so it can never outlive
+            // this service instance (it captures `this`).
+            CrashGuard.onFatalLoop = { collector, _ ->
+                serviceScope.launch(Dispatchers.Main) {
+                    runCatching {
+                        Toast.makeText(
+                            this@GestureControlAccessibilityService,
+                            getString(R.string.error_collector_gave_up, collector),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+
             // Publish readiness only after every initialization step succeeds.
             publishConnectionState(true)
             Timber.i("GestureControlAccessibilityService connected")
@@ -188,17 +228,50 @@ class GestureControlAccessibilityService : AccessibilityService() {
             // A malformed OEM WindowManager/receiver implementation must not crash
             // MainActivity or bounce the user out of onboarding.
             Timber.e(failure, "Accessibility service initialization failed")
+            CrashGuard.report("accessibility init", failure)
             publishConnectionState(false)
             runCatching { unregisterScreenStateReceiver() }
             runCatching { stopTrackingPipeline() }
             runCatching { removeOverlays() }
             runCatching { actionDispatcher?.detachService() }
             Toast.makeText(this, R.string.accessibility_start_failed_toast, Toast.LENGTH_LONG).show()
+            // Keep the *overlays* optional but bring the pipeline back: a failure
+            // while adding a cursor view must not leave the service "on" in
+            // Settings yet inert.
+            serviceScope.launch {
+                delay(2_000L)
+                if (!isInitializedOk) startTrackingPipeline()
+            }
         }
+    }
 
-        // The settings collector is the authority for starting/stopping the camera.
-        // This prevents accessibility reconnect or unlock from overriding the user's
-        // master Off switch.
+    @Volatile
+    private var isInitializedOk: Boolean = false
+
+    private var injectionRetryCount: Int = 0
+
+    /**
+     * Hilt's application graph can be momentarily unavailable when the system
+     * starts the accessibility service right after install/enable. Retrying beats
+     * disabling the service (which read as "the app crashes and turns itself off").
+     */
+    private fun scheduleInjectionRetry() {
+        if (injectionRetryCount >= INJECTION_MAX_RETRIES) {
+            Toast.makeText(this, R.string.injection_failed_toast, Toast.LENGTH_LONG).show()
+            return
+        }
+        injectionRetryCount++
+        serviceScope.launchGuarded("a11y injection retry") {
+            delay(INJECTION_RETRY_MS * injectionRetryCount)
+            if (!isInitializedOk) onServiceConnected()
+        }
+    }
+
+    /** Called on unlock: rebuild the pipeline and bring the camera back. */
+    private fun wakeTracking() {
+        startTrackingPipeline()
+        cameraRetryAttempt = 0
+        if (currentPreferences.gesturesEnabled) startCameraService()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -212,6 +285,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         // Tear down BEFORE calling super.onDestroy() (fix #64).
         Timber.i("GestureControlAccessibilityService destroyed")
+        CrashGuard.onFatalLoop = null
         publishConnectionState(false)
         unregisterScreenStateReceiver()
         stopTrackingPipeline()
@@ -248,8 +322,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
 
         // Collect settings → detector + overlays.
-        pipelineJobs.add(serviceScope.launch {
-            settingsRepository?.userPreferences?.collect { prefs ->
+        pipelineJobs.add(serviceScope.launchGuarded("settings collector", restart = true) {
+            settingsRepository?.userPreferences?.collectGuarded("settings") { prefs ->
                 currentPreferences = prefs
                 if (!cachedKeyguardLocked && prefs.gesturesEnabled &&
                     cameraServiceManager?.isTracking() != true) startCameraService()
@@ -270,28 +344,50 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     lastAppliedCalibrationPinchDist = prefs.calibratedPinchDistanceMm
                 }
 
-                ActionDispatcher.setCursorMapping(prefs.cursorGain, prefs.sitBackMode)
+                // Fix A-16: the two cursor knobs are now separate and honestly
+                // labelled: cursorGain is the pointer speed (this mapping), while the
+                // slider stored under the legacy "cursorSpeed" key only drives filter
+                // smoothing via applyCursorSmoothing() below. Previously the slider
+                // labelled "Cursor speed" changed smoothing and nothing else, so
+                // "speed does nothing" was literally true.
+                ActionDispatcher.setCursorMapping(prefs.effectiveCursorGain, prefs.sitBackMode)
+                gestureDetector?.updateSwipeRequiresOpenHand(prefs.swipeRequiresOpenHand)
                 gazeCalibration = com.aircontrol.tracking.GazeCalibration.fromString(prefs.gazeCalibration)
 
                 withContext(Dispatchers.Main) {
-                    if (prefs.statusPillEnabled && statusOverlay == null) {
-                        statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
-                    } else if (!prefs.statusPillEnabled && statusOverlay != null) {
-                        statusOverlay?.remove()
-                        statusOverlay = null
-                    }
-                    if (prefs.cursorEnabled && cursorOverlay == null) {
-                        cursorOverlay = CursorOverlay(
-                            this@GestureControlAccessibilityService,
-                            screenWidth, screenHeight,
-                        )
-                    } else if (!prefs.cursorEnabled && cursorOverlay != null) {
-                        cursorOverlay?.remove()
-                        cursorOverlay = null
-                        cursorController?.hide()
-                    }
-                    applyCursorSpeed(prefs.cursorSpeed)
+                    // Fix C-1: overlay creation is wrapped. On some OEM ROMs
+                    // addView(TYPE_ACCESSIBILITY_OVERLAY) throws while the service is
+                    // still being bound; losing the dot must never mean losing
+                    // gestures (or killing the process).
+                    runCatching {
+                        if (prefs.statusPillEnabled && statusOverlay == null) {
+                            statusOverlay = StatusOverlay(this@GestureControlAccessibilityService)
+                        } else if (!prefs.statusPillEnabled && statusOverlay != null) {
+                            statusOverlay?.remove()
+                            statusOverlay = null
+                        }
+                    }.onFailure { CrashGuard.report("status overlay", it) }
+                    runCatching {
+                        if (prefs.cursorEnabled && cursorOverlay == null) {
+                            cursorOverlay = CursorOverlay(
+                                this@GestureControlAccessibilityService,
+                                screenWidth, screenHeight,
+                            )
+                        } else if (!prefs.cursorEnabled && cursorOverlay != null) {
+                            cursorOverlay?.remove()
+                            cursorOverlay = null
+                            cursorController?.hide()
+                        }
+                    }.onFailure { CrashGuard.report("cursor overlay", it) }
+                    applyCursorSmoothing(prefs.cursorSmoothing)
                     cursorOverlay?.setReducedMotion(prefs.reducedMotion)
+                    // Fix B-1: the armed ring on the cursor dot was never driven,
+                    // so there was no way to tell whether the app was listening.
+                    val armedNow = gestureDetector?.engineState?.value.let {
+                        it == GestureEngineState.ARMED || it == GestureEngineState.EXECUTING ||
+                            it == GestureEngineState.COOLDOWN
+                    }
+                    cursorOverlay?.setArmed(armedNow)
                 }
             }
         })
@@ -300,8 +396,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Fix #19: when the detected hand doesn't match preference, feed EMPTY
         // rather than a frame with the wrong hand, but don't thrash on every
         // frame — use hysteresis via a "last hand seen" tracker.
-        pipelineJobs.add(serviceScope.launch {
-            handTracker?.handFrames?.collect { frame ->
+        pipelineJobs.add(serviceScope.launchGuarded("hand frames", restart = true) {
+            handTracker?.handFrames?.collectGuarded("hand frames") { frame ->
+                // Fix A-20: record hand presence from every detected frame, on the
+                // same monotonic clock the rest of the pipeline uses. Previously the
+                // hint timestamp was only written from ARMED "cursor moved" events
+                // and was then compared against System.currentTimeMillis(), so the
+                // "show your open palm" guidance could never appear for a new user.
+                if (frame.isDetected) lastHandDetectedMs = SystemClock.elapsedRealtime()
+
                 val preference = currentPreferences.handPreference
                 val shouldProcess = when {
                     !frame.isDetected -> false
@@ -327,8 +430,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         })
 
         // Custom gesture templates.
-        pipelineJobs.add(serviceScope.launch {
-            settingsRepository?.customGestures?.collect { gestures ->
+        pipelineJobs.add(serviceScope.launchGuarded("custom gestures", restart = true) {
+            settingsRepository?.customGestures?.collectGuarded("custom gestures") { gestures ->
                 try {
                     val templates = gestures
                         .filter { it.isEnabled }
@@ -347,19 +450,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // SINGLE collector on gestureEvents fans out to both dispatch and cursor
         // updates. This preserves ordering between "cursor moved" and "action
         // dispatched" (fix #61).
-        pipelineJobs.add(serviceScope.launch {
-            gestureDetector?.gestureEvents?.collect { event ->
-                try {
-                    handleGestureEvent(event)
-                } catch (e: Exception) {
-                    Timber.e(e, "Error handling gesture event — skipping")
-                }
+        pipelineJobs.add(serviceScope.launchGuarded("gesture events", restart = true) {
+            gestureDetector?.gestureEvents?.collectGuarded("gesture events") { event ->
+                handleGestureEvent(event)
             }
         })
 
         // Engine state → overlays.
-        pipelineJobs.add(serviceScope.launch {
-            gestureDetector?.engineState?.collect { state ->
+        pipelineJobs.add(serviceScope.launchGuarded("engine state", restart = true) {
+            gestureDetector?.engineState?.collectGuarded("engine state") { state ->
                 try {
                     withContext(Dispatchers.Main) {
                         if (currentPreferences.statusPillEnabled) {
@@ -371,36 +470,43 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             GestureEngineState.COOLDOWN -> {
                                 if (currentPreferences.cursorEnabled) {
                                     cursorOverlay?.show()
+                                    // Fix B-1: the ring that says "I am listening".
+                                    cursorOverlay?.setArmed(true)
                                     cursorController?.show()
                                 }
                             }
                             GestureEngineState.DISARMED -> {
                                 cursorOverlay?.hide()
+                                cursorOverlay?.setArmed(false)
                                 cursorController?.hide()
                                 cursorSmoother.reset()
                                 resetDwellState()
                             }
-                            GestureEngineState.ARMING -> { /* cursor stays hidden */ }
+                            GestureEngineState.ARMING -> {
+                                // Cursor stays hidden while arming, but the ring is
+                                // primed so it appears already armed (no flicker).
+                                cursorOverlay?.setArmed(true)
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    Timber.e(e, "Error updating overlays from engine state — skipping")
+                    CrashGuard.report("overlay state", e)
                 }
             }
         })
 
         // Gaze "eye is mouse" collector.
-        pipelineJobs.add(serviceScope.launch {
-            faceTracker?.gazePoints?.collect { gaze ->
+        pipelineJobs.add(serviceScope.launchGuarded("gaze", restart = true) {
+            faceTracker?.gazePoints?.collectGuarded("gaze") gaze@{ gaze ->
                 try {
                     if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
-                        !currentPreferences.cursorEnabled) return@collect
+                        !currentPreferences.cursorEnabled) return@gaze
                     if (!gaze.isDetected) {
                         withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                         cursorController?.hide()
                         gazeEmaFilter.reset()
                         blinkDetector.reset()
-                        return@collect
+                        return@gaze
                     }
 
                     if (currentPreferences.blinkClickEnabled) {
@@ -411,14 +517,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             val cy = cursor?.y ?: gaze.y
                             actionDispatcher?.dispatchBlinkTap(cx, cy, screenWidth, screenHeight)
                             resetDwellState()
-                            return@collect
+                            return@gaze
                         } else if (blinkResult != com.aircontrol.tracking.BlinkResult.NONE) {
                             resetDwellState()
-                            return@collect
+                            return@gaze
                         }
                     }
                     if (currentPreferences.blinkClickEnabled && blinkDetector.isClosed())
-                        return@collect
+                        return@gaze
 
                     val (nx, ny) = mapGazeToDisplay(gaze.x, gaze.y)
                     val (smoothX, smoothY) = gazeEmaFilter.filter(nx, ny)
@@ -427,6 +533,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         cursorOverlay?.show()
                         cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                     }
+                    // Fix A-15: dwell-to-click was only ever driven from the hand
+                    // "cursor moved" path, so an eye-tracking user turning on
+                    // "look and hold to click" got nothing at all — the single most
+                    // useful accessibility feature for that mode. Gaze now feeds the
+                    // same stillness/dwell machine (using the monotonic clock the
+                    // hand path uses).
+                    handleCursorStillness(smoothX, smoothY, SystemClock.elapsedRealtime())
                     cursorController?.updatePosition(
                         HandFrame(
                             landmarks = listOf(Landmark3D(smoothX, smoothY, 0f)),
@@ -442,16 +555,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
         })
 
         // F12: one-time toast hint when hand is visible but engine stays DISARMED (fix #71).
-        pipelineJobs.add(serviceScope.launch {
-            while (true) {
+        pipelineJobs.add(serviceScope.launchGuarded("palm hint", restart = true) {
+            while (isActive) {
                 delay(4000L)
-                val now = System.currentTimeMillis()
+                val now = SystemClock.elapsedRealtime()
                 val armed = gestureDetector?.engineState?.value.let {
                     it == GestureEngineState.ARMED || it == GestureEngineState.EXECUTING ||
                         it == GestureEngineState.COOLDOWN
                 }
                 if (armed) { /* no hint needed */ }
-                else if (now - lastHandDetectedMs < 1500L && now - lastHintShownMs > 30_000L) {
+                else if (now - lastHandDetectedMs in 0L..6000L && now - lastHintShownMs > 30_000L) {
                     lastHintShownMs = now
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
@@ -487,18 +600,42 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         when (event) {
             is GestureEvent.Pinch -> {
-                cursorX = if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE)
-                    event.x else event.anchoredX
-                cursorY = if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE)
-                    event.y else event.anchoredY
+                // Fix A-9: the tap used to use the RAW anchored index tip from the
+                // engine while the user aims at the *smoothed* dot. Whenever the
+                // hand was moving, the dot lagged behind the hand, so the click
+                // landed ahead of the dot: "I clicked the button under the dot and
+                // it hit the thing next to it". The click now uses the exact
+                // position the dot is drawn at (captured at pinch START so it does
+                // not drift while the fingers close).
+                if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) {
+                    cursorX = event.x
+                    cursorY = event.y
+                } else {
+                    val pinned = (cursorController as? com.aircontrol.control.CursorControllerImpl)
+                        ?.pinnedClickPosition()
+                    if (pinned != null) {
+                        cursorX = pinned.first
+                        cursorY = pinned.second
+                    } else {
+                        val smoothed = cursorSmoother.lastPosition
+                        cursorX = smoothed?.first ?: event.anchoredX
+                        cursorY = smoothed?.second ?: event.anchoredY
+                        if (event.phase == com.aircontrol.gesture.model.PinchPhase.START) {
+                            (cursorController as? com.aircontrol.control.CursorControllerImpl)
+                                ?.pinClickPosition(cursorX, cursorY)
+                        }
+                    }
+                }
 
                 when (event.phase) {
                     com.aircontrol.gesture.model.PinchPhase.START ->
                         freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
                     com.aircontrol.gesture.model.PinchPhase.MOVE ->
                         unfreezeCursor()
-                    com.aircontrol.gesture.model.PinchPhase.END ->
+                    com.aircontrol.gesture.model.PinchPhase.END -> {
                         (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
+                        (cursorController as? com.aircontrol.control.CursorControllerImpl)?.clearPinClick()
+                    }
                 }
             }
             is GestureEvent.Swipe,
@@ -516,9 +653,6 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 if (currentPreferences.cursorEnabled &&
                     !currentPreferences.eyeTrackingEnabled && !isCursorFrozen
                 ) {
-                    // Update hand-detection timestamp for F12 hint.
-                    if (!event.isSilent) lastHandDetectedMs = event.timestampMs
-
                     if (event.minCutoffHint != lastAppliedMinCutoffHint) {
                         val newMinCutoff = event.minCutoffHint ?: baseMinCutoff
                         cursorSmoother.updateParams(minCutoff = newMinCutoff, beta = currentCursorBeta)
@@ -548,6 +682,21 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 }
                 return
             }
+        }
+
+        // Fix B-3: while the user is inside our own calibration screens, the
+        // service must not dispatch real taps onto those very screens (buttons
+        // were being pressed by the user's own gestures mid-calibration, and the
+        // gaze dwell added to this made it much worse). Cursor feedback keeps
+        // running so calibration still "sees" the hand; only the actions stop.
+        if (com.aircontrol.ui.Suppression.isSuppressed()) {
+            if (event is GestureEvent.Pinch &&
+                event.phase == com.aircontrol.gesture.model.PinchPhase.END
+            ) {
+                (cursorController as? com.aircontrol.control.CursorControllerImpl)
+                    ?.releaseClick()
+            }
+            return
         }
 
         val engineState = gestureDetector?.engineState?.value ?: return
@@ -587,19 +736,80 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
     // ---------- Camera service helpers ----------
 
+    /**
+     * Ensures the tracking session is alive.
+     *
+     * Fix A-1 / A-2: this used to bail out whenever the AirControl activity was
+     * not on screen ("camera start deferred until visible"), which meant that
+     * after a lock/unlock — or after the system killed the camera service under
+     * memory pressure — gestures stayed dead until the user manually opened the
+     * app again. The camera service is now kept *running* and merely paused around
+     * the screen state, so this path normally only has to resume the analyzer
+     * (always allowed). A real background start is still attempted — needed after
+     * a process kill — and retried with backoff if a strict OEM rejects it;
+     * MainActivity.onResume remains the fast path while the app is visible.
+     */
     private fun startCameraService() {
-        // Camera is a while-in-use permission. Starting a new camera foreground
-        // service while only Android Settings is visible is rejected on Android 14+
-        // and unreliable on OEM builds. MainActivity.onResume performs the start.
-        if (cameraServiceManager?.isTracking() != true && !com.aircontrol.MainActivity.isVisible) {
-            Timber.i("Camera start deferred until AirControl is visible")
+        if (!currentPreferences.gesturesEnabled) return
+        if (cameraServiceManager?.isTracking() == true) {
+            runCatching { cameraServiceManager?.resumeTracking() }
+            cameraRetryAttempt = 0
             return
         }
         runCatching {
             cameraServiceManager?.startTracking()
+            cameraRetryAttempt = 0
             Timber.i("Camera service start requested from accessibility service")
-        }.onFailure { Timber.e(it, "Failed to start CameraService") }
+        }.onFailure { error ->
+            CrashGuard.report("camera start", error)
+            scheduleCameraRetry()
+        }
     }
+
+    /** Retries a rejected camera start with backoff, a bounded number of times. */
+    private fun scheduleCameraRetry() {
+        if (cameraRetryAttempt >= CAMERA_MAX_RETRIES) return
+        cameraRetryAttempt++
+        val shift = (cameraRetryAttempt - 1).coerceAtMost(4)
+        val retryDelayMs = CAMERA_RETRY_BASE_MS shl shift
+        cameraRetryJob?.cancel()
+        cameraRetryJob = serviceScope.launchGuarded("camera retry") {
+            delay(retryDelayMs)
+            if (currentPreferences.gesturesEnabled && cameraServiceManager?.isTracking() != true) {
+                startCameraService()
+            }
+        }
+    }
+
+    /**
+     * Self-healing watchdog (Fix A-2). When Android stops the camera service — low
+     * memory, OEM battery optimization, a native MediaPipe failure — nothing used
+     * to bring it back, so the app looked "on" in Settings while doing nothing.
+     * Every few seconds we compare the user's master switch with reality and
+     * re-arm the session when they disagree.
+     */
+    private fun startCameraWatchdog() {
+        if (cameraWatchdogJob != null) return
+        cameraWatchdogJob = serviceScope.launchGuarded("camera watchdog", restart = true) {
+            while (isActive) {
+                delay(CAMERA_WATCHDOG_MS)
+                val wantsTracking = currentPreferences.gesturesEnabled
+                val isTracking = cameraServiceManager?.isTracking() == true
+                val keyguard = keyguardLocked()
+                when {
+                    wantsTracking && !isTracking -> {
+                        Timber.w("Watchdog: gestures enabled but the camera session is dead — reviving")
+                        startCameraService()
+                    }
+                    !wantsTracking && isTracking -> stopCameraService()
+                }
+            }
+        }
+    }
+
+    private fun keyguardLocked(): Boolean =
+        cachedKeyguardLocked ||
+            (getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.isKeyguardLocked == true
 
     private fun stopCameraService() {
         runCatching {
@@ -617,7 +827,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
         // Status pill defaults to OFF (fix #32). The overlay is only created when
         // the user enables it in settings.
-        applyCursorSpeed(prefs.cursorSpeed)
+        applyCursorSmoothing(prefs.cursorSmoothing)
     }
 
     private fun removeOverlays() {
@@ -627,10 +837,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
         statusOverlay = null
     }
 
-    private fun applyCursorSpeed(speed: Int) {
-        val s = speed.coerceIn(1, 100)
-        // Map speed (1..100) to minCutoff (0.4..1.6): higher speed → less smoothing.
-        baseMinCutoff = 0.4f + (s / 100f) * 1.2f
+    /**
+     * The "Cursor smoothing" slider (stored in the legacy `cursorSpeed` key).
+     * It deliberately only controls smoothing now — actual pointer speed is
+     * `cursorGain`, which reaches the coordinate mapping directly. Fix A-16:
+     * previously a slider labelled "speed" only touched the filter, so dragging
+     * it to maximum did not make the pointer any faster.
+     */
+    private fun applyCursorSmoothing(smoothing: Int) {
+        val s = smoothing.coerceIn(1, 100)
+        // 1 = nearly raw (high cutoff), 100 = heavy filtering (low cutoff).
+        baseMinCutoff = MAX_SMOOTHING_CUTOFF - (s / 100f) * (MAX_SMOOTHING_CUTOFF - MIN_SMOOTHING_CUTOFF)
         if (lastAppliedMinCutoffHint == null) {
             cursorSmoother.updateParams(minCutoff = baseMinCutoff, beta = currentCursorBeta)
         }
@@ -759,9 +976,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val CURSOR_FREEZE_MS_GESTURE = 80L
         private const val CURSOR_FREEZE_MS_PINCH = 50L
 
-        // Fix #101: single, documented set of OneEuroFilter constants.
-        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.0f
-        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.007f
+        // Fix B-5 (cursor feels floaty/slow): the old pair was minCutoff 1.0 Hz
+        // with beta 0.007. Velocity here is in *normalized units per second*
+        // (a fast sweep is ~1-3), so beta*velocity ≈ 0.02 — the adaptive half of
+        // the One Euro filter was effectively disabled and the cursor was a fixed
+        // ~1 Hz low-pass: ~400ms to settle at 24fps. Beta is now in the units the
+        // filter actually sees, so fast motion passes through and only tremor is
+        // damped.
+        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.1f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.9f
+
+        // Smoothing slider range (minCutoff in Hz). Higher cutoff = less lag.
+        private const val MIN_SMOOTHING_CUTOFF = 0.9f
+        private const val MAX_SMOOTHING_CUTOFF = 4.0f
+
+        // Camera watchdog / retry policy (Fix A-1, A-2).
+        private const val CAMERA_WATCHDOG_MS = 5_000L
+        private const val CAMERA_RETRY_BASE_MS = 2_000L
+        private const val CAMERA_MAX_RETRIES = 6
+
+        private const val INJECTION_RETRY_MS = 1_500L
+        private const val INJECTION_MAX_RETRIES = 4
 
         private const val STATIONARY_THRESHOLD = 0.008f
         private const val HOVER_AFTER_MS = 150L

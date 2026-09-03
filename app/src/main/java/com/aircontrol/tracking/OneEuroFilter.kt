@@ -148,8 +148,13 @@ class OneEuroFilter(
  * - beta=0.007: Lower high-speed delay, minimal filtering during fast movements
  */
 class CursorSmoother(
-    minCutoff: Float = 1.0f,   // Apple Vision Pro: 1.0 Hz
-    beta: Float = 0.007f,      // Apple Vision Pro: 0.007
+    minCutoff: Float = 1.1f,
+    // Fix B-5: beta is multiplied by velocity in *normalized units per second*
+    // (~1-3 for a hand sweep). 0.007 made the adaptive term ~0.02, i.e. the
+    // filter never opened up and every move took ~400ms to settle. 0.9 gives a
+    // cutoff of ~2-4 Hz during motion (near-zero lag) while still resting at
+    // minCutoff for tremor suppression.
+    beta: Float = 0.9f,
 ) {
     private val xFilter = OneEuroFilter(minCutoff, beta)
     private val yFilter = OneEuroFilter(minCutoff, beta)
@@ -186,6 +191,18 @@ class CursorSmoother(
         return Pair(fx, fy)
     }
 
+    /**
+     * The last position actually emitted to the overlay. The click target reads
+     * this so a tap lands on the visible dot rather than on the raw hand
+     * landmark (Fix A-9).
+     */
+    val lastPosition: Pair<Float, Float>?
+        get() {
+            val x = lastOutputX ?: return null
+            val y = lastOutputY ?: return null
+            return x to y
+        }
+
     fun reset() {
         xFilter.reset()
         yFilter.reset()
@@ -199,15 +216,11 @@ class CursorSmoother(
     }
 
     companion object {
-        // Dead-zone in normalized coordinates.
-        // 0.004 ≈ 4px on a 1080p screen.
-        //
-        // (Bug #6 & #7 Fix): Increased from 0.001 to 0.004 to better suppress
-        // residual hand tremor that survives the One Euro Filter. Since the
-        // landmark-level filter has been removed from HandTracker, CursorSmoother
-        // is now the sole smoothing stage; a slightly larger dead zone compensates
-        // for the raw input noise. Combined with the 3dp dead zone in CursorOverlay,
-        // the cursor is rock-steady when the hand is still.
-        private const val DEAD_ZONE_NORMALIZED = 0.004f
+        // Dead-zone in normalized coordinates. Fix B-5: there is now exactly ONE
+        // dead zone in the cursor path. This one (≈1.5px on a 1080p screen) kills
+        // tremor at rest; the 4dp zone that used to sit on top of it in
+        // CursorOverlay ate small precise nudges, so small targets became tiring
+        // to hit and the dot looked "stuck" before jumping.
+        private const val DEAD_ZONE_NORMALIZED = 0.0015f
     }
 }

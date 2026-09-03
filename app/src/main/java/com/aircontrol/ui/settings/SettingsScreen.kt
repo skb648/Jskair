@@ -297,6 +297,15 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
+                title = stringResource(R.string.settings_swipe_open_palm),
+                subtitle = stringResource(R.string.settings_swipe_open_palm_subtitle),
+                checked = preferences.swipeRequiresOpenHand,
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateSwipeRequiresOpenHand(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
                 title = stringResource(R.string.settings_sit_back_mode),
                 subtitle = stringResource(R.string.settings_sit_back_mode_subtitle),
                 checked = preferences.sitBackMode,

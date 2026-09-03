@@ -30,9 +30,25 @@ data class HandFrame(
     val timestampMs: Long,
     val confidence: Float,
 ) {
-    val isDetected: Boolean get() = landmarks.isNotEmpty() && confidence > 0f
+    /**
+     * Fix C-5: "a hand is visible" must mean the same thing on both sides of the
+     * pipeline. It used to be `landmarks.isNotEmpty() && confidence > 0f`, so a
+     * single noise landmark with score 0.01 counted as a hand: the adaptive frame
+     * rate stayed high (draining the battery on the sofa) and the "show your open
+     * palm" hint never appeared, because the app believed a hand was already
+     * tracked. Requiring the full 21-landmark set and a floor score aligns it
+     * with the engine's own [com.aircontrol.gesture.model.HandInput.isDetected]
+     * while staying deliberately below the engine's 0.7 low-confidence threshold,
+     * so the engine - not the tracker - decides what to do with a shaky frame.
+     */
+    val isDetected: Boolean get() = landmarks.size == LANDMARK_COUNT && confidence >= MIN_CONFIDENCE
 
     companion object {
+        const val LANDMARK_COUNT = 21
+
+        /** Below this, MediaPipe is guessing; treat as no hand at all. */
+        const val MIN_CONFIDENCE = 0.15f
+
         val EMPTY = HandFrame(
             landmarks = emptyList(),
             handedness = Handedness.UNKNOWN,

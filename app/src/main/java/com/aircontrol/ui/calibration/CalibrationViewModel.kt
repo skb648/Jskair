@@ -2,6 +2,7 @@ package com.aircontrol.ui.calibration
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aircontrol.ui.Suppression
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.tracking.HandFrame
@@ -63,6 +64,9 @@ class CalibrationViewModel @Inject constructor(
     // Collected hand size samples for averaging
     private val handSizeSamples = Collections.synchronizedList(mutableListOf<Float>())
     private var measurementCount = 0
+    /** Plausible wrist-to-middle-MCP length, in millimetres (see the clamp). */
+    private val MIN_PLAUSIBLE_HAND_MM = 90f
+    private val MAX_PLAUSIBLE_HAND_MM = 230f
     private val REQUIRED_MEASUREMENTS = 20
 
     // Tracking job for hand frames
@@ -147,7 +151,17 @@ class CalibrationViewModel @Inject constructor(
                         }
                         // The absolute millimetre value is an estimate; recognition
                         // uses the dimensionless pinch/hand ratio, captured below.
-                        val handSizeMm = (avgHandSizeNorm / 0.20f) * 95f
+                        //
+                        // Fix F-5: clamp it. A user leaning close to the camera used
+                        // to be told their hand was 260 mm long, which reads as
+                        // "this app does not understand me" even though the ratio -
+                        // and therefore the tracking - is fine. Human wrist-to-MCP
+                        // length sits well inside 90..230 mm for every device, hand
+                        // size and holding angle we support, and because both
+                        // handSizeMm and pinchDistanceMm are derived from it, clamping
+                        // cancels out of the ratio the engine actually uses.
+                        val handSizeMm = ((avgHandSizeNorm / 0.20f) * 95f)
+                            .coerceIn(MIN_PLAUSIBLE_HAND_MM, MAX_PLAUSIBLE_HAND_MM)
 
                         _uiState.value = _uiState.value.copy(
                             handSizeMm = handSizeMm,
@@ -257,7 +271,17 @@ class CalibrationViewModel @Inject constructor(
         startedCameraForCalibration = false
     }
 
+    init {
+        // Fix B-3: while a setup flow is on screen, the accessibility service
+        // must not act on the gestures the user is making *for* that flow. Without
+        // this, pinching to press "Next" also sent a tap through to the
+        // calibration screen, and swiping to test a pose scrolled the app out from
+        // under the finger. The service reads [Suppression.isSuppressed].
+        Suppression.acquire()
+    }
+
     override fun onCleared() {
+        Suppression.release()
         super.onCleared()
         stopCalibrationJobs()
         releaseCalibrationCameraIfNeeded()

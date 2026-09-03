@@ -172,6 +172,31 @@ class GestureEngine(
     private var palmHolding: Boolean = false
     @Volatile
     private var palmHomeFired: Boolean = false
+    @Volatile
+    private var palmHoldAnchorX: Float = -1f
+    @Volatile
+    private var palmHoldAnchorY: Float = -1f
+
+    /** When the hand became still (velocity under the thumb-pose gate), or 0. */
+    @Volatile
+    private var handStillSinceMs: Long = 0L
+
+    /** When the current THUMB_UP/THUMB_DOWN pose was confirmed, or 0. */
+    @Volatile
+    private var thumbPoseSinceMs: Long = 0L
+
+    /** Exponentially smoothed frame interval, used for time-based debounce. */
+    @Volatile
+    private var measuredFrameIntervalMs: Long = 0L
+
+    /** Timestamp of the previous processed frame (interval measurement input). */
+    @Volatile
+    private var prevFrameTimestampMs: Long = 0L
+
+    /** When the engine entered ARMED, so Palm→Home cannot fire during the first
+     *  moment after arming (the arming pose IS an open palm). */
+    @Volatile
+    private var armedSinceMs: Long = 0L
 
     // Bug #13 Fix: Counter for consecutive low-confidence frames. Used to apply
     // hysteresis — a single bad frame shouldn't trigger the low-confidence path,
@@ -204,6 +229,18 @@ class GestureEngine(
         stateMachine.updateConfig(newConfig)
         // Note: No logging here — gesture-engine is a pure Kotlin module with no
         // Android/Timber dependency. The app-layer GestureDetectorImpl logs this change.
+    }
+
+    /**
+     * Fix A-11: turns the "swipes need an open palm" rule on or off at runtime
+     * (it is a user setting). Applies to the detector that actually consumes it,
+     * preserving state, exactly like updateSensitivity() does.
+     */
+    fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean) {
+        if (config.swipeRequiresOpenHand == requiresOpenHand) return
+        val newConfig = config.copy(swipeRequiresOpenHand = requiresOpenHand)
+        config = newConfig
+        dynamicDetector.updateConfig(newConfig)
     }
 
     /**
@@ -310,17 +347,78 @@ class GestureEngine(
             poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames
         }
 
+        // 0. Frame-rate bookkeeping + index-tip velocity.
+        //
+        //    Done BEFORE pose classification for two reasons:
+        //      a) the pose classifier needs this frame's velocity to decide
+        //         whether a thumb pose is a deliberate hold or a thumb that
+        //         flicked out while the hand was closing (Fix A-12);
+        //      b) the pinch anchor must use the CURRENT index tip, not the
+        //         previous frame's (Fix A-9: clicks landed where the hand was,
+        //         one frame behind where the user was pointing).
+        if (input.isDetected && !applyLowConfidenceMitigations) {
+            updateMeasuredFrameInterval(timestampMs)
+            poseClassifier.effectiveDebounceFrames =
+                config.debounceFramesFor(measuredFrameIntervalMs)
+
+            val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
+            if (prevIndexTipTimestampMs > 0L) {
+                val dtMs = (timestampMs - prevIndexTipTimestampMs).coerceAtLeast(1L)
+                val dx = indexTip.x - prevIndexTipX
+                val dy = indexTip.y - prevIndexTipY
+                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                currentVelocity = dist / (dtMs / 1000f)
+            } else {
+                currentVelocity = 0f
+            }
+            prevIndexTipX = indexTip.x
+            prevIndexTipY = indexTip.y
+            prevIndexTipTimestampMs = timestampMs
+            lastIndexTipX = indexTip.x
+            lastIndexTipY = indexTip.y
+            if (currentVelocity > config.thumbGestureMaxVelocity) handStillSinceMs = 0L
+            else if (handStillSinceMs == 0L) handStillSinceMs = timestampMs
+        }
+
         // 1. Classify static pose (with debounce — may be raised for low confidence)
-        val pose = poseClassifier.classify(input)
+        val pose = poseClassifier.classify(input, currentVelocity)
         _currentPose.value = pose
 
-        // 2. Detect dynamic gestures (swipes)
-        val swipeResult = dynamicDetector.process(input)
+        // 2. Detect dynamic gestures (swipes).
+        //    Fix A-11: swipes are gated on the arming pose (open palm). Without
+        //    this, ANY cursor travel above the swipe threshold scrolled the page —
+        //    "I was just moving the pointer and the page scrolled".
+        val swipeAllowed = !config.swipeRequiresOpenHand || pose == Pose.OPEN_PALM
+        val swipeResult = dynamicDetector.process(input, gestureAllowed = swipeAllowed)
 
         // 3. Process through state machine FIRST so processPinch (step 4) gates on
         //    the CURRENT frame's state — previously pinch read _engineState.value
         //    before it was updated, causing a one-frame lag when entering ARMED.
-        val transition = stateMachine.process(pose, input.isDetected, timestampMs)
+        //    A thumb pose made by a hand that is still moving is not executed
+        //    (Fix A-12); the fist-disarm hold is driven by "all fingers curled"
+        //    (Fix A-13).
+        // Fix A-12: a thumb pose must be *held* for thumbGestureHoldMs before it
+        // executes. Measured from the moment the pose was confirmed (not from
+        // "the hand happens to be still"), so a hand that is closing has to pass
+        // through the hold window — during which the fist-disarm timer is also
+        // running and normally wins, which is what the user asked for.
+        val isThumbPose = pose == Pose.THUMB_UP || pose == Pose.THUMB_DOWN
+        if (isThumbPose) {
+            if (thumbPoseSinceMs == 0L) thumbPoseSinceMs = timestampMs
+        } else {
+            thumbPoseSinceMs = 0L
+        }
+        val still = handStillSinceMs > 0L
+        val thumbHeldLongEnough = still && isThumbPose &&
+            timestampMs - thumbPoseSinceMs >= config.thumbGestureHoldMs
+        val suppressExecution = isThumbPose && !thumbHeldLongEnough
+        val transition = stateMachine.process(
+            pose = pose,
+            handDetected = input.isDetected,
+            timestampMs = timestampMs,
+            fistLike = poseClassifier.lastFrameFistLike,
+            suppressPoseExecution = suppressExecution,
+        )
         _engineState.value = transition.newState
         _armingProgress.value = stateMachine.armingProgress
 
@@ -335,25 +433,42 @@ class GestureEngine(
                 if (!palmHolding) {
                     palmHolding = true
                     palmHoldStartMs = timestampMs
-                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs) {
-                    palmHomeFired = true
-                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
+                    palmHoldAnchorX = lastIndexTipX
+                    palmHoldAnchorY = lastIndexTipY
+                } else {
+                    // Fix A-4: the hold only survives while the palm is *held
+                    // still*. Travelling with an open palm means the user is
+                    // pointing/browsing, so the timer restarts instead of firing
+                    // Home underneath them.
+                    val travel = maxOf(
+                        kotlin.math.abs(lastIndexTipX - palmHoldAnchorX),
+                        kotlin.math.abs(lastIndexTipY - palmHoldAnchorY),
+                    )
+                    if (travel > config.palmHomeMaxCursorMovement) {
+                        palmHoldStartMs = timestampMs
+                        palmHoldAnchorX = lastIndexTipX
+                        palmHoldAnchorY = lastIndexTipY
+                        palmHomeFired = false
+                    } else if (!palmHomeFired &&
+                        timestampMs - palmHoldStartMs >= config.palmHomeHoldMs &&
+                        palmHomeConditionsMet(input, timestampMs)
+                    ) {
+                        palmHomeFired = true
+                        _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
+                    }
                 }
             } else {
-                palmHolding = false
-                palmHoldStartMs = 0L
-                palmHomeFired = false
+                resetPalmTracking()
             }
         } else {
-            palmHolding = false
-            palmHoldStartMs = 0L
-            palmHomeFired = false
+            resetPalmTracking()
         }
 
         // 5. Emit events based on state transitions and gesture detection
         if (transition.stateChanged) {
             when (transition.newState) {
                 GestureEngineState.ARMED -> {
+                    armedSinceMs = timestampMs
                     _gestureEvents.tryEmit(GestureEvent.Armed(timestampMs))
                 }
                 GestureEngineState.DISARMED -> {
@@ -464,24 +579,6 @@ class GestureEngine(
         // an erratic landmark. This is the in-engine equivalent of increasing the
         // CursorSmoother's minCutoff — both suppress motion, but doing it at the
         // source prevents the smoother from ever seeing the bad data.
-        if (input.isDetected && !applyLowConfidenceMitigations) {
-            val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
-            // F8 (Stationary-click): compute index-tip velocity (normalized units
-            // per second) so the app layer can reject accidental moving-hand taps.
-            if (prevIndexTipTimestampMs > 0L) {
-                val dtMs = (timestampMs - prevIndexTipTimestampMs).coerceAtLeast(1L)
-                val dx = indexTip.x - prevIndexTipX
-                val dy = indexTip.y - prevIndexTipY
-                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
-                currentVelocity = dist / (dtMs / 1000f)
-            }
-            prevIndexTipX = indexTip.x
-            prevIndexTipY = indexTip.y
-            prevIndexTipTimestampMs = timestampMs
-            lastIndexTipX = indexTip.x
-            lastIndexTipY = indexTip.y
-        }
-
         // Bug #4 Fix: Cursor freeze logic during pinch.
         //
         //   - PinchPhase.START: freeze at the anchor (where the user was pointing
@@ -612,14 +709,15 @@ class GestureEngine(
             0f
         }
 
-        // Sensitivity- and calibration-aware pinch thresholds. All three are
-        // derived from a single "enter" base so the dual-threshold hysteresis
-        // relationships (hover > exit > enter) stay intact at every sensitivity.
-        val enterThreshold = config.calibratedPinchRatio
-            ?.let { (it * CALIBRATED_PINCH_ENTER_MARGIN).coerceIn(MIN_PINCH_ENTER, MAX_PINCH_ENTER) }
-            ?: (PINCH_ENTER_THRESHOLD * config.pinchSensitivityFactor)
-        val exitThreshold = enterThreshold * (PINCH_EXIT_THRESHOLD / PINCH_ENTER_THRESHOLD)
-        val hoverThreshold = enterThreshold * (PINCH_HOVER_THRESHOLD / PINCH_ENTER_THRESHOLD)
+        // Fix A-6: ONE definition of a pinch for the whole app. The pose
+        // classifier's isPinch() and the click FSM below now read the same
+        // config-derived value (sensitivity-scaled, calibration-aware, clamped to
+        // a reachable band). Previously the pose used ~0.40 while the click needed
+        // 0.05 and calibration was clamped to 0.08 — i.e. a half-closed hand was
+        // stuck in "PINCH pose" while the click never fired.
+        val enterThreshold = config.scaledPinchDistanceRatio()
+        val exitThreshold = config.scaledPinchReleaseRatio()
+        val hoverThreshold = config.scaledPinchHoverRatio()
 
         // BUG #8 FIX: Removed redundant pinchX/pinchY calculation
         // We use lastIndexTipX/Y for cursor position, not pinch center
@@ -768,6 +866,42 @@ class GestureEngine(
         return kotlin.math.sqrt(dx * dx + dy * dy)
     }
 
+    /**
+     * Extra conditions that make Palm→Home deliberate rather than accidental:
+     *  - the hand must be *presented* (close to the camera, so it fills the frame)
+     *  - the engine must have been ARMED for a moment already, otherwise the
+     *    open palm used to arm the app would itself eventually trigger Home
+     *  - the palm must be held still (enforced by the travel check above)
+     */
+    private fun palmHomeConditionsMet(input: HandInput, timestampMs: Long): Boolean {
+        if (timestampMs - armedSinceMs < PALM_HOME_MIN_ARMED_MS) return false
+        val wrist = input.landmarks[LandmarkIndex.WRIST]
+        val middleMcp = input.landmarks[LandmarkIndex.MIDDLE_MCP]
+        val handSize = distance2D(wrist, middleMcp)
+        return handSize >= config.palmHomeMinHandSizeNormalized
+    }
+
+    private fun resetPalmTracking() {
+        palmHolding = false
+        palmHoldStartMs = 0L
+        palmHoldAnchorX = -1f
+        palmHoldAnchorY = -1f
+        palmHomeFired = false
+    }
+
+    /** EMA of the incoming frame interval, used for time-based debouncing. */
+    private fun updateMeasuredFrameInterval(timestampMs: Long) {
+        if (prevFrameTimestampMs > 0L) {
+            val interval = (timestampMs - prevFrameTimestampMs).coerceIn(1L, 1000L)
+            measuredFrameIntervalMs = if (measuredFrameIntervalMs == 0L) {
+                interval
+            } else {
+                (measuredFrameIntervalMs * 3 + interval) / 4
+            }
+        }
+        prevFrameTimestampMs = timestampMs
+    }
+
     /** Resets all gesture engine state. */
     fun reset() {
         poseClassifier.reset()
@@ -795,9 +929,13 @@ class GestureEngine(
         prevIndexTipY = 0.5f
         prevIndexTipTimestampMs = 0L
         currentVelocity = 0f
-        palmHoldStartMs = 0L
-        palmHolding = false
-        palmHomeFired = false
+        resetPalmTracking()
+        handStillSinceMs = 0L
+        thumbPoseSinceMs = 0L
+        measuredFrameIntervalMs = 0L
+        prevFrameTimestampMs = 0L
+        armedSinceMs = 0L
+        poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
         _armingProgress.value = 0f
@@ -807,30 +945,16 @@ class GestureEngine(
         // ========== Layer 2: Dual-Threshold FSM Constants (Apple Vision Pro) ==========
         // These thresholds prevent state flickering with proper hysteresis
         
-        // PINCH_HOVER_THRESHOLD: Fingers approaching, pre-interaction certainty
-        // When thumb-index distance < this, enter HOVER state
-        private const val PINCH_HOVER_THRESHOLD = 0.08f
-        
-        // PINCH_ENTER_THRESHOLD: Pinch engagement threshold (tighter)
-        // When thumb-index distance < this AND held for 35ms, confirm pinch.
-        // Raised from 0.035 to 0.05 — 0.035 required fingers to practically touch,
-        // making clicks unreliable ("pinch click kaam nahi karta").
-        private const val PINCH_ENTER_THRESHOLD = 0.05f
-        
-        // PINCH_EXIT_THRESHOLD: Pinch disengagement threshold (looser)
-        // When thumb-index distance > this AND held for 35ms, confirm release
-        private const val PINCH_EXIT_THRESHOLD = 0.065f
+        // (Fix A-6) The pinch enter/exit/hover ratios are NO LONGER hardcoded
+        // here. They are derived from GestureEngineConfig.scaledPinchDistanceRatio()
+        // so the pose classifier and this FSM can never disagree again, and so
+        // user calibration actually reaches the click threshold (it used to be
+        // clamped to 0.08, i.e. always ignored for real hands).
 
-        // Calibration-aware pinch threshold bounds. When the user has completed
-        // calibration, the calibrated pinch ratio (scaled by a small margin) is
-        // used as the pinch-enter threshold, clamped to these safe bounds so a
-        // bad/outlier calibration can never make pinch unusable.
-        private const val CALIBRATED_PINCH_ENTER_MARGIN = 1.2f
-        private const val MIN_PINCH_ENTER = 0.015f
-        private const val MAX_PINCH_ENTER = 0.08f
-        
-        // TIME_DEBOUNCE_MS: Already defined as instance variable (35L)
-        // Required continuous recognition before state transition
+        // TIME_DEBOUNCE_MS (instance property above, 80ms): how long the pinch
+        // distance must stay inside the enter threshold before a click is
+        // confirmed. Comments in earlier revisions said 35ms; the value has been
+        // 80ms for a while, which is ~2 frames at 24fps.
         
         // UG-01 Fix: Reduced from 300ms to 150ms for faster double-tap recognition.
         // Further reduced to 80ms — 150ms still dropped rapid re-pinches.
@@ -871,6 +995,10 @@ class GestureEngine(
         // Old value was 1.2f but with base 1.0 that was only +20% (ineffective).
         // New value 2.0f provides +100% increase for effective jitter suppression.
         private const val LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF = 2.0f
+
+        // Palm→Home needs the engine to have been ARMED for a bit first, because
+        // the pose that arms the app is the same open palm.
+        private const val PALM_HOME_MIN_ARMED_MS = 1200L
 
         // Epsilon for float comparisons (prevents divide-by-zero when the hand
         // size is degenerate).

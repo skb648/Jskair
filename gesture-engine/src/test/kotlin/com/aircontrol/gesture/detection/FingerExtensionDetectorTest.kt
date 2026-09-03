@@ -286,15 +286,33 @@ class FingerExtensionDetectorTest {
         val highSensitivityConfig = GestureEngineConfig(sensitivity = 100)
         val highDet = FingerExtensionDetector(highSensitivityConfig)
 
-        // Build a marginally extended finger that would fail at default sensitivity
         val wrist = Landmark3D(0.5f, 0.8f, 0f)
         val pip = Landmark3D(0.5f, 0.5f, 0f)
-        val tip = Landmark3D(0.5f, 0.56f, 0f) // ratio 0.8: fails at 1.0, passes at ~0.67
+        val barelyExtended = Landmark3D(0.5f, 0.44f, 0f) // ratio 1.2: clearly past the PIP
+        val curled = Landmark3D(0.5f, 0.56f, 0f) // ratio 0.8: tip CLOSER than the PIP
 
-        // At default sensitivity (threshold=1.0), this should fail
-        assertFalse(detector.isFingerExtended(tip, pip, wrist, 1.0f))
-        // At high sensitivity (threshold ≈ 0.67), this should pass
-        assertTrue(highDet.isFingerExtended(tip, pip, wrist, highSensitivityConfig.scaledFingerExtensionThreshold()))
+        // Higher sensitivity must be easier to trigger than the default.
+        assertTrue(
+            "High sensitivity must lower the finger extension threshold",
+            highSensitivityConfig.scaledFingerExtensionThreshold() <
+                GestureEngineConfig(sensitivity = 50).scaledFingerExtensionThreshold(),
+        )
+
+        // ... but never so low that a curled finger counts as extended. The old
+        // formula reached 1.0/1.5 = 0.67 at sensitivity 100, which made every hand
+        // look like an open palm ("I moved the slider and now nothing works").
+        // The threshold is therefore clamped to a physically reachable band.
+        assertTrue(
+            "Threshold must stay above the tip/PIP ratio of a curled finger",
+            highSensitivityConfig.scaledFingerExtensionThreshold() > 0.8f,
+        )
+        assertFalse(detector.isFingerExtended(curled, pip, wrist, 1.0f))
+        assertTrue(
+            highDet.isFingerExtended(
+                barelyExtended, pip, wrist,
+                highSensitivityConfig.scaledFingerExtensionThreshold(),
+            ),
+        )
     }
 
     @Test

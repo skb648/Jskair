@@ -76,6 +76,35 @@ class CursorControllerImpl @Inject constructor() : CursorController {
 
     override fun hide() {
         _cursorState.update { it.copy(isVisible = false) }
+        clearPinClick()
         Timber.d("Cursor hidden")
+    }
+
+    /**
+     * Fix A-9: the position the click target is locked to. The dot the user aims
+     * with is smoothed, so a pinch that begins while the hand is moving must use
+     * the dot's position at that instant — not the live (ahead-of-the-dot) hand
+     * position, and not a re-smoothed value that has already drifted onward.
+     */
+    @Volatile
+    private var pinnedX: Float? = null
+
+    @Volatile
+    private var pinnedY: Float? = null
+
+    fun pinClickPosition(x: Float, y: Float) {
+        pinnedX = x
+        pinnedY = y
+    }
+
+    fun pinnedClickPosition(): Pair<Float, Float>? {
+        val x = pinnedX ?: return null
+        val y = pinnedY ?: return null
+        return x to y
+    }
+
+    fun clearPinClick() {
+        pinnedX = null
+        pinnedY = null
     }
 }

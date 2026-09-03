@@ -38,8 +38,29 @@ class StatusOverlay(
     private var isAdded = false
 
     // Position (persisted)
-    private var posX: Int = try { prefs.getInt(KEY_POS_X, DEFAULT_POS_X) } catch (_: Exception) { DEFAULT_POS_X }
-    private var posY: Int = try { prefs.getInt(KEY_POS_Y, DEFAULT_POS_Y) } catch (_: Exception) { DEFAULT_POS_Y }
+    // Fix C-4: the default position used to be 50/100 raw *pixels*. On a 2.75x
+    // phone that is 18x36 dp, i.e. the status chip was wedged under the clock and
+    // the camera cutout (and on a tablet it floated in the top-left corner). The
+    // default is now expressed in dp and resolved against this device's density;
+    // a position the user dragged is still stored (and re-read) in pixels.
+    private var posX: Int = try { prefs.getInt(KEY_POS_X, defaultPosX()) } catch (_: Exception) { defaultPosX() }
+    private var posY: Int = try { prefs.getInt(KEY_POS_Y, defaultPosY()) } catch (_: Exception) { defaultPosY() }
+
+    private fun defaultPosX(): Int = dpToPx(DEFAULT_POS_X_DP)
+    private fun defaultPosY(): Int = dpToPx(DEFAULT_POS_Y_DP) + statusBarHeightPx()
+
+    /**
+     * Reads the framework status-bar inset so the default pill position lands below
+     * the clock and the notch. `getIdentifier` on the android namespace is the only
+     * pre-API-30 way to do this from a service (WindowInsets needs a window), so the
+     * discouraged-API lint is suppressed with the reason recorded here; the fallback
+     * covers the (rare) OEM that strips the resource.
+     */
+    @android.annotation.SuppressLint("DiscouragedApi")
+    private fun statusBarHeightPx(): Int {
+        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) context.resources.getDimensionPixelSize(id) else dpToPx(24)
+    }
 
     // Drag state
     private var isDragging = false
@@ -256,8 +277,8 @@ class StatusOverlay(
      * Resets the overlay position to the default location.
      */
     fun resetToDefaultPosition() {
-        posX = DEFAULT_POS_X
-        posY = DEFAULT_POS_Y
+        posX = defaultPosX()
+        posY = defaultPosY()
         val params = statusView?.layoutParams as? WindowManager.LayoutParams
         if (params != null) {
             params.x = posX
@@ -279,8 +300,10 @@ class StatusOverlay(
         private const val PREFS_NAME = "aircontrol_status_overlay"
         private const val KEY_POS_X = "overlay_pos_x"
         private const val KEY_POS_Y = "overlay_pos_y"
-        private const val DEFAULT_POS_X = 50
-        private const val DEFAULT_POS_Y = 100
+        // Top-right, just under the status bar: out of the way of the thumb and of
+        // the navigation gestures on both phones and tablets.
+        private const val DEFAULT_POS_X_DP = 12
+        private const val DEFAULT_POS_Y_DP = 8
         // TOUCH_SLOP moved to instance field (m-10) — uses ViewConfiguration.get(context).scaledTouchSlop
     }
 }

@@ -2,6 +2,7 @@ package com.aircontrol.ui.gazecalibration
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aircontrol.ui.Suppression
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.tracking.FaceTracker
 import com.aircontrol.tracking.GazeCalibration
@@ -41,6 +42,11 @@ class GazeCalibrationViewModel @Inject constructor(
     private val faceTracker: FaceTracker,
 ) : ViewModel() {
 
+    override fun onCleared() {
+        Suppression.release()
+        super.onCleared()
+    }
+
     private val _uiState = MutableStateFlow(GazeCalibrationState())
     val uiState: StateFlow<GazeCalibrationState> = _uiState.asStateFlow()
 
@@ -49,6 +55,13 @@ class GazeCalibrationViewModel @Inject constructor(
     private val screenPoints = ArrayList<Pair<Float, Float>>(CALIBRATION_POINTS.size)
 
     init {
+        // Fix B-3: while a setup flow is on screen, the accessibility service
+        // must not act on the gestures the user is making *for* that flow. Without
+        // this, pinching to press "Next" also sent a tap through to the
+        // calibration screen, and swiping to test a pose scrolled the app out from
+        // under the finger. The service reads [Suppression.isSuppressed].
+        Suppression.acquire()
+
         // Single source of truth for the 5 targets (the screen reads this too,
         // so targets can't drift out of sync between the VM and the UI).
         _uiState.value = GazeCalibrationState(totalPoints = CALIBRATION_POINTS.size)
@@ -128,12 +141,47 @@ class GazeCalibrationViewModel @Inject constructor(
 
     private suspend fun finishCalibration() {
         try {
-            val calibration = GazeCalibration.fit(gazeSamples, screenPoints)
+            var gaze = gazeSamples.toList()
+            var screen = screenPoints.toList()
+            var calibration = GazeCalibration.fit(gaze, screen)
+            var residuals = calibration.residuals(gaze, screen)
+
+            // Fix F-4: an affine fit through five points always "succeeds", even when
+            // the user's head moved and one sample landed far from its target. That
+            // produced a cursor that tracked the *opposite* side of the screen, with
+            // no hint that calibration had gone wrong. One clearly-off point is
+            // dropped and the fit recomputed (four points are still enough); a fit
+            // that stays bad is refused instead of persisted.
+            if (residuals.isNotEmpty()) {
+                val worst = residuals.indices.maxByOrNull { residuals[it] } ?: -1
+                val median = residuals.sorted().getOrNull(residuals.size / 2) ?: 0f
+                if (worst >= 0 && residuals[worst] > OUTLIER_ABSOLUTE &&
+                    residuals[worst] > median * OUTLIER_RELATIVE && gaze.size > MIN_FIT_POINTS
+                ) {
+                    Timber.w(
+                        "Gaze calibration: dropping outlier point %d (residual %.3f, median %.3f)",
+                        worst, residuals[worst], median,
+                    )
+                    gaze = gaze.filterIndexed { i, _ -> i != worst }
+                    screen = screen.filterIndexed { i, _ -> i != worst }
+                    calibration = GazeCalibration.fit(gaze, screen)
+                    residuals = calibration.residuals(gaze, screen)
+                }
+            }
+
+            val meanResidual = if (residuals.isEmpty()) 1f
+            else residuals.average().toFloat()
+            if (meanResidual > MAX_MEAN_RESIDUAL) {
+                Timber.w("Gaze calibration rejected: mean residual %.3f", meanResidual)
+                _uiState.value = _uiState.value.copy(isCollecting = false, error = true)
+                return
+            }
+
             settingsRepository.updateGazeCalibration(
                 calibration.toFloatArray().joinToString(","),
             )
             _uiState.value = _uiState.value.copy(isCollecting = false, isComplete = true)
-            Timber.i("Gaze calibration saved")
+            Timber.i("Gaze calibration saved (mean residual %.3f)", meanResidual)
         } catch (e: Exception) {
             Timber.e(e, "Gaze calibration fit failed")
             _uiState.value = _uiState.value.copy(isCollecting = false, error = true)
@@ -164,6 +212,18 @@ class GazeCalibrationViewModel @Inject constructor(
             0.1f to 0.9f,
             0.9f to 0.9f,
         )
+        /** A point this far off (normalized screen units) is a miss, not noise. */
+        private const val OUTLIER_ABSOLUTE = 0.16f
+
+        /** ...and only dropped when it is this many times worse than the median. */
+        private const val OUTLIER_RELATIVE = 3f
+
+        /** Refuse to save a mapping that is on average this far from the targets. */
+        private const val MAX_MEAN_RESIDUAL = 0.09f
+
+        /** An affine fit needs three points; below that a dropped outlier is fatal. */
+        private const val MIN_FIT_POINTS = 3
+
         private const val FIXATE_MS = 1200L
         private const val SAMPLE_WINDOW_MS = 900L
         private const val MIN_SAMPLES = 5

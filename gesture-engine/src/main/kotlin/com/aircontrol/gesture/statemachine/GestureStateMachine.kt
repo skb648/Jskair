@@ -67,6 +67,10 @@ class GestureStateMachine(config: GestureEngineConfig) {
     @Volatile
     private var lastExecutedPose: Pose = Pose.NONE
 
+    /** Per-frame inputs supplied by [process] (see its parameter docs). */
+    private var currentFistLike: Boolean = false
+    private var currentSuppressExecution: Boolean = false
+
     /** Arming progress: 0.0 to 1.0, where 1.0 means fully armed. */
     @Volatile
     var armingProgress: Float = 0f
@@ -91,8 +95,23 @@ class GestureStateMachine(config: GestureEngineConfig) {
      * @param pose The current confirmed pose (after debounce)
      * @param handDetected Whether a hand is currently detected
      * @param timestampMs Current frame timestamp
+     * @param fistLike True when all four fingers are curled, regardless of what
+     *   the thumb is doing. Drives the disarm hold so that closing the hand
+     *   (which flickers FIST → NONE → THUMB_* across frames) still disarms
+     *   instead of resetting the hold timer every frame (Fix A-12/A-13).
+     * @param suppressPoseExecution True while the hand is still settling from a
+     *   movement. A thumb pose produced by a *closing* hand is then ignored,
+     *   while a deliberate, held thumb-up still fires.
      */
-    fun process(pose: Pose, handDetected: Boolean, timestampMs: Long): TransitionResult {
+    fun process(
+        pose: Pose,
+        handDetected: Boolean,
+        timestampMs: Long,
+        fistLike: Boolean = pose == Pose.FIST,
+        suppressPoseExecution: Boolean = false,
+    ): TransitionResult {
+        currentFistLike = fistLike
+        currentSuppressExecution = suppressPoseExecution
         handCurrentlyDetected = handDetected
         val previousState = currentState
 
@@ -175,13 +194,17 @@ class GestureStateMachine(config: GestureEngineConfig) {
             }
         }
 
-        // FIST held for disarm
-        if (pose == Pose.FIST) {
+        // FIST held for disarm. Fix A-12: the hold is driven by "all four fingers
+        // curled" rather than the exact FIST pose, because a closing hand passes
+        // through poses that are not literally FIST and used to reset this timer
+        // every frame — so the 1s disarm never completed.
+        if (pose == Pose.FIST || currentFistLike) {
             if (!fistWasHeld) {
                 fistHoldStartMs = timestampMs
                 fistWasHeld = true
             } else if (timestampMs - fistHoldStartMs >= config.fistDisarmDurationMs) {
                 resetFistTracking()
+                lastExecutedPose = Pose.NONE
                 transitionTo(GestureEngineState.DISARMED)
                 return
             }
@@ -189,12 +212,16 @@ class GestureStateMachine(config: GestureEngineConfig) {
             resetFistTracking()
         }
 
-        // Bug #3 Fix: Clear the rapid-fire lock when the user returns to a neutral
-        // pose. NONE and POINTING are never actionable, so seeing them in ARMED
-        // state means the user has relaxed their hand. (The pose has already been
-        // debounced by StaticPoseClassifier, so a single-frame observation is
-        // trustworthy as "sustained".)
-        if (pose == Pose.NONE || pose == Pose.POINTING) {
+        // Fix A-5: clear the rapid-fire lock whenever the hand returns to a
+        // neutral pose. OPEN_PALM is the natural neutral while ARMED (it is also
+        // the arming pose and is never actionable), so returning to an open palm
+        // must re-arm the previous pose. Previously only NONE/POINTING cleared
+        // it, so "victory → open palm → victory" fired once and then nothing:
+        // users had to make a random shape between repeats, and raising the
+        // volume a few steps was painful.
+        if (pose == Pose.NONE || pose == Pose.POINTING || pose == Pose.OPEN_PALM ||
+            (currentFistLike && pose != Pose.THUMB_UP && pose != Pose.THUMB_DOWN)
+        ) {
             if (lastExecutedPose != Pose.NONE) {
                 lastExecutedPose = Pose.NONE
             }
@@ -207,12 +234,23 @@ class GestureStateMachine(config: GestureEngineConfig) {
         // Bug #3 Fix: Skip execution if this pose is the same as the one that just
         // fired (i.e., the user is holding the pose across the COOLDOWN boundary).
         // The lock is cleared above when the user returns to a neutral pose.
-        if (pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST &&
+        // Fix A-12: a thumb pose produced by a hand that is still moving (i.e.
+        // the user is closing it to disarm) must not change the volume. The
+        // disarm hold above keeps running, so the closing hand still powers the
+        // feature off — which is what the user meant to do.
+        val thumbPoseSuppressed =
+            (pose == Pose.THUMB_UP || pose == Pose.THUMB_DOWN) && currentSuppressExecution
+
+        if (!thumbPoseSuppressed &&
+            pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST &&
             pose != Pose.PINCH && pose != Pose.POINTING &&
             pose != lastExecutedPose
         ) {
-            resetFistTracking()
-            // Record the pose so it can't fire again until a neutral pose clears the lock.
+            // NOTE: deliberately does NOT call resetFistTracking(). Executing a
+            // pose used to restart the fist-disarm hold, so a hand that was
+            // closing (and momentarily read THUMB_UP) pushed the disarm further
+            // and further away — "fist doesn't turn it off". The hold now only
+            // resets when the hand genuinely stops being fist-like.
             lastExecutedPose = pose
             transitionTo(GestureEngineState.EXECUTING)
         }
@@ -262,6 +300,8 @@ class GestureStateMachine(config: GestureEngineConfig) {
         handCurrentlyDetected = false
         fistHoldStartMs = 0L
         fistWasHeld = false
+        currentFistLike = false
+        currentSuppressExecution = false
         lastExecutedPose = Pose.NONE
         armingProgress = 0f
     }

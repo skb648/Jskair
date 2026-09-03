@@ -42,6 +42,12 @@ interface GestureDetector : AutoCloseable {
     fun updateSensitivity(sensitivity: Int)
 
     /**
+     * Fix A-11: whether a swipe requires the open-palm pose. Forwarded to the
+     * engine so that moving the cursor can never scroll the page.
+     */
+    fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean)
+
+    /**
      * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
      * user-defined landmark templates that the engine matches against live
      * hand frames. The templates are converted from app-layer
@@ -128,6 +134,16 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
      */
     override fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
         engine.updateCustomTemplates(templates)
+    }
+
+    /**
+     * Fix A-11: forward the user's "swipes need an open palm" setting to the
+     * engine. Without this the engine kept its compiled-in default, so the
+     * Settings switch did nothing and pointer travel kept scrolling pages.
+     */
+    override fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean) {
+        Timber.i("Updating swipe pose gate: requiresOpenHand=%s", requiresOpenHand)
+        engine.updateSwipeRequiresOpenHand(requiresOpenHand)
     }
 
     override fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {

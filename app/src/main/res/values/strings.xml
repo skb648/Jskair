@@ -112,8 +112,9 @@
     <string name="settings_analysis_fps_value">%d FPS</string>
     <string name="settings_cursor_enabled">Cursor Enabled</string>
     <string name="settings_haptic_feedback">Haptic Feedback</string>
-    <string name="settings_cursor_speed">Cursor Speed</string>
-    <string name="settings_hold_duration">Hold Duration</string>
+    <string name="settings_cursor_speed">Cursor Smoothing</string>
+    <string name="settings_cursor_smoothing_hint">Higher keeps the dot steadier, lower makes it react faster</string>
+    <string name="settings_hold_duration">Hold Duration (pinch before drag)</string>
     <string name="settings_battery_saver">Battery Saver</string>
     <string name="settings_start_on_boot">Start on Boot</string>
     <string name="settings_status_pill">Status Pill</string>
@@ -246,12 +247,15 @@
     <string name="settings_stationary_click">Stationary Click</string>
     <string name="settings_stationary_click_subtitle">Ignore pinches while the hand is moving</string>
     <string name="settings_palm_home">Palm → Home</string>
-    <string name="settings_palm_home_subtitle">Hold an open palm to open Home</string>
+    <string name="settings_palm_home_subtitle">Hold a still, open palm for 2 seconds to go Home. Off by default, because an open palm is also the resting pose.</string>
+    <string name="settings_swipe_open_palm">Swipes Need an Open Palm</string>
+    <string name="settings_swipe_open_palm_subtitle">Only a straight open-hand sweep scrolls the page, so moving the pointer never scrolls by accident. Turn off to swipe while pointing.</string>
     <string name="settings_sit_back_mode">Sit-back Mode</string>
     <string name="settings_sit_back_mode_subtitle">Reach the whole screen without raising your hand</string>
     <string name="settings_reduced_motion">Reduced Motion</string>
     <string name="settings_reduced_motion_subtitle">Disable cursor pulse and glow animations</string>
-    <string name="settings_cursor_gain">Cursor Gain</string>
+    <string name="settings_cursor_gain">Cursor Speed</string>
+    <string name="settings_cursor_gain_hint">How far the pointer travels for a given hand movement</string>
     <string name="settings_eye_is_mouse">Eye is Mouse</string>
     <string name="settings_eye_is_mouse_subtitle">Cursor follows your gaze; pinch to click</string>
     <string name="settings_invert_gaze">Invert Horizontal Gaze</string>
@@ -339,4 +343,5 @@
     <!-- Calibration measurement progress content description -->
     <string name="calibration_measurement_progress_cd">Measurement progress %1$d%%</string>
     <string name="accessibility_start_failed_toast">AirControl accessibility could not start. Return to the app and retry.</string>
+    <string name="error_collector_gave_up">AirControl: the %1$s component stopped responding. Turn AirControl off and on again in Accessibility settings if gestures keep failing.</string>
 </resources>

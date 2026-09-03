@@ -2,6 +2,7 @@ package com.aircontrol.ui.customgesture
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aircontrol.ui.Suppression
 import com.aircontrol.accessibility.GestureAction
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
@@ -38,6 +39,20 @@ data class CustomGestureCreatorState(
 class CustomGestureViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
 ) : ViewModel() {
+
+    init {
+        // Fix B-3: while a setup flow is on screen, the accessibility service
+        // must not act on the gestures the user is making *for* that flow. Without
+        // this, pinching to press "Next" also sent a tap through to the
+        // calibration screen, and swiping to test a pose scrolled the app out from
+        // under the finger. The service reads [Suppression.isSuppressed].
+        Suppression.acquire()
+    }
+
+    override fun onCleared() {
+        Suppression.release()
+        super.onCleared()
+    }
 
     val customGestures = settingsRepository.customGestures
         .stateIn(

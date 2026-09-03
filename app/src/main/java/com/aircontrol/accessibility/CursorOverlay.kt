@@ -50,8 +50,19 @@ class CursorOverlay(
     // Whether we've received the first position update
     private var hasInitialized = false
 
-    // Very small dead-zone in pixels (1dp) — just enough to prevent sub-pixel jitter
-    private val deadZonePx = dpToPx(DEAD_ZONE_DP)
+    /** Deferred paint scheduled when two updates arrive closer than the throttle. */
+    private var pendingLayout: Runnable? = null
+
+    // Fix A-10: the old 4dp "jitter filter" on the overlay is gone.
+    //
+    // It dropped every movement smaller than dpToPx(4) - about ten screen pixels
+    // on a typical phone - which made fine pointing impossible: reaching a small
+    // icon needed a hand movement far larger than the distance still to go, and
+    // the dot simply never arrived. Worse, the early return *lost* the delta
+    // instead of deferring it, so the dot stayed visibly offset from where the
+    // click landed. Jitter suppression belongs in the One Euro filter
+    // (CursorSmoother), which is velocity-aware: it keeps the dot still while the
+    // hand is still, without eating real movement.
 
     // Cursor size in pixels
     private val cursorSizePx = dpToPx(CURSOR_SIZE_DP) // Responsive: scaled via screen density already (tablet density higher)
@@ -87,18 +98,6 @@ class CursorOverlay(
         // Map normalized coords to screen pixels (with mirroring and full coverage)
         val targetX = ActionDispatcher.normalizeToScreenX(normX, screenW)
         val targetY = ActionDispatcher.normalizeToScreenY(normY, screenHeight)
-
-        // Dead-zone: skip update if movement is too small (sub-pixel jitter).
-        if (hasInitialized) {
-            val dx = targetX - currentScreenX
-            val dy = targetY - currentScreenY
-            val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-            if (distance < deadZonePx) {
-                // Within dead-zone — don't update
-                if (!isVisible) show()
-                return
-            }
-        }
 
         // Set position directly. Smoothing is handled by the One Euro filter in
         // GestureControlAccessibilityService (CursorSmoother); applying a second
@@ -145,6 +144,7 @@ class CursorOverlay(
      * Hides the cursor with a 200ms fade-out.
      */
     fun hide() {
+        cancelPendingLayout()
         if (!isVisible) return
         val view = cursorView ?: return
 
@@ -294,10 +294,26 @@ class CursorOverlay(
 
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastUpdateTimeMs < updateThrottleMs) {
-            return // BUG #7 FIX: Throttle overlay updates to 60fps (16ms)
+            // Fix B-4: never *drop* a throttled frame. The skipped paint used to be
+            // discarded outright, so when camera frames landed a little faster than
+            // 16 ms apart the dot could sit a whole frame behind the hand - and stay
+            // there once the user stopped moving, which is exactly the "I clicked
+            // next to the button" complaint. Coalesce it into one deferred paint.
+            if (pendingLayout == null) {
+                val deferred = Runnable {
+                    pendingLayout = null
+                    applyLayout(view, params)
+                }
+                pendingLayout = deferred
+                view.postDelayed(deferred, updateThrottleMs)
+            }
+            return
         }
         lastUpdateTimeMs = now
+        applyLayout(view, params)
+    }
 
+    private fun applyLayout(view: View, params: WindowManager.LayoutParams) {
         val size = ringSizePx * 2 + dpToPx(4)
         params.x = currentScreenX.toInt() - size / 2
         params.y = currentScreenY.toInt() - size / 2
@@ -307,6 +323,13 @@ class CursorOverlay(
         } catch (_: Exception) {
             // View not attached
         }
+    }
+
+    /** Drop a scheduled repaint (hide/remove must not leave a stale frame). */
+    private fun cancelPendingLayout() {
+        val view = cursorView ?: return
+        pendingLayout?.let { view.removeCallbacks(it) }
+        pendingLayout = null
     }
 
     private fun cancelPendingHide() {
@@ -324,8 +347,5 @@ class CursorOverlay(
         private const val CURSOR_SIZE_DP = 28  // ✅ Reduced from 36dp to 28dp
         private const val RING_SIZE_DP = 20    // ✅ Reduced from 28dp to 20dp
         
-        // CRITICAL FIX: Larger dead zone for rock-solid stability
-        // Eliminates micro-tremor completely
-        private const val DEAD_ZONE_DP = 4 // Complementary to CursorSmoother 0.004 (1 is normalized, 1 is dp) — total ~8px effective  // ✅ Increased from 3dp to 8dp
     }
 }

@@ -518,10 +518,19 @@ private fun PermissionWarningCard(
         MissingPermission.NOTIFICATIONS -> stringResource(R.string.home_warning_notifications_message)
     }
 
+    // Fix F-2: only a *blocking* problem is an error. Notifications are optional -
+    // AirControl works fully without them - so painting that row in the same alarm
+    // red as a missing camera made a fresh install look broken at the exact moment
+    // the user is deciding whether the app works.
+    val accentColor = when (missingPermission) {
+        MissingPermission.NOTIFICATIONS -> WarningOrange
+        else -> ErrorRed
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = ErrorRed.copy(alpha = 0.12f),
+            containerColor = accentColor.copy(alpha = 0.12f),
         ),
         shape = RoundedCornerShape(Dimens.cardCornerRadius),
     ) {
@@ -533,13 +542,13 @@ private fun PermissionWarningCard(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(ErrorRed),
+                        .background(accentColor),
                 )
                 Spacer(modifier = Modifier.width(Dimens.spacing8))
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
-                    color = ErrorRed,
+                    color = accentColor,
                 )
             }
             Spacer(modifier = Modifier.height(Dimens.spacing4))

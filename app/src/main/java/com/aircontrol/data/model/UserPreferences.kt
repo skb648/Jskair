@@ -25,8 +25,18 @@ data class UserPreferences(
     val dwellDurationMs: Int = 800,
     // F8: Stationary-click — ignore pinches that start while the hand is moving
     val stationaryClickEnabled: Boolean = true,
-    // F4: Palm → Home gesture
-    val palmHomeEnabled: Boolean = true,
+    // F4: Palm → Home gesture.
+    //
+    // Fix A-4: default OFF. OPEN_PALM is the pose that arms the app and the
+    // natural resting pose while armed, so an enabled-by-default "hold an open
+    // palm for 2s → go Home" meant users were thrown out of whatever app they
+    // were using just for pausing to think. The gesture is still available (and
+    // now requires a still, deliberately presented palm) for people who want it.
+    val palmHomeEnabled: Boolean = false,
+
+    // Fix A-11: only an open-palm sweep counts as a swipe, so moving the pointer
+    // across the screen can never scroll the page. Turn off for swipe-while-pointing.
+    val swipeRequiresOpenHand: Boolean = true,
     // F6: Sit-back mode — reduce how high the user must raise their hand
     val sitBackMode: Boolean = false,
     // F9: Reduced motion — disable pulse/glow/ripple animations
@@ -47,4 +57,18 @@ data class UserPreferences(
     val blinkClickEnabled: Boolean = false,
     // Persisted 5-point gaze calibration coefficients (comma-separated, 6 floats).
     val gazeCalibration: String = "",
-)
+) {
+    /**
+     * Legacy name for the smoothing slider. The stored key is `cursor_speed` for
+     * compatibility with existing installs, but the control is labelled "Cursor
+     * smoothing" in the UI and it only ever touched the filter — actual pointer
+     * speed is [cursorGain]. Kept as an alias so both names stay readable at the
+     * call sites.
+     */
+    val cursorSmoothing: Int
+        get() = cursorSpeed
+
+    /** How much hand travel maps to screen travel (the real "speed"). */
+    val effectiveCursorGain: Int
+        get() = cursorGain
+}

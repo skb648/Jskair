@@ -135,6 +135,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /** Fix A-11: gate swipes on the open-palm pose. */
+    fun updateSwipeRequiresOpenHand(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateSwipeRequiresOpenHand(enabled)
+        }
+    }
+
     fun updateSitBackMode(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.updateSitBackMode(enabled)

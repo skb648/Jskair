@@ -132,10 +132,17 @@ class HandTrackerImpl @Inject constructor(
             Landmark3D(x = lm.x(), y = lm.y(), z = lm.z())
         }
 
+        // Fix A-21: the labels used to be swapped here ("LEFT" -> RIGHT), on the
+        // assumption that MediaPipe reports anatomy for an unmirrored image. It
+        // does not: the Hand landmarker defines handedness for a *selfie* (already
+        // mirrored) input, and CameraService mirrors the frame before handing it
+        // over (postScale(-1, 1) in imageProxyToMPImage). The double flip made
+        // "use my left hand only" accept the right hand and reject the left, which
+        // is exactly what users hit when they set a hand preference.
         val handednessCategory = if (handedness.isNotEmpty() && handedness[0].isNotEmpty()) {
             when (handedness[0][0].categoryName().uppercase()) {
-                "LEFT" -> Handedness.RIGHT
-                "RIGHT" -> Handedness.LEFT
+                "LEFT" -> Handedness.LEFT
+                "RIGHT" -> Handedness.RIGHT
                 else -> Handedness.UNKNOWN
             }
         } else {

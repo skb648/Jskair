@@ -32,6 +32,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
+import com.aircontrol.util.collectGuarded
+import com.aircontrol.util.launchGuarded
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,6 +69,13 @@ class CameraService : LifecycleService() {
 
     companion object {
         const val CHANNEL_ID = "aircontrol_tracking"
+
+        /** How often the watchdog checks the pipeline (ms). */
+        private const val WATCHDOG_PERIOD_MS = 5_000L
+
+        /** After a tracker is found missing, retry every N ticks. */
+        private const val TRACKER_RETRY_TICKS = 3
+
         const val NOTIFICATION_ID = 1001
 
         const val ACTION_START = "com.aircontrol.action.START_TRACKING"
@@ -74,6 +84,12 @@ class CameraService : LifecycleService() {
         const val ACTION_RESUME = "com.aircontrol.action.RESUME_TRACKING"
 
         const val COMMAND_START = 1
+        // Fix B-4: the notification's Stop button. Used to be a bare ACTION_STOP,
+        // which left the master gesture switch ON; the accessibility service
+        // watchdog then revived the camera a few seconds later and the "Stop"
+        // button appeared to do nothing. This variant stops the session *and*
+        // turns the switch off, so the app state and the notification agree.
+        const val ACTION_STOP_AND_DISABLE = "com.aircontrol.action.STOP_AND_DISABLE"
         const val COMMAND_STOP = 2
         const val COMMAND_PAUSE = 3
         const val COMMAND_RESUME = 4
@@ -106,7 +122,13 @@ class CameraService : LifecycleService() {
     private lateinit var faceTracker: com.aircontrol.tracking.FaceTracker
     private lateinit var settingsRepository: com.aircontrol.data.repository.SettingsRepository
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Fix B-1: the handler is essential. This scope runs the camera pipeline's
+    // collectors for the whole life of the service; an exception that escaped one
+    // of them reached the default uncaught handler and killed the process, which
+    // is what the user sees as "AirControl closes by itself".
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + com.aircontrol.util.CrashGuard.handler,
+    )
     private val lifecycleMutex = Mutex()
 
     private var analysisExecutor: java.util.concurrent.ExecutorService? = null
@@ -122,6 +144,10 @@ class CameraService : LifecycleService() {
     @Volatile private var eyeTrackingEnabled = false
 
     private var frameWatchdogJob: Job? = null
+
+    /** Watchdog bookkeeping for a missing/uninitialized hand tracker (Fix A-1b). */
+    private var deadTrackerTicks: Int = 0
+    private var nextTrackerRetryTick: Int = TRACKER_RETRY_TICKS
     private val pipelineJobs = mutableListOf<Job>()
     private val jobsLock = Any()
 
@@ -177,6 +203,17 @@ class CameraService : LifecycleService() {
         serviceScope.launch {
             lifecycleMutex.withLock {
                 when (intent?.action) {
+                    ACTION_STOP_AND_DISABLE -> {
+                        stopTrackingLocked()
+                        // Persist the master switch off (idempotent for every other
+                        // caller, which already turned it off before stopping).
+                        runCatching {
+                            if (::settingsRepository.isInitialized) {
+                                settingsRepository.updateGesturesEnabled(false)
+                            }
+                        }.onFailure { Timber.e(it, "Could not persist gesturesEnabled=false on stop") }
+                        return@launch
+                    }
                     ACTION_STOP -> { stopTrackingLocked(); return@launch }
                     ACTION_PAUSE -> pauseTrackingLocked()
                     ACTION_RESUME -> resumeTrackingLocked()
@@ -255,22 +292,34 @@ class CameraService : LifecycleService() {
         publishState(ServiceState(isRunning = true, isPaused = false))
 
         withContext(Dispatchers.Default) { handTracker.initialize() }
+        // Fix A-1b: never pretend the session is live if the model could not be
+        // created - the watchdog below rebuilds it, and the log says so plainly.
+        if (!handTracker.isInitialized()) {
+            Timber.e("Hand tracker failed to initialize; the watchdog will keep retrying")
+        }
+        deadTrackerTicks = 0
+        nextTrackerRetryTick = TRACKER_RETRY_TICKS
 
         synchronized(jobsLock) {
-            pipelineJobs.add(serviceScope.launch {
-                settingsRepository.userPreferences.collect { prefs ->
+            pipelineJobs.add(serviceScope.launchGuarded("camera settings", restart = true) {
+                settingsRepository.userPreferences.collectGuarded("camera settings") { prefs ->
                     configuredFps = if (prefs.batterySaver) minOf(15, prefs.analysisFps) else prefs.analysisFps
                     adaptiveFpsController.updateConfiguredFps(configuredFps)
                     if (eyeTrackingEnabled != prefs.eyeTrackingEnabled) {
                         eyeTrackingEnabled = prefs.eyeTrackingEnabled
                         if (eyeTrackingEnabled && !faceTracker.isInitialized()) {
-                            withContext(Dispatchers.Default) { faceTracker.initialize() }
+                            // Initializing the face landmarker can throw on devices where
+                            // MediaPipe cannot allocate a GPU delegate. A throw here used to
+                            // kill the collector (and the process). Now: log, keep hands
+                            // working, and retry the next time the toggle changes.
+                            runCatching { withContext(Dispatchers.Default) { faceTracker.initialize() } }
+                                .onFailure { Timber.e(it, "Face tracker init failed; eye mode stays off") }
                         }
                     }
                 }
             })
-            pipelineJobs.add(serviceScope.launch {
-                handTracker.handFrames.collect { frame ->
+            pipelineJobs.add(serviceScope.launchGuarded("hand fps", restart = true) {
+                handTracker.handFrames.collectGuarded("hand fps") { frame ->
                     if (frame.isDetected) adaptiveFpsController.onHandDetected(frame.timestampMs)
                     else adaptiveFpsController.onHandLost(frame.timestampMs)
                 }
@@ -507,7 +556,7 @@ class CameraService : LifecycleService() {
             action = when (command) {
                 COMMAND_PAUSE -> ACTION_PAUSE
                 COMMAND_RESUME -> ACTION_RESUME
-                COMMAND_STOP -> ACTION_STOP
+                COMMAND_STOP -> ACTION_STOP_AND_DISABLE
                 else -> ACTION_START
             }
         }
@@ -519,11 +568,38 @@ class CameraService : LifecycleService() {
 
     private fun startFrameWatchdog() {
         frameWatchdogJob?.cancel()
-        frameWatchdogJob = serviceScope.launch {
-            while (true) {
-                delay(5000L)
+        frameWatchdogJob = serviceScope.launchGuarded("frame watchdog", restart = true) {
+            while (isActive) {
+                delay(WATCHDOG_PERIOD_MS)
                 val s = _state.value
                 if (!s.isRunning || s.isPaused || userPaused || thermalPaused) continue
+
+                // Fix A-1b: a dead MediaPipe tracker is invisible to the stall
+                // detector below, because frames keep reaching the analyzer (and keep
+                // lastProcessedFrameMs fresh) even when there is no landmarker to hand
+                // them to. On devices where HandLandmarker creation fails once - low
+                // RAM, another camera user, a model file that could not be extracted
+                // after an OTA - that used to mean "camera on, battery draining,
+                // nothing works", forever. The watchdog now notices the missing
+                // tracker and rebuilds the pipeline, with a widening backoff so a hard
+                // failure cannot spin the CPU.
+                if (!handTracker.isInitialized()) {
+                    deadTrackerTicks++
+                    if (deadTrackerTicks >= nextTrackerRetryTick) {
+                        nextTrackerRetryTick = deadTrackerTicks + TRACKER_RETRY_TICKS
+                        Timber.w(
+                            "Hand tracker is not running (tick %d) - rebuilding the pipeline",
+                            deadTrackerTicks,
+                        )
+                        restartCamera()
+                    }
+                    continue
+                }
+                if (deadTrackerTicks != 0) {
+                    Timber.i("Hand tracker recovered after %d watchdog tick(s)", deadTrackerTicks)
+                    deadTrackerTicks = 0
+                    nextTrackerRetryTick = TRACKER_RETRY_TICKS
+                }
                 val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 if (km?.isKeyguardLocked == true) continue
                 val elapsed = SystemClock.elapsedRealtime() - lastProcessedFrameMs

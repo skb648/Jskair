@@ -64,6 +64,13 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
     /** Minimum time between consecutive swipe detections. */
     private var swipeCooldownMs: Long = config.swipeCooldownMs
 
+    /** Last sample timestamp, used to measure the incoming frame interval. */
+    private var lastSampleTimestampMs: Long = 0L
+
+    /** Exponentially smoothed frame interval (ms) of the hand frames fed in. */
+    @Volatile
+    private var measuredFrameIntervalMs: Long = 0L
+
     /**
      * Processes a hand input frame and returns a [SwipeResult] indicating
      * whether a swipe was detected and in which direction.
@@ -71,8 +78,31 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
      * Uses index fingertip as primary tracker (more dramatic movement),
      * with wrist as fallback.
      */
-    fun process(input: HandInput): SwipeResult {
+    fun process(input: HandInput, gestureAllowed: Boolean = true): SwipeResult {
         if (!input.isDetected) {
+            wristWindow.clear()
+            indexTipWindow.clear()
+            return SwipeResult(detected = false)
+        }
+
+        // Fix A-14: remember the observed frame interval so the analysis window
+        // can stretch in scan mode (5 fps). A 500ms window only ever holds 2-3
+        // samples there, so swipes silently stopped working whenever the phone
+        // throttled down.
+        val now = input.timestampMs
+        if (lastSampleTimestampMs > 0L) {
+            val interval = (now - lastSampleTimestampMs).coerceIn(1L, 1000L)
+            measuredFrameIntervalMs =
+                if (measuredFrameIntervalMs == 0L) interval
+                else ((measuredFrameIntervalMs * 3 + interval) / 4)
+        }
+        lastSampleTimestampMs = now
+
+        // Fix A-11: when swipes are not allowed for this frame's pose, drop the
+        // accumulated motion instead of keeping it. Otherwise the movement the
+        // user made *while pointing* would be "completed" the moment they opened
+        // their palm and scroll the page for no visible reason.
+        if (!gestureAllowed) {
             wristWindow.clear()
             indexTipWindow.clear()
             return SwipeResult(detected = false)
@@ -93,19 +123,23 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         )
 
         // Add samples and prune window to configured duration
+        val windowMs = effectiveWindowMs()
         wristWindow.addLast(wristSample)
         indexTipWindow.addLast(indexSample)
-        pruneWindow(wristWindow, input.timestampMs)
-        pruneWindow(indexTipWindow, input.timestampMs)
+        pruneWindow(wristWindow, input.timestampMs, windowMs)
+        pruneWindow(indexTipWindow, input.timestampMs, windowMs)
 
-        // Issue 6 Fix: Require at least 4 samples (was 3) for temporal consistency
-        if (indexTipWindow.size < MIN_SAMPLES_FOR_SWIPE) return SwipeResult(detected = false)
+        // Temporal evidence requirement. Fix A-14: the required sample count
+        // adapts to the window length, so a long window in scan mode still needs
+        // enough intermediate points to be trustworthy.
+        val requiredSamples = requiredSampleCount(windowMs)
+        if (indexTipWindow.size < requiredSamples) return SwipeResult(detected = false)
 
         // Analyze using index fingertip first (more dramatic movement)
         var result = analyzeWindow(indexTipWindow, input.timestampMs)
 
         // If index tip didn't detect, try wrist (some users swipe with whole hand)
-        if (!result.detected && wristWindow.size >= MIN_SAMPLES_FOR_SWIPE) {
+        if (!result.detected && wristWindow.size >= requiredSamples) {
             result = analyzeWindow(wristWindow, input.timestampMs)
         }
 
@@ -122,10 +156,39 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
      * Removes samples older than [config.swipeWindowMs] from the window.
      */
     internal fun pruneWindow(window: ArrayDeque<PositionSample>, currentTimeMs: Long) {
-        val cutoffTime = currentTimeMs - config.swipeWindowMs
+        pruneWindow(window, currentTimeMs, config.swipeWindowMs)
+    }
+
+    internal fun pruneWindow(
+        window: ArrayDeque<PositionSample>,
+        currentTimeMs: Long,
+        windowMs: Long,
+    ) {
+        val cutoffTime = currentTimeMs - windowMs
         while (window.isNotEmpty() && window.first().timestampMs < cutoffTime) {
             window.removeFirst()
         }
+    }
+
+    /**
+     * The window actually used for analysis: the configured one, stretched so it
+     * always contains enough samples for the current frame rate.
+     */
+    internal fun effectiveWindowMs(): Long {
+        val base = config.swipeWindowMs
+        if (measuredFrameIntervalMs <= 0L) return base
+        val needed = MIN_SAMPLES_FOR_SWIPE * measuredFrameIntervalMs
+        return maxOf(base, needed)
+    }
+
+    /** Sample count required for a swipe, given the effective window length. */
+    internal fun requiredSampleCount(windowMs: Long): Int {
+        val byWindow = if (measuredFrameIntervalMs > 0L) {
+            ((windowMs / measuredFrameIntervalMs) * 2 / 3).toInt()
+        } else {
+            MIN_SAMPLES_FOR_SWIPE
+        }
+        return byWindow.coerceIn(MIN_SAMPLES_FOR_SWIPE, MAX_SAMPLES_FOR_SWIPE)
     }
 
     /**
@@ -264,6 +327,27 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             }
         }
 
+        // Fix A-11: a swipe must be built from several *moving* steps, not one
+        // big jump. A single-frame teleport (tracking glitch, or the pose
+        // debounce lagging behind a hand that just started moving) produced
+        // phantom scrolls while the user was only moving the cursor. At full
+        // frame rate this needs 3 moving steps; in scan mode (where a whole
+        // swipe is only 2-3 frames) the requirement relaxes automatically.
+        val movingSteps = countMovingSteps(window, direction)
+        val requiredSteps = when {
+            measuredFrameIntervalMs >= 120L -> 1
+            window.size >= 8 -> MIN_MOVING_STEPS
+            else -> MIN_MOVING_STEPS - 1
+        }
+        if (movingSteps < requiredSteps) {
+            return SwipeResult(
+                detected = false,
+                displacementX = displacementX,
+                displacementY = displacementY,
+                peakVelocity = peakVelocity,
+            )
+        }
+
         // Issue 6 Fix: Directional consistency check (applies to ALL directions)
         // Verify that the majority of intermediate velocity vectors agree with
         // the overall displacement direction. This prevents zigzag movements
@@ -400,21 +484,49 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         return reversals
     }
 
+    /**
+     * Number of consecutive sample pairs whose movement along the swipe axis is
+     * large enough to be real motion rather than jitter.
+     */
+    internal fun countMovingSteps(window: ArrayDeque<PositionSample>, direction: SwipeDirection): Int {
+        if (window.size < 2) return 0
+        var steps = 0
+        for (i in 1 until window.size) {
+            val prev = window[i - 1]
+            val curr = window[i]
+            val delta = when (direction) {
+                SwipeDirection.LEFT, SwipeDirection.RIGHT -> kotlin.math.abs(curr.x - prev.x)
+                SwipeDirection.UP, SwipeDirection.DOWN -> kotlin.math.abs(curr.y - prev.y)
+            }
+            if (delta >= MIN_INTERMEDIATE_DISPLACEMENT) steps++
+        }
+        return steps
+    }
+
     /** Resets the detector state. */
     fun reset() {
         wristWindow.clear()
         indexTipWindow.clear()
         lastSwipeTimestampMs = 0L
+        lastSampleTimestampMs = 0L
+        measuredFrameIntervalMs = 0L
     }
 
     companion object {
         private const val EPSILON = 1e-6f
-        // Issue 6 Fix: Minimum samples for reliable swipe detection (was 3)
-        private const val MIN_SAMPLES_FOR_SWIPE = 4
+        // Minimum samples for a trustworthy swipe. Fix A-14: 4 was impossible to
+        // reach in 5 fps scan mode (a 500ms window only holds 2-3 samples), which
+        // silently disabled swipes whenever the phone throttled. 3 is the floor;
+        // the effective requirement adapts to the frame rate up to
+        // MAX_SAMPLES_FOR_SWIPE.
+        private const val MIN_SAMPLES_FOR_SWIPE = 3
+        private const val MAX_SAMPLES_FOR_SWIPE = 5
         // Minimum fraction of intermediate vectors that must agree with overall direction
         private const val DIRECTIONAL_CONSISTENCY_THRESHOLD = 0.7f
         // Minimum displacement for an intermediate step to be counted in consistency check
         private const val MIN_INTERMEDIATE_DISPLACEMENT = 0.005f
+        // Minimum number of moving steps inside the window for a real swipe.
+        private const val MIN_MOVING_STEPS = 3
 
         // Bug: Swipe Up/Down Confusion Fix — Strict directional angle filter.
         // Vertical swipes (UP/DOWN) require |dY| >= 2 × |dX|. Equivalently,

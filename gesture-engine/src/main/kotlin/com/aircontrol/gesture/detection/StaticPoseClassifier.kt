@@ -11,152 +11,154 @@ import kotlin.concurrent.Volatile
 import kotlin.math.sqrt
 
 /**
- * Classifies static hand poses from finger extension states.
+ * Classifies a static hand pose from landmarks + finger extension state, with a
+ * time-based debounce so the confirmation delay is the same at 5fps and at 30fps.
  *
- * A pose must be confirmed for [config.poseDebounceFrames] consecutive
- * frames before being emitted. This prevents flicker between poses
- * during transitions and noisy landmark detection.
+ * Priority order (Fix A-13, "a fist may be read as PINCH"):
+ *   1. FIST   — all four fingers curled (a fist also puts the thumb next to the
+ *               curled index tip, which used to be classified as a pinch, so the
+ *               1s disarm never counted and "fist doesn't turn it off").
+ *   2. PINCH  — thumb and index tips together *while the index is extended*.
+ *   3. OPEN_PALM, POINTING, VICTORY, THREE/FOUR_FINGERS
+ *   4. THUMB_UP / THUMB_DOWN — only when the hand is nearly still (Fix A-12).
  *
- * Poses are classified in priority order:
- * 1. PINCH — thumb and index tips close together (distance-based, hand-size scaled)
- * 2. FIST — no fingers extended
- * 3. OPEN_PALM — at least 4 of 5 digits extended (tolerates curled pinky)
- * 4. POINTING — only index extended (and no thumb)
- * 5. VICTORY — index and middle extended (peace/V sign)
- * 6. THREE_FINGERS — index + middle + ring extended, pinky not
- * 7. FOUR_FINGERS — all four fingers extended (index, middle, ring, pinky)
- * 8. THUMB_UP — only thumb extended, thumb tip above thumb MCP
- * 9. THUMB_DOWN — only thumb extended, thumb tip below thumb MCP
+ * Pinch uses exactly one threshold for the whole app — [GestureEngineConfig
+ * .scaledPinchDistanceRatio] — which is also what the click FSM in
+ * [com.aircontrol.gesture.GestureEngine] reads (Fix A-6: the pose classifier
+ * used ~0.40 while the click needed 0.05, so a half-closed hand blocked other
+ * poses yet still did not click).
  */
 class StaticPoseClassifier(config: GestureEngineConfig) {
-    // H-06 Fix: Make config mutable so sensitivity can be updated without recreating the engine
+
     @Volatile
     private var config: GestureEngineConfig = config
 
     private val fingerDetector = FingerExtensionDetector(config)
 
-    /**
-     * Bug #13 Fix: Effective number of debounce frames to require for pose
-     * confirmation. Defaults to [GestureEngineConfig.poseDebounceFrames] but
-     * can be overridden per-frame by the engine when low-confidence tracking
-     * is detected (e.g., near camera boundaries). When set higher than the
-     * default, the classifier requires more consecutive agreeing frames before
-     * confirming a pose, suppressing erratic pose flips from noisy landmarks.
-     *
-     * The [poseHistory] ArrayDeque is pre-sized to the config default + 1, but
-     * since ArrayDeque grows dynamically, a larger effective value works
-     * correctly — it just holds more entries before trimming.
-     */
-    @Volatile
-    var effectiveDebounceFrames: Int = config.poseDebounceFrames
-        set(value) {
-            if (value > 0) field = value
-        }
-
-    /** Recent pose history for debounce. */
-    private val poseHistory = ArrayDeque<Pose>(config.poseDebounceFrames + 1)
+    private val poseHistory = ArrayDeque<Pose>()
 
     /** The last confirmed pose (after debounce). */
+    @Volatile
     var confirmedPose: Pose = Pose.NONE
         private set
 
     /**
-     * Bug: Custom Gestures Not Triggering Fix — User-defined landmark templates
-     * that are matched against live [HandInput] frames after the default
-     * hardcoded pose classification returns [Pose.NONE].
-     *
-     * Updated dynamically via [updateCustomTemplates] by the engine, which
-     * receives the list from the app-layer SettingsRepository. This decouples
-     * the pure-Kotlin classifier from the Android DataStore layer.
-     *
-     * When non-empty, [matchCustomTemplate] is called by the engine after each
-     * default classification. If a template matches within
-     * [LandmarkTemplate.MATCH_TOLERANCE], the engine emits a
-     * [com.aircontrol.gesture.model.GestureEvent.CustomGestureTriggered] event
-     * instead of (or in addition to) a standard PoseTriggered event.
+     * Consecutive-frame counter for the current raw pose. Drives the thumb-pose
+     * grace rule below (a thumb that flicks out while the hand is closing must
+     * not fire a volume change).
      */
+    private var runPose: Pose = Pose.NONE
+    private var runLength: Int = 0
+
+    /**
+     * Debounce length in frames. The engine updates this from the measured
+     * frame interval so the *wall-clock* debounce stays [GestureEngineConfig.poseDebounceMs].
+     */
+    @Volatile
+    var effectiveDebounceFrames: Int = config.poseDebounceFrames
+        set(value) {
+            field = value.coerceAtLeast(1)
+        }
+
+    /**
+     * True while the hand is "fist-like": all four fingers curled. Reported to
+     * the state machine so the FIST disarm hold keeps counting even if the raw
+     * pose briefly reads THUMB_UP while the hand closes (Fix A-12).
+     */
+    @Volatile
+    var lastFrameFistLike: Boolean = false
+        private set
+
+    // Templates for custom gesture matching.
     @Volatile
     private var customTemplates: List<LandmarkTemplate> = emptyList()
 
     /**
-     * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
-     * user-defined landmark templates. Called by the engine when the
-     * SettingsRepository emits a new custom-gestures list.
-     *
-     * This is safe to call from any thread (the field is @Volatile). The
-     * template list is replaced atomically — no concurrent modification risk.
-     *
-     * @param templates The new list of templates. Pass an empty list to clear
-     *   all custom gestures (disables custom gesture matching).
+     * Replaces the list of user-defined templates. Pass an empty list to clear.
      */
     fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
         customTemplates = templates
     }
 
     /**
-     * Processes a hand input frame and returns the current confirmed pose
-     * after applying the debounce filter. Returns [Pose.NONE] if the hand
-     * is not detected or no pose has been confirmed.
+     * Processes a hand input frame and returns the current confirmed pose after
+     * applying the debounce filter. Returns [Pose.NONE] if no pose is confirmed.
+     *
+     * @param handVelocity Index-tip speed in normalized units/second, used to
+     *   reject thumb poses made while the hand is moving (Fix A-12).
      */
-    fun classify(input: HandInput): Pose {
+    fun classify(input: HandInput, handVelocity: Float = 0f): Pose {
         if (!input.isDetected) {
             poseHistory.clear()
+            runPose = Pose.NONE
+            runLength = 0
+            lastFrameFistLike = false
             confirmedPose = Pose.NONE
             return Pose.NONE
         }
 
         val fingerState = fingerDetector.detect(input)
-        val rawPose = classifyRaw(input, fingerState)
+        lastFrameFistLike = fingerState.extendedFingerCount == 0
+
+        val rawPose = classifyRaw(input, fingerState, handVelocity)
         return applyDebounce(rawPose)
     }
 
-    /**
-     * Returns the current finger extension state without classifying a pose.
-     * Useful for external consumers that need the raw finger data.
-     */
-    fun getFingerState(input: HandInput): FingerExtensionState {
-        return fingerDetector.detect(input)
-    }
+    /** Returns the finger extension state for [input] without classifying. */
+    fun getFingerState(input: HandInput): FingerExtensionState = fingerDetector.detect(input)
 
     /**
-     * Raw pose classification from finger extension state and landmark positions.
-     * Poses are checked in priority order — earlier checks take precedence.
+     * Raw pose classification. Poses are checked in priority order — earlier
+     * checks take precedence.
      */
-    internal fun classifyRaw(input: HandInput, fingerState: FingerExtensionState): Pose {
+    internal fun classifyRaw(
+        input: HandInput,
+        fingerState: FingerExtensionState,
+        handVelocity: Float = 0f,
+    ): Pose {
         val landmarks = input.landmarks
 
-        // 1. PINCH — thumb-index distance < dynamic threshold (scaled by hand size)
-        if (isPinch(landmarks)) return Pose.PINCH
-
-        // 2. FIST — no digits extended at all
+        // 1. FIST — no digit extended at all. Checked BEFORE pinch so a closed
+        //    hand (thumb resting across curled fingers, tips close together) is
+        //    never mistaken for a pinch (Fix A-13).
         if (fingerState.totalExtendedCount == 0) return Pose.FIST
 
-        // 3. OPEN_PALM — at least 4 of 5 digits extended (tolerates curled pinky)
+        // 2. PINCH — thumb-tip/index-tip within the one shared pinch threshold,
+        //    and the index must be extended (in a fist it is not).
+        if (fingerState.index && isPinch(landmarks)) return Pose.PINCH
+
+        // 3. OPEN_PALM — at least 4 of 5 digits extended (tolerates a curled pinky).
         if (fingerState.totalExtendedCount >= 4) return Pose.OPEN_PALM
 
-        // 4. POINTING — index only extended (thumb may or may not be, but
-        //    only index among the four fingers)
+        // 4. POINTING — index only.
         if (fingerState.index && !fingerState.middle && !fingerState.ring && !fingerState.pinky) {
             return Pose.POINTING
         }
 
-        // 5. VICTORY — index + middle extended, ring and pinky not
+        // 5. VICTORY — index + middle.
         if (fingerState.index && fingerState.middle && !fingerState.ring && !fingerState.pinky) {
             return Pose.VICTORY
         }
 
-        // 6. THREE_FINGERS — index + middle + ring extended, pinky not
+        // 6. THREE_FINGERS — index + middle + ring.
         if (fingerState.index && fingerState.middle && fingerState.ring && !fingerState.pinky) {
             return Pose.THREE_FINGERS
         }
 
-        // 7. FOUR_FINGERS — all four fingers extended (index, middle, ring, pinky)
+        // 7. FOUR_FINGERS — all four fingers.
         if (fingerState.index && fingerState.middle && fingerState.ring && fingerState.pinky) {
             return Pose.FOUR_FINGERS
         }
 
-        // 8. THUMB_UP — only thumb extended, thumb tip is above MCP (lower y = higher)
-        if (fingerState.thumb && fingerState.extendedFingerCount == 0) {
+        // 8. THUMB_UP / THUMB_DOWN — only thumb extended, the thumb must be
+        //    *clearly* extended (margin over the plain threshold), and the hand
+        //    must be nearly still. Fix A-12: closing the hand to disarm passes
+        //    through a moment where the thumb sticks out; that used to change the
+        //    volume instead of disarming.
+        if (fingerState.thumb && fingerState.extendedFingerCount == 0 &&
+            handVelocity <= config.thumbGestureMaxVelocity &&
+            isThumbClearlyExtended(landmarks)
+        ) {
             val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
             val thumbMcp = landmarks[LandmarkIndex.THUMB_MCP]
             return if (thumbTip.y < thumbMcp.y) Pose.THUMB_UP else Pose.THUMB_DOWN
@@ -166,59 +168,86 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
     }
 
     /**
-     * Detects a pinch gesture by measuring the distance between thumb tip
-     * and index tip, scaled by hand size (wrist-to-middle-MCP distance).
-     * This normalization ensures pinch works at any distance from the camera.
+     * Detects a pinch by measuring the thumb-tip/index-tip distance normalized by
+     * hand size (wrist to middle-MCP), so it works at any distance from the
+     * camera at any resolution.
      */
-    // Hand size bias mitigated via calibratedPinchRatio (personalized) + MIN 0.25
     internal fun isPinch(landmarks: List<Landmark3D>): Boolean {
         val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
         val indexTip = landmarks[LandmarkIndex.INDEX_TIP]
         val wrist = landmarks[LandmarkIndex.WRIST]
         val middleMcp = landmarks[LandmarkIndex.MIDDLE_MCP]
 
-        val pinchDistance = distance2D(thumbTip, indexTip) // 2D intentional: Z noisy on MediaPipe, 3D would jitter more
+        // 2D on purpose: MediaPipe's Z is noisy, and 3D made the ratio jitter
+        // frame-to-frame.
+        val pinchDistance = distance2D(thumbTip, indexTip)
         val handSize = distance2D(wrist, middleMcp)
-
         if (handSize < EPSILON) return false
 
-        val ratio = pinchDistance / handSize
-        return ratio < config.scaledPinchDistanceRatio()
+        return pinchDistance / handSize < config.scaledPinchDistanceRatio()
     }
 
     /**
-     * Bug: Custom Gestures Not Triggering Fix — Mathematical landmark template
-     * matching algorithm.
+     * A thumb is "clearly" extended when its IP angle exceeds the extension
+     * threshold by [THUMB_CLEAR_MARGIN_DEG]. This hysteresis is what keeps a
+     * half-curled thumb (during hand closure) from registering as a thumb pose.
+     */
+    private fun isThumbClearlyExtended(landmarks: List<Landmark3D>): Boolean {
+        val angle = fingerDetector.thumbAngleDeg(landmarks)
+        return angle > config.scaledThumbExtensionAngleDeg() + THUMB_CLEAR_MARGIN_DEG
+    }
+
+    /**
+     * Debounce filter: a pose is only confirmed when the same raw pose has been
+     * observed for [effectiveDebounceFrames] consecutive frames.
      *
-     * Compares the incoming live [HandInput] landmarks against all user-defined
-     * [LandmarkTemplate]s. If any template's normalized inter-landmark distances
-     * match the live distances within [LandmarkTemplate.MATCH_TOLERANCE], that
-     * template is returned.
-     *
-     * Algorithm:
-     * 1. Compute the hand size (wrist-to-middle-MCP distance) from the live
-     *    frame. This is the normalization factor.
-     * 2. For each curated landmark pair in [LandmarkTemplate.TEMPLATE_LANDMARK_PAIRS],
-     *    compute the live 2D distance and normalize by hand size.
-     * 3. For each template, compute the total Euclidean error: the sum of
-     *    absolute differences between the template's stored normalized distances
-     *    and the live normalized distances.
-     * 4. Return the template with the lowest total error, IF that error is
-     *    below [LandmarkTemplate.MATCH_TOLERANCE]. Otherwise return null.
-     *
-     * Confidence gating:
-     * - If [HandInput.confidence] is below [MIN_TEMPLATE_MATCH_CONFIDENCE],
-     *   return null immediately — low-confidence frames produce erratic
-     *   landmarks that would cause false matches.
-     * - If hand size is degenerate (below EPSILON), return null — can't
-     *   normalize.
-     *
-     * @param input The live hand frame. Must have 21 landmarks.
-     * @return The best-matching [LandmarkTemplate], or null if no template
-     *   matches within tolerance.
+     * Fix A-14: the frame count is derived from a *duration* by the engine, so
+     * confirmation always takes ~[GestureEngineConfig.poseDebounceMs] milliseconds
+     * — not 600ms in 5fps scan mode.
+     */
+    internal fun applyDebounce(rawPose: Pose): Pose {
+        val requiredFrames = effectiveDebounceFrames.coerceAtLeast(1)
+
+        if (rawPose == runPose) {
+            runLength++
+        } else {
+            runPose = rawPose
+            runLength = 1
+        }
+
+        poseHistory.addLast(rawPose)
+        while (poseHistory.size > requiredFrames) {
+            poseHistory.removeFirst()
+        }
+
+        if (runLength >= requiredFrames && poseHistory.all { it == rawPose }) {
+            confirmedPose = rawPose
+        }
+        return confirmedPose
+    }
+
+    /** Resets the classifier state. */
+    fun reset() {
+        poseHistory.clear()
+        runPose = Pose.NONE
+        runLength = 0
+        confirmedPose = Pose.NONE
+        lastFrameFistLike = false
+    }
+
+    /** Updates the config in place (sensitivity change) preserving in-progress state. */
+    fun updateConfig(newConfig: GestureEngineConfig) {
+        this.config = newConfig
+        effectiveDebounceFrames = newConfig.poseDebounceFrames
+        fingerDetector.updateConfig(newConfig)
+    }
+
+    /**
+     * Landmark-template matching for user-defined custom gestures. Returns the
+     * best matching template if its total normalized-distance error is below
+     * [LandmarkTemplate.MATCH_TOLERANCE]; null on low-confidence frames.
      */
     fun matchCustomTemplate(input: HandInput): LandmarkTemplate? {
-        // Confidence gate — don't match on noisy frames
         if (input.confidence < MIN_TEMPLATE_MATCH_CONFIDENCE) return null
         if (customTemplates.isEmpty()) return null
         if (input.landmarks.size < HandInput.LANDMARK_COUNT) return null
@@ -229,100 +258,47 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
         val handSize = distance2D(wrist, middleMcp)
         if (handSize < EPSILON) return null
 
-        // Compute live normalized distances for all template pairs
         val liveDistances = FloatArray(LandmarkTemplate.EXPECTED_DISTANCE_COUNT)
         for (i in LandmarkTemplate.TEMPLATE_LANDMARK_PAIRS.indices) {
             val (a, b) = LandmarkTemplate.TEMPLATE_LANDMARK_PAIRS[i]
             liveDistances[i] = distance2D(landmarks[a], landmarks[b]) / handSize
         }
 
-        // Find the template with the lowest total error
         var bestTemplate: LandmarkTemplate? = null
         var bestError = Float.MAX_VALUE
 
         for (template in customTemplates) {
             if (template.normalizedDistances.size != LandmarkTemplate.EXPECTED_DISTANCE_COUNT) continue
-
             var totalError = 0f
             for (i in liveDistances.indices) {
-                val diff = liveDistances[i] - template.normalizedDistances[i]
-                totalError += kotlin.math.abs(diff)
+                totalError += kotlin.math.abs(liveDistances[i] - template.normalizedDistances[i])
             }
-
             if (totalError < bestError) {
                 bestError = totalError
                 bestTemplate = template
             }
         }
 
-        // Only return if within tolerance
-        return if (bestTemplate != null && bestError < LandmarkTemplate.MATCH_TOLERANCE) {
-            bestTemplate
-        } else {
-            null
-        }
-    }
-
-    companion object {
-        private const val EPSILON = 1e-6f
-
-        // Bug: Custom Gestures Not Triggering Fix — Minimum tracking confidence
-        // required for landmark template matching. Below this, landmarks are too
-        // erratic to reliably match against saved templates. 0.7 matches the
-        // engine's low-confidence threshold (see GestureEngine.CONFIDENCE_THRESHOLD).
-        private const val MIN_TEMPLATE_MATCH_CONFIDENCE = 0.6f // Low light 0.65 now matches (was 0.7 too strict)
-    }
-
-    /**
-     * Applies the N-frame debounce filter. A pose is only confirmed when
-     * the same raw pose has been observed for [effectiveDebounceFrames]
-     * consecutive frames. Any interruption resets the debounce counter.
-     *
-     * Bug #13 Fix: Uses [effectiveDebounceFrames] (which defaults to
-     * [GestureEngineConfig.poseDebounceFrames] but can be raised by the engine
-     * for low-confidence frames) instead of the static config value.
-     */
-    internal fun applyDebounce(rawPose: Pose): Pose {
-        val debounceFrames = effectiveDebounceFrames
-        poseHistory.addLast(rawPose)
-
-        // Keep only the last N frames
-        while (poseHistory.size > debounceFrames) {
-            poseHistory.removeFirst()
-        }
-
-        // Check if all recent frames agree on the same pose
-        if (poseHistory.size >= debounceFrames && poseHistory.all { it == rawPose }) {
-            confirmedPose = rawPose
-            return rawPose
-        }
-
-        // Not yet confirmed — return the previously confirmed pose
-        return confirmedPose
-    }
-
-    /** Resets the classifier state. */
-    fun reset() {
-        poseHistory.clear()
-        confirmedPose = Pose.NONE
-    }
-
-    /**
-     * H-06 Fix: Update the config (e.g., sensitivity change) without recreating the classifier.
-     * This preserves the current state and avoids losing in-progress gesture detection.
-     */
-    fun updateConfig(newConfig: GestureEngineConfig) {
-        this.config = newConfig
-        // Update debounce frames if it changed
-        effectiveDebounceFrames = newConfig.poseDebounceFrames
-        // Propagate to the finger detector so sensitivity changes actually affect
-        // finger/thumb extension detection (previously the detector kept a stale config).
-        fingerDetector.updateConfig(newConfig)
+        return if (bestTemplate != null && bestError < LandmarkTemplate.MATCH_TOLERANCE) bestTemplate else null
     }
 
     internal fun distance2D(a: Landmark3D, b: Landmark3D): Float {
         val dx = a.x - b.x
         val dy = a.y - b.y
         return sqrt(dx * dx + dy * dy)
+    }
+
+    companion object {
+        private const val EPSILON = 1e-6f
+
+        /** Degrees of extra thumb straightness required to call a thumb pose. */
+        private const val THUMB_CLEAR_MARGIN_DEG = 8f
+
+        /**
+         * Minimum tracking confidence for template matching. Slightly below the
+         * engine's 0.7 low-confidence threshold so a deliberate custom shape is
+         * still matched when the hand is near the frame edge.
+         */
+        private const val MIN_TEMPLATE_MATCH_CONFIDENCE = 0.6f
     }
 }

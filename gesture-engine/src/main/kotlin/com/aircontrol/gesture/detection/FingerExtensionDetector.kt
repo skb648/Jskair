@@ -112,12 +112,19 @@ class FingerExtensionDetector(private val config: GestureEngineConfig) {
      * The angle threshold is configurable and sensitivity-scaled.
      */
     internal fun isThumbExtended(landmarks: List<Landmark3D>): Boolean {
+        return thumbAngleDeg(landmarks) > currentConfig.scaledThumbExtensionAngleDeg()
+    }
+
+    /**
+     * Public accessor for the thumb IP-joint angle (degrees). Consumers such as
+     * [StaticPoseClassifier] need the raw angle to apply their own margin for a
+     * "clearly extended" thumb, instead of re-deriving it from a boolean.
+     */
+    fun thumbAngleDeg(landmarks: List<Landmark3D>): Float {
         val mcp = landmarks[LandmarkIndex.THUMB_MCP]
         val ip = landmarks[LandmarkIndex.THUMB_IP]
         val tip = landmarks[LandmarkIndex.THUMB_TIP]
-
-        val angleDeg = angleAtVertex(ip, mcp, tip)
-        return angleDeg > currentConfig.scaledThumbExtensionAngleDeg()
+        return angleAtVertex(ip, mcp, tip)
     }
 
     /**

@@ -14,10 +14,14 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.aircontrol.data.model.UserPreferences
+import com.aircontrol.util.CrashGuard
+import com.aircontrol.util.collectGuarded
+import com.aircontrol.util.launchGuarded
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
 import com.aircontrol.data.model.CustomGestureTrigger
+import com.aircontrol.data.model.FingerType
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
@@ -122,8 +126,12 @@ class ActionDispatcher @Inject constructor(
         private const val DOUBLE_TAP_GAP_MS = 100L
         // Max time between two pinch taps to count as a double-tap.
         private const val DOUBLE_TAP_WINDOW_MS = 350L
-        // Velocity threshold above which a pinch is treated as accidental (moving hand).
-        private const val STATIONARY_CLICK_VELOCITY_THRESHOLD = 0.25f
+        // Hold duration that proves a pinch was deliberate even if the hand was
+        // moving when the fingers closed.
+        private const val INTENTIONAL_PINCH_HOLD_MS = 180L
+        // Allowed start velocity for "pinch while moving", at sensitivity 0 and 100.
+        private const val MIN_MOVING_PINCH_VELOCITY = 0.35f
+        private const val MAX_MOVING_PINCH_VELOCITY = 0.95f
         // Minimum touch-path displacement in pixels so Android reliably registers a tap.
         private const val TAP_PATH_DISPLACEMENT_PX = 3f
         // Drag stroke duration long enough to bridge a 24fps frame gap.
@@ -182,6 +190,29 @@ class ActionDispatcher @Inject constructor(
             }
             dynamicYDeadZoneStart = (1f - dynamicYActiveHeight).coerceAtLeast(0f)
         }
+
+        /**
+         * Which digits are extended for each engine pose, used to evaluate the
+         * user-recorded "N fingers" custom gestures in [matchCustomGesture].
+         */
+        private val FINGERS_PER_POSE: Map<Pose, Set<FingerType>> = mapOf(
+            Pose.OPEN_PALM to setOf(
+                FingerType.THUMB, FingerType.INDEX, FingerType.MIDDLE,
+                FingerType.RING, FingerType.PINKY,
+            ),
+            Pose.FOUR_FINGERS to setOf(
+                FingerType.INDEX, FingerType.MIDDLE, FingerType.RING, FingerType.PINKY,
+            ),
+            Pose.THREE_FINGERS to setOf(
+                FingerType.INDEX, FingerType.MIDDLE, FingerType.RING,
+            ),
+            Pose.VICTORY to setOf(FingerType.INDEX, FingerType.MIDDLE),
+            Pose.POINTING to setOf(FingerType.INDEX),
+            Pose.THUMB_UP to setOf(FingerType.THUMB),
+            Pose.THUMB_DOWN to setOf(FingerType.THUMB),
+            Pose.PINCH to emptySet(),
+            Pose.FIST to emptySet(),
+        )
 
         /** Build a default gesture map (used both on init and on re-attach). */
         private fun buildDefaultMap(): ConcurrentHashMap<String, GestureAction> {
@@ -259,16 +290,26 @@ class ActionDispatcher @Inject constructor(
         registerKeyguardReceiver(service)
 
         // Create a fresh scope and subscribe to settings.
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        //
+        // Fix B-2: this scope lives exactly as long as the accessibility service
+        // and had no exception handler at all. A throw inside any collector below
+        // (an unexpected preference value, an OEM DataStore hiccup) reached the
+        // thread's default uncaught handler and killed the process, which is what
+        // "the app closes itself the moment I enable accessibility" actually was.
+        // Every collector is now guarded and self-restarting, so one bad read
+        // degrades to "keep the last known settings" instead of a crash.
+        val scope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Main.immediate + CrashGuard.handler,
+        )
         serviceScope = scope
 
-        settingsJobs.add(scope.launch {
-            settingsRepository.userPreferences.collect { prefs ->
+        settingsJobs.add(scope.launchGuarded("dispatcher settings", restart = true) {
+            settingsRepository.userPreferences.collectGuarded("dispatcher settings") { prefs ->
                 currentPreferences = prefs
             }
         })
-        settingsJobs.add(scope.launch {
-            settingsRepository.gestureMapConfig.collect { config ->
+        settingsJobs.add(scope.launchGuarded("gesture map", restart = true) {
+            settingsRepository.gestureMapConfig.collectGuarded("gesture map") { config ->
                 val newMap = buildDefaultMap()
                 config.entries.forEach { entry ->
                     newMap[entry.key] = entry.action
@@ -277,8 +318,8 @@ class ActionDispatcher @Inject constructor(
                 Timber.d("Loaded %d gesture mappings from settings", newMap.size)
             }
         })
-        settingsJobs.add(scope.launch {
-            settingsRepository.customGestures.collect { gestures ->
+        settingsJobs.add(scope.launchGuarded("custom gestures", restart = true) {
+            settingsRepository.customGestures.collectGuarded("custom gestures") { gestures ->
                 customGesturesList = gestures.filter { it.isEnabled }
                 Timber.d("Loaded %d custom gestures", customGesturesList.size)
             }
@@ -452,10 +493,22 @@ class ActionDispatcher @Inject constructor(
         }
 
         return when (action) {
-            GestureAction.SCROLL_UP -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = true)
-            GestureAction.SCROLL_DOWN -> dispatchScrollGesture(screenWidth, screenHeight, scrollUp = false)
-            GestureAction.SCROLL_LEFT -> dispatchHorizontalScroll(screenWidth, screenHeight, scrollLeft = true)
-            GestureAction.SCROLL_RIGHT -> dispatchHorizontalScroll(screenWidth, screenHeight, scrollLeft = false)
+            // Fix A-22: scroll strokes are anchored on the cursor instead of the
+            // middle of the screen. On a tablet, in two-pane apps, or next to a
+            // side panel, a centre-screen swipe scrolled the wrong list; now the
+            // column the user is pointing at is the column that scrolls.
+            GestureAction.SCROLL_UP -> dispatchScrollGesture(
+                screenWidth, screenHeight, scrollUp = true, anchorX = normalizeToScreenX(cursorX, screenWidth),
+            )
+            GestureAction.SCROLL_DOWN -> dispatchScrollGesture(
+                screenWidth, screenHeight, scrollUp = false, anchorX = normalizeToScreenX(cursorX, screenWidth),
+            )
+            GestureAction.SCROLL_LEFT -> dispatchHorizontalScroll(
+                screenWidth, screenHeight, scrollLeft = true, anchorY = normalizeToScreenY(cursorY, screenHeight),
+            )
+            GestureAction.SCROLL_RIGHT -> dispatchHorizontalScroll(
+                screenWidth, screenHeight, scrollLeft = false, anchorY = normalizeToScreenY(cursorY, screenHeight),
+            )
             GestureAction.BACK -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
             GestureAction.HOME -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
             GestureAction.RECENTS -> performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
@@ -468,8 +521,15 @@ class ActionDispatcher @Inject constructor(
         }
     }
 
-    private fun dispatchScrollGesture(screenWidth: Int, screenHeight: Int, scrollUp: Boolean): Boolean {
-        val centerX = screenWidth / 2f
+    private fun dispatchScrollGesture(
+        screenWidth: Int,
+        screenHeight: Int,
+        scrollUp: Boolean,
+        anchorX: Float = screenWidth / 2f,
+    ): Boolean {
+        // Keep the stroke inside the "safe band" so it can never be interpreted as
+        // an edge swipe (Back/Recents) or land on a system gesture area.
+        val centerX = anchorX.coerceIn(screenWidth * 0.15f, screenWidth * 0.85f)
         val startY = if (scrollUp) screenHeight * 0.7f else screenHeight * 0.3f
         val endY = if (scrollUp) screenHeight * 0.3f else screenHeight * 0.7f
 
@@ -490,8 +550,13 @@ class ActionDispatcher @Inject constructor(
         return dispatchGestureWithRetry(gesture, "scroll_${if (scrollUp) "up" else "down"}")
     }
 
-    private fun dispatchHorizontalScroll(screenWidth: Int, screenHeight: Int, scrollLeft: Boolean): Boolean {
-        val centerY = screenHeight / 2f
+    private fun dispatchHorizontalScroll(
+        screenWidth: Int,
+        screenHeight: Int,
+        scrollLeft: Boolean,
+        anchorY: Float = screenHeight / 2f,
+    ): Boolean {
+        val centerY = anchorY.coerceIn(screenHeight * 0.20f, screenHeight * 0.80f)
         val startX = if (scrollLeft) screenWidth * 0.7f else screenWidth * 0.3f
         val endX = if (scrollLeft) screenWidth * 0.3f else screenWidth * 0.7f
 
@@ -556,7 +621,7 @@ class ActionDispatcher @Inject constructor(
                 val now = SystemClock.uptimeMillis()
                 val holdDurationMs = now - pinchStartTimeMs
 
-                val movingFast = pinchStartVelocity > STATIONARY_CLICK_VELOCITY_THRESHOLD
+                val movingFast = isAccidentalMovingPinch(pinchStartVelocity, holdDurationMs)
 
                 val customPinchAction = matchCustomGesture(Pose.PINCH)
 
@@ -614,6 +679,39 @@ class ActionDispatcher @Inject constructor(
                 dispatched
             }
         }
+    }
+
+    /**
+     * Decides whether a pinch-release was an accident (a pinch that merely
+     * happened while the hand was travelling to a target).
+     *
+     * Fix A-7: this used to be a single hard-coded ceiling of 0.25 normalized
+     * units per second, applied no matter how long the user held the pinch. A
+     * normal reach easily exceeds that, so a large share of deliberate clicks
+     * were silently dropped at END: the dot was on the button, the user pinched,
+     * nothing happened, no feedback. That was the second-most reported complaint
+     * after arming ("half my taps do nothing").
+     *
+     * The gate now:
+     *  - only applies while the user keeps "ignore pinches while moving" on,
+     *  - scales the allowed velocity with the sensitivity slider,
+     *  - always honours a deliberately held pinch (holding IS intent), and
+     *  - never suppresses a drag (the drag path handles its own motion).
+     */
+    private fun isAccidentalMovingPinch(startVelocity: Float, holdDurationMs: Long): Boolean {
+        if (!currentPreferences.stationaryClickEnabled) return false
+        if (holdDurationMs >= INTENTIONAL_PINCH_HOLD_MS) return false
+        val norm = currentPreferences.sensitivity.coerceIn(0, 100) / 100f
+        val allowedVelocity = MIN_MOVING_PINCH_VELOCITY +
+            norm * (MAX_MOVING_PINCH_VELOCITY - MIN_MOVING_PINCH_VELOCITY)
+        if (startVelocity > allowedVelocity) {
+            Timber.d(
+                "Stationary-click: suppressed pinch (startVelocity=%.2f > %.2f, hold=%dms)",
+                startVelocity, allowedVelocity, holdDurationMs,
+            )
+            return true
+        }
+        return false
     }
 
     private fun dispatchTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
@@ -783,6 +881,10 @@ class ActionDispatcher @Inject constructor(
         return executeAction(customGesture.action, cursorX, cursorY, screenWidth, screenHeight)
     }
 
+    /**
+     * Which digits are up for each engine pose. Kept in one place so the count and
+     * the identity checks in [matchCustomGesture] cannot drift apart.
+     */
     private fun matchCustomGesture(pose: Pose): GestureAction? {
         val customPose = when (pose) {
             Pose.OPEN_PALM -> CustomGesturePose.OPEN_PALM
@@ -801,18 +903,23 @@ class ActionDispatcher @Inject constructor(
             when (val trigger = gesture.triggerPose) {
                 is CustomGestureTrigger.PoseWithDirection ->
                     trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+
                 is CustomGestureTrigger.FingerCount -> {
-                    val expectedCount = trigger.extendedFingers
-                    val actualCount = when (pose) {
-                        Pose.POINTING -> 1
-                        Pose.VICTORY -> 2
-                        Pose.THREE_FINGERS -> 3
-                        Pose.FOUR_FINGERS -> 4
-                        Pose.OPEN_PALM -> 5
-                        else -> 0
-                    }
-                    actualCount == expectedCount
+                    // Fix C-3: the previous table counted only index-style poses, so
+                    // THUMB_UP / THUMB_DOWN / PINCH / FIST were mapped to 0 extended
+                    // fingers. A gesture recorded as "one finger" while giving a
+                    // thumbs-up was therefore saved happily and never fired - exactly
+                    // the "custom gestures do nothing" report. Counting now includes
+                    // the thumb, matches the same definition the capture flow uses
+                    // (FingerExtensionDetector), and additionally honours whichFingers
+                    // when the recording captured which digits were up.
+                    val fingers = FINGERS_PER_POSE[pose] ?: return@find false
+                    fingers.size == trigger.extendedFingers &&
+                        (trigger.whichFingers.isEmpty() || fingers == trigger.whichFingers)
                 }
+
+                // Templates are matched inside the engine (StaticPoseClassifier), which
+                // emits CustomGestureTriggered for them; nothing to do on the pose path.
                 is CustomGestureTrigger.LandmarkTemplateTrigger -> false
             }
         }?.action

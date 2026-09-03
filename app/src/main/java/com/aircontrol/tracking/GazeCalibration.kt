@@ -18,6 +18,25 @@ class GazeCalibration(
 
     fun toFloatArray(): FloatArray = coeffs.copyOf()
 
+    /**
+     * Per-point error of the fit: for every calibrated target, how far (in
+     * normalized display units) the mapping sends the averaged gaze from where the
+     * user was actually looking. Used to refuse a fit that is mathematically valid
+     * but built from a sample the user missed.
+     */
+    fun residuals(
+        gaze: List<Pair<Float, Float>>,
+        screen: List<Pair<Float, Float>>,
+    ): List<Float> {
+        require(gaze.size == screen.size) { "gaze and screen sample counts must match" }
+        return gaze.indices.map { i ->
+            val (mx, my) = map(gaze[i].first, gaze[i].second)
+            val dx = mx - screen[i].first
+            val dy = my - screen[i].second
+            kotlin.math.sqrt(dx * dx + dy * dy)
+        }
+    }
+
     companion object {
         val UNAVAILABLE = GazeCalibration(FloatArray(0))
 

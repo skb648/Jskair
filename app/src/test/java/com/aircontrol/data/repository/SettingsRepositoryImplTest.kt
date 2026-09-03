@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -236,6 +237,24 @@ class SettingsRepositoryImplTest {
     fun `default user preferences are returned when DataStore is empty`() = testScope.runTest {
         val prefs = repository.userPreferences.first()
         assertEquals(UserPreferences(), prefs)
+    }
+
+    @Test
+    fun `swipe pose gate round-trips through DataStore`() = testScope.runTest {
+        // Fix A-11: the switch has to be persisted, not just held in memory, or the
+        // guard against accidental scrolling disappears on the next launch.
+        assertTrue(repository.userPreferences.first().swipeRequiresOpenHand)
+        repository.updateSwipeRequiresOpenHand(false)
+        assertFalse(repository.userPreferences.first().swipeRequiresOpenHand)
+        repository.updateSwipeRequiresOpenHand(true)
+        assertTrue(repository.userPreferences.first().swipeRequiresOpenHand)
+    }
+
+    @Test
+    fun `palm to home is opt-in because an open palm is the resting pose`() = testScope.runTest {
+        // Fix A-4: on by default, this threw users out of their app whenever they
+        // paused with an open hand. Default must stay false.
+        assertFalse(repository.userPreferences.first().palmHomeEnabled)
     }
 
     @Test
