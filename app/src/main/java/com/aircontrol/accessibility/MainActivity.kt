@@ -1,53 +1,20 @@
 package com.aircontrol.accessibility
 
-import android.app.Activity
-import android.app.Application
-import android.os.Bundle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 
 /**
  * Compatibility bridge for the accessibility service's camera-FGS start gate.
  *
- * The service intentionally must not rely on a background Activity reference. This
- * bridge keeps only a boolean and derives it from Application lifecycle callbacks,
- * so the service can safely know whether AirControl is currently visible without
- * leaking an Activity instance.
+ * The accessibility service lives in a different package and must not keep an
+ * Activity reference. Android's process lifecycle is the correct source for the
+ * question this service actually needs: is an AirControl activity currently in
+ * the foreground and therefore able to initiate a while-in-use camera FGS?
  */
 internal class MainActivity private constructor() {
     companion object {
-        @Volatile
-        var isVisible: Boolean = false
-            private set
-
-        @Volatile
-        private var registered = false
-
-        private const val MAIN_ACTIVITY_NAME = "com.aircontrol.MainActivity"
-
-        fun install(application: Application) {
-            if (registered) return
-            synchronized(this) {
-                if (registered) return
-                application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-                    override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
-                    override fun onActivityStarted(activity: Activity) {
-                        if (activity.javaClass.name == MAIN_ACTIVITY_NAME) isVisible = true
-                    }
-                    override fun onActivityResumed(activity: Activity) {
-                        if (activity.javaClass.name == MAIN_ACTIVITY_NAME) isVisible = true
-                    }
-                    override fun onActivityPaused(activity: Activity) {
-                        if (activity.javaClass.name == MAIN_ACTIVITY_NAME) isVisible = false
-                    }
-                    override fun onActivityStopped(activity: Activity) {
-                        if (activity.javaClass.name == MAIN_ACTIVITY_NAME) isVisible = false
-                    }
-                    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-                    override fun onActivityDestroyed(activity: Activity) {
-                        if (activity.javaClass.name == MAIN_ACTIVITY_NAME) isVisible = false
-                    }
-                })
-                registered = true
-            }
-        }
+        val isVisible: Boolean
+            get() = ProcessLifecycleOwner.get().lifecycle.currentState
+                .isAtLeast(Lifecycle.State.STARTED)
     }
 }
