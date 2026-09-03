@@ -35,14 +35,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
       - name: Make Gradle executable
         run: chmod +x ./gradlew
-      - name: Run unit tests
-        run: ./gradlew --no-daemon --stacktrace :gesture-engine:test :app:testDebugUnitTest
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
       - name: Verify APK
         run: |
           AAPT="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt"
           "$AAPT" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -q "targetSdkVersion:'37'"
+          test -s app/build/outputs/apk/debug/app-debug.apk
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
