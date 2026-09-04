@@ -6,7 +6,8 @@ import android.app.NotificationManager
 import android.os.Build
 import android.os.StrictMode
 import com.aircontrol.camera.CameraService
-import dagger.hilt.android.HiltAndroidApp
+import com.aircontrol.runtime.RuntimeHealthMonitor
+dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 
 @HiltAndroidApp
@@ -17,6 +18,7 @@ class AirControlApp : Application() {
         initTimber()
         initStrictMode()
         initNotificationChannels()
+        RuntimeHealthMonitor.start(this)
     }
 
     private fun initTimber() {
@@ -24,9 +26,6 @@ class AirControlApp : Application() {
             Timber.plant(Timber.DebugTree())
             Timber.d("AirControl application initialized")
         } else {
-            // Fix #115/#116: release tree only logs WARN+ERROR to avoid leaking
-            // a per-gesture activity trail to logcat (the privacy copy says no
-            // data is recorded; verbose/info logging in release violates that).
             Timber.plant(ReleaseTree())
         }
     }
@@ -55,10 +54,6 @@ class AirControlApp : Application() {
 
         val manager = getSystemService(NotificationManager::class.java) ?: return
 
-        // Fix #120: the tracking channel is the only control surface during an
-        // active camera session; use IMPORTANCE_LOW (silent but visible in the
-        // shade and status bar). Channels are immutable once created except on
-        // app data clear, so this value only matters for first install.
         val trackingChannel = NotificationChannel(
             CameraService.CHANNEL_ID,
             getString(R.string.notification_channel_name),
@@ -68,7 +63,6 @@ class AirControlApp : Application() {
             setShowBadge(false)
             enableVibration(false)
         }
-        // Fix #66: propagate creation failures but do not crash the app.
         runCatching { manager.createNotificationChannel(trackingChannel) }
             .onFailure { Timber.e(it, "Failed to create tracking notification channel") }
 
@@ -86,8 +80,6 @@ class AirControlApp : Application() {
 
     private class ReleaseTree : Timber.Tree() {
         override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
-            // Fix #115: only log WARN, ERROR, WTF in release builds to avoid
-            // leaking user activity traces.
             if (priority < android.util.Log.WARN) return
             android.util.Log.println(priority, tag, message)
             if (t != null) {
@@ -97,7 +89,6 @@ class AirControlApp : Application() {
     }
 
     companion object {
-        // Fix #57: share channel ID with CameraService via the class constant.
         const val BOOT_RESUME_CHANNEL_ID = "aircontrol_boot_resume"
     }
 }
