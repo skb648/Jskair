@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 object RuntimeHealth {
     data class Snapshot(
         val readiness: RuntimeReadiness = RuntimeReadiness.OFF,
+        val trackingRequested: Boolean = false,
         val accessibilityConnected: Boolean = false,
         val cameraRunning: Boolean = false,
         val cameraPaused: Boolean = false,
@@ -22,6 +23,7 @@ object RuntimeHealth {
     val state: StateFlow<Snapshot> = _state.asStateFlow()
 
     fun update(
+        trackingRequested: Boolean = _state.value.trackingRequested,
         accessibilityConnected: Boolean = _state.value.accessibilityConnected,
         cameraRunning: Boolean = _state.value.cameraRunning,
         cameraPaused: Boolean = _state.value.cameraPaused,
@@ -31,6 +33,7 @@ object RuntimeHealth {
         readiness: RuntimeReadiness? = null,
     ) {
         val nextReadiness = readiness ?: derive(
+            trackingRequested,
             accessibilityConnected,
             cameraRunning,
             cameraPaused,
@@ -40,6 +43,7 @@ object RuntimeHealth {
         )
         _state.value = Snapshot(
             nextReadiness,
+            trackingRequested,
             accessibilityConnected,
             cameraRunning,
             cameraPaused,
@@ -49,11 +53,12 @@ object RuntimeHealth {
         )
     }
 
-    fun reset() = _state.value.let {
+    fun reset() {
         _state.value = Snapshot()
     }
 
     private fun derive(
+        trackingRequested: Boolean,
         accessibilityConnected: Boolean,
         cameraRunning: Boolean,
         cameraPaused: Boolean,
@@ -61,11 +66,12 @@ object RuntimeHealth {
         freshFrames: Boolean,
         reason: String?,
     ): RuntimeReadiness = when {
-        !accessibilityConnected && !cameraRunning -> RuntimeReadiness.OFF
-        cameraPaused -> RuntimeReadiness.PAUSED
+        !trackingRequested -> RuntimeReadiness.OFF
         !accessibilityConnected -> RuntimeReadiness.BLOCKED
+        cameraPaused -> RuntimeReadiness.PAUSED
         !cameraRunning -> RuntimeReadiness.RECOVERING
-        !handTrackerReady || !freshFrames -> RuntimeReadiness.DEGRADED
+        !handTrackerReady -> RuntimeReadiness.STARTING
+        !freshFrames -> RuntimeReadiness.DEGRADED
         reason != null -> RuntimeReadiness.DEGRADED
         else -> RuntimeReadiness.READY
     }
