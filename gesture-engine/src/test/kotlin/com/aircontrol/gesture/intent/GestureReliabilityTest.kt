@@ -10,14 +10,15 @@ class GestureReliabilityTest {
         val r = GestureReliability(pinchStartHoldMs = 80L)
         assertFalse(r.pinchStartStable(0.30f, 0.22f, 0L))
         assertFalse(r.pinchStartStable(0.20f, 0.22f, 40L))
-        assertTrue(r.pinchStartStable(0.20f, 0.22f, 80L))
+        assertTrue(r.pinchStartStable(0.20f, 0.22f, 120L))
     }
 
     @Test
     fun pinchReleaseNeedsStableSeparation() {
         val r = GestureReliability(pinchReleaseHoldMs = 80L)
         assertFalse(r.pinchReleaseStable(0.30f, 0.32f, 0L))
-        assertTrue(r.pinchReleaseStable(0.35f, 0.32f, 80L))
+        assertFalse(r.pinchReleaseStable(0.35f, 0.32f, 40L))
+        assertTrue(r.pinchReleaseStable(0.35f, 0.32f, 120L))
     }
 
     @Test

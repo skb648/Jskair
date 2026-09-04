@@ -5,34 +5,31 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.graphics.Path
 import android.media.AudioManager
-import android.app.KeyguardManager
-import android.content.BroadcastReceiver
-import android.content.Intent
-import android.content.IntentFilter
 import android.os.Build
 import android.os.SystemClock
 import android.view.KeyEvent
-import androidx.core.content.ContextCompat
-import com.aircontrol.data.model.UserPreferences
-import com.aircontrol.util.CrashGuard
-import com.aircontrol.util.collectGuarded
-import com.aircontrol.util.launchGuarded
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
 import com.aircontrol.data.model.CustomGestureTrigger
 import com.aircontrol.data.model.FingerType
+import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gesture.model.PinchPhase
 import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
+import com.aircontrol.ui.Suppression
+import com.aircontrol.util.CrashGuard
+import com.aircontrol.util.collectGuarded
+import com.aircontrol.util.launchGuarded
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -104,7 +101,7 @@ class ActionDispatcher @Inject constructor(
     )
 
     private val gestureMap: ConcurrentHashMap<String, GestureAction>
-        get() = gestureMapRef.get()
+        get() = gestureMapRef.get() ?: buildDefaultMap()
 
     companion object {
         private const val MAX_RETRIES = 1
@@ -121,12 +118,6 @@ class ActionDispatcher @Inject constructor(
         private const val DRAG_END_DURATION_MS = 120L
         private const val HAPTIC_TICK_MS = 15L
 
-        // Phase 1: mapping is symmetric across both axes. The gain changes
-        // usable active area, but the dead zone is always split equally between
-        // the two edges, preventing vertical asymmetry and region-dependent feel.
-        private const val MIN_ACTIVE_FRACTION = 0.82f
-        private const val MAX_ACTIVE_FRACTION = 1.0f
-        private const val SIT_BACK_ACTIVE_Y_FRACTION = 0.90f
         private const val MAX_DRAG_STEP_FRACTION = 0.15f
 
         const val KEY_SWIPE_LEFT = "swipe_left"
@@ -144,24 +135,22 @@ class ActionDispatcher @Inject constructor(
         @Volatile private var cursorGain = 0.5f
         @Volatile private var sitBackModeEnabled = false
 
-        fun normalizeToScreenX(normX: Float, screenWidth: Int): Float =
-            mapSymmetric(normX, screenWidth, activeFraction(vertical = false))
-
-        fun normalizeToScreenY(normY: Float, screenHeight: Int): Float =
-            mapSymmetric(normY, screenHeight, activeFraction(vertical = true))
-
-        private fun activeFraction(vertical: Boolean): Float {
-            if (vertical && sitBackModeEnabled) return SIT_BACK_ACTIVE_Y_FRACTION
-            return MIN_ACTIVE_FRACTION +
-                cursorGain.coerceIn(0f, 1f) * (MAX_ACTIVE_FRACTION - MIN_ACTIVE_FRACTION)
+        fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
+            if (screenWidth <= 0) return 0f
+            val margin = 0.10f
+            val active = 1.0f - 2f * margin
+            val clamped = normX.coerceIn(0f, 1f)
+            val mapped = ((clamped - margin) / active).coerceIn(0f, 1f)
+            return mapped * screenWidth
         }
 
-        private fun mapSymmetric(norm: Float, screenSize: Int, activeFraction: Float): Float {
-            if (screenSize <= 0) return 0f
-            val active = activeFraction.coerceIn(MIN_ACTIVE_FRACTION, 1f)
-            val margin = (1f - active) * 0.5f
-            val clampedInput = norm.coerceIn(0f, 1f)
-            return (((clampedInput - margin) / active).coerceIn(0f, 1f)) * screenSize
+        fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
+            if (screenHeight <= 0) return 0f
+            val topDeadZone = if (sitBackModeEnabled) 0.20f else 0.30f
+            val active = 1.0f - topDeadZone
+            val clamped = normY.coerceIn(0f, 1f)
+            val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
+            return mapped * screenHeight
         }
 
         fun setCursorMapping(cursorGainPercent: Int, sitBackMode: Boolean) {
@@ -169,7 +158,7 @@ class ActionDispatcher @Inject constructor(
             sitBackModeEnabled = sitBackMode
         }
 
-        private val FINGERS_PER_POSE: Map<Pose, Set<FingerType>> = mapOf(
+        val FINGERS_PER_POSE: Map<Pose, Set<FingerType>> = mapOf(
             Pose.OPEN_PALM to setOf(FingerType.THUMB, FingerType.INDEX, FingerType.MIDDLE, FingerType.RING, FingerType.PINKY),
             Pose.FOUR_FINGERS to setOf(FingerType.INDEX, FingerType.MIDDLE, FingerType.RING, FingerType.PINKY),
             Pose.THREE_FINGERS to setOf(FingerType.INDEX, FingerType.MIDDLE, FingerType.RING),
@@ -181,7 +170,7 @@ class ActionDispatcher @Inject constructor(
             Pose.FIST to emptySet(),
         )
 
-        private fun buildDefaultMap(): ConcurrentHashMap<String, GestureAction> {
+        fun buildDefaultMap(): ConcurrentHashMap<String, GestureAction> {
             val defaultMap = ConcurrentHashMap<String, GestureAction>()
             defaultMap[KEY_SWIPE_LEFT] = GestureAction.SCROLL_LEFT
             defaultMap[KEY_SWIPE_RIGHT] = GestureAction.SCROLL_RIGHT
@@ -219,6 +208,16 @@ class ActionDispatcher @Inject constructor(
     @Volatile private var pendingSecondTap = false
     @Volatile private var pendingSecondTapJob: Job? = null
 
+    init {
+        gestureMapRef.set(buildDefaultMap())
+    }
+
+    fun getGestureMap(): Map<String, GestureAction> = HashMap(gestureMap)
+
+    fun updateGestureAction(key: String, action: GestureAction) {
+        gestureMap[key] = action
+    }
+
     fun attachService(service: AccessibilityService) {
         accessibilityServiceRef = WeakReference(service)
         audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -226,22 +225,30 @@ class ActionDispatcher @Inject constructor(
         settingsJobs.forEach { it.cancel() }
         settingsJobs.clear()
         serviceScope?.cancel()
-        serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CrashGuard.handler)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CrashGuard.handler)
+        serviceScope = scope
 
-        settingsJobs += serviceScope!!.launchGuarded("gesture settings", restart = true) {
-            settingsRepository.userPreferences.collectGuarded("gesture settings") { prefs ->
+        settingsJobs.add(scope.launchGuarded("dispatcher settings", restart = true) {
+            settingsRepository.userPreferences.collectGuarded("dispatcher settings") { prefs ->
                 currentPreferences = prefs
-                val map = ConcurrentHashMap(buildDefaultMap())
-                map[KEY_POSE_PINCH] = prefs.pinchAction.toGestureAction()
-                map[KEY_POSE_POINTING] = prefs.pointingAction.toGestureAction()
-                map[KEY_POSE_VICTORY] = prefs.victoryAction.toGestureAction()
-                map[KEY_POSE_THUMB_UP] = prefs.thumbUpAction.toGestureAction()
-                map[KEY_POSE_THUMB_DOWN] = prefs.thumbDownAction.toGestureAction()
-                map[KEY_POSE_PINCH_HOLD] = prefs.pinchHoldAction.toGestureAction()
-                map[KEY_PALM_HOME] = prefs.palmHomeAction.toGestureAction()
-                gestureMapRef.set(map)
             }
-        }
+        })
+
+        settingsJobs.add(scope.launchGuarded("gesture map", restart = true) {
+            settingsRepository.gestureMapConfig.collectGuarded("gesture map") { config ->
+                val newMap = buildDefaultMap()
+                config.entries.forEach { entry ->
+                    newMap[entry.key] = entry.action
+                }
+                gestureMapRef.set(newMap)
+            }
+        })
+
+        settingsJobs.add(scope.launchGuarded("custom gestures", restart = true) {
+            settingsRepository.customGestures.collectGuarded("custom gestures") { gestures ->
+                customGesturesList = gestures.filter { it.isEnabled }
+            }
+        })
     }
 
     fun detachService() {
@@ -265,7 +272,19 @@ class ActionDispatcher @Inject constructor(
         pinchStartTimeMs = 0L
     }
 
-    suspend fun dispatch(
+    internal fun actionAllowed(action: GestureAction): Boolean {
+        if (!currentPreferences.gesturesEnabled) return false
+        if (Suppression.isSuppressed()) {
+            return action == GestureAction.TAP ||
+                action == GestureAction.DOUBLE_TAP ||
+                action == GestureAction.LONG_PRESS ||
+                action == GestureAction.DRAG ||
+                action == GestureAction.NONE
+        }
+        return true
+    }
+
+    fun dispatch(
         event: GestureEvent,
         engineState: GestureEngineState,
         cursorX: Float,
@@ -274,22 +293,67 @@ class ActionDispatcher @Inject constructor(
         screenHeight: Int,
     ): Boolean {
         if (engineState != GestureEngineState.ARMED &&
-            engineState != GestureEngineState.EXECUTING &&
-            engineState != GestureEngineState.COOLDOWN
+            engineState != GestureEngineState.EXECUTING
         ) return false
 
-        val service = accessibilityServiceRef.get() ?: return false
+        val service = accessibilityServiceRef.get()
+
+        if (event is GestureEvent.Pinch) {
+            when (event.phase) {
+                PinchPhase.START -> {
+                    pinchStartTimeMs = nowMonotonicMs()
+                    pinchStartX = cursorX
+                    pinchStartY = cursorY
+                    pinchStartVelocity = event.velocity
+                    pinchIsDrag = false
+                    return true
+                }
+                PinchPhase.MOVE -> {
+                    if (service == null) return false
+                    val customPinchHold = matchCustomGesture(Pose.PINCH)
+                    val action = customPinchHold ?: gestureMap[KEY_POSE_PINCH_HOLD] ?: GestureAction.DRAG
+                    if (!actionAllowed(action)) return false
+                    val targetX = if (cursorX in 0f..1f) normalizeToScreenX(cursorX, screenWidth) else cursorX
+                    val targetY = if (cursorY in 0f..1f) normalizeToScreenY(cursorY, screenHeight) else cursorY
+                    return if (action == GestureAction.DRAG) {
+                        dispatchDrag(service, targetX, targetY)
+                    } else false
+                }
+                PinchPhase.END -> {
+                    if (isDragging) {
+                        resetDragState()
+                        return true
+                    }
+                    if (service == null) return false
+                    val now = nowMonotonicMs()
+                    val holdDurationMs = now - pinchStartTimeMs
+                    if (isAccidentalMovingPinch(pinchStartVelocity, holdDurationMs)) {
+                        return false
+                    }
+                    val customPinchAction = matchCustomGesture(Pose.PINCH)
+                    val action = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                    if (!actionAllowed(action)) return false
+                    return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight)
+                }
+            }
+        }
+
+        if (service == null) return false
+
         val action = when (event) {
             is GestureEvent.Swipe -> gestureMap[swipeKey(event.direction)]
-            is GestureEvent.Pinch -> gestureMap[KEY_POSE_PINCH]
-            is GestureEvent.PoseTriggered -> gestureMap[poseKey(event.pose)]
+            is GestureEvent.PoseTriggered -> {
+                val custom = matchCustomGesture(event.pose)
+                custom ?: gestureMap[poseKey(event.pose)]
+            }
             is GestureEvent.PalmHome -> gestureMap[KEY_PALM_HOME]
             is GestureEvent.CustomGestureTriggered -> customGesturesList
-                .firstOrNull { it.id == event.gestureId }
-                ?.action?.toGestureAction()
+                .firstOrNull { it.id == event.gestureId && it.isEnabled }
+                ?.action
             is GestureEvent.CursorMoved,
             is GestureEvent.Armed,
             is GestureEvent.Disarmed -> GestureAction.NONE
+            is GestureEvent.Pinch -> GestureAction.NONE
         } ?: GestureAction.NONE
 
         currentPose = when (event) {
@@ -299,39 +363,120 @@ class ActionDispatcher @Inject constructor(
 
         if (!actionAllowed(action)) return false
 
+        return executeAction(action, cursorX, cursorY, screenWidth, screenHeight)
+    }
+
+    private fun executeAction(
+        action: GestureAction,
+        cursorX: Float,
+        cursorY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): Boolean {
+        val service = accessibilityServiceRef.get() ?: return false
+        val targetPixelX = if (cursorX in 0f..1f) normalizeToScreenX(cursorX, screenWidth) else cursorX
+        val targetPixelY = if (cursorY in 0f..1f) normalizeToScreenY(cursorY, screenHeight) else cursorY
+
         return when (action) {
             GestureAction.NONE -> false
-            GestureAction.SCROLL_UP -> dispatchScroll(service, cursorX, cursorY, 0f, -1f, screenWidth, screenHeight)
-            GestureAction.SCROLL_DOWN -> dispatchScroll(service, cursorX, cursorY, 0f, 1f, screenWidth, screenHeight)
-            GestureAction.SCROLL_LEFT -> dispatchScroll(service, cursorX, cursorY, -1f, 0f, screenWidth, screenHeight)
-            GestureAction.SCROLL_RIGHT -> dispatchScroll(service, cursorX, cursorY, 1f, 0f, screenWidth, screenHeight)
-            GestureAction.BACK -> pressKey(KeyEvent.KEYCODE_BACK)
-            GestureAction.HOME -> pressKey(KeyEvent.KEYCODE_HOME)
-            GestureAction.RECENTS -> pressKey(KeyEvent.KEYCODE_APP_SWITCH)
-            GestureAction.NOTIFICATIONS -> pressKey(KeyEvent.KEYCODE_NOTIFICATION)
-            GestureAction.QUICK_SETTINGS -> pressKey(KeyEvent.KEYCODE_BRIGHTNESS_UP)
+            GestureAction.SCROLL_UP -> dispatchScroll(service, targetPixelX, targetPixelY, 0f, -1f, screenWidth, screenHeight)
+            GestureAction.SCROLL_DOWN -> dispatchScroll(service, targetPixelX, targetPixelY, 0f, 1f, screenWidth, screenHeight)
+            GestureAction.SCROLL_LEFT -> dispatchScroll(service, targetPixelX, targetPixelY, -1f, 0f, screenWidth, screenHeight)
+            GestureAction.SCROLL_RIGHT -> dispatchScroll(service, targetPixelX, targetPixelY, 1f, 0f, screenWidth, screenHeight)
+            GestureAction.BACK -> performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_BACK, GestureAction.BACK)
+            GestureAction.HOME -> performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_HOME, GestureAction.HOME)
+            GestureAction.RECENTS -> performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_RECENTS, GestureAction.RECENTS)
+            GestureAction.NOTIFICATIONS -> performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, GestureAction.NOTIFICATIONS)
+            GestureAction.QUICK_SETTINGS -> performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, GestureAction.QUICK_SETTINGS)
             GestureAction.VOLUME_UP -> pressVolume(true)
             GestureAction.VOLUME_DOWN -> pressVolume(false)
-            GestureAction.MEDIA_PLAY_PAUSE -> pressKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
-            GestureAction.SCREENSHOT -> pressKey(KeyEvent.KEYCODE_SYSRQ)
-            GestureAction.LOCK_SCREEN -> pressKey(KeyEvent.KEYCODE_POWER)
-            GestureAction.TAP -> dispatchTap(service, cursorX, cursorY)
-            GestureAction.DOUBLE_TAP -> dispatchDoubleTap(service, cursorX, cursorY)
-            GestureAction.LONG_PRESS -> dispatchLongPress(service, cursorX, cursorY)
-            GestureAction.DRAG -> dispatchDrag(service, cursorX, cursorY)
+            GestureAction.MEDIA_PLAY_PAUSE -> pressMediaPlayPause()
+            GestureAction.SCREENSHOT -> performGlobalAction(
+                service,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT else AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS,
+                GestureAction.SCREENSHOT
+            )
+            GestureAction.LOCK_SCREEN -> performGlobalAction(
+                service,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN else AccessibilityService.GLOBAL_ACTION_HOME,
+                GestureAction.LOCK_SCREEN
+            )
+            GestureAction.TAP -> dispatchTap(service, targetPixelX, targetPixelY)
+            GestureAction.DOUBLE_TAP -> dispatchDoubleTap(service, targetPixelX, targetPixelY)
+            GestureAction.LONG_PRESS -> dispatchLongPress(service, targetPixelX, targetPixelY)
+            GestureAction.DRAG -> dispatchDrag(service, targetPixelX, targetPixelY)
         }
     }
 
-    fun dispatchBlinkTap(cursorX: Float, cursorY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+    fun dispatchBlinkTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.blinkClickEnabled) return false
         val service = accessibilityServiceRef.get() ?: return false
         if (!actionAllowed(GestureAction.TAP)) return false
-        return dispatchTap(service, cursorX, cursorY)
+        val pxX = if (normX in 0f..1f) normalizeToScreenX(normX, screenWidth) else normX
+        val pxY = if (normY in 0f..1f) normalizeToScreenY(normY, screenHeight) else normY
+        return dispatchTap(service, pxX, pxY)
     }
 
-    private fun actionAllowed(action: GestureAction): Boolean {
-        if (!currentPreferences.gesturesEnabled) return false
-        return true
+    fun dispatchDwellTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        val service = accessibilityServiceRef.get() ?: return false
+        if (!actionAllowed(GestureAction.TAP)) return false
+        val pxX = if (normX in 0f..1f) normalizeToScreenX(normX, screenWidth) else normX
+        val pxY = if (normY in 0f..1f) normalizeToScreenY(normY, screenHeight) else normY
+        return dispatchTap(service, pxX, pxY)
+    }
+
+    private fun isAccidentalMovingPinch(startVelocity: Float, holdDurationMs: Long): Boolean {
+        if (!currentPreferences.stationaryClickEnabled) return false
+        if (holdDurationMs >= INTENTIONAL_PINCH_HOLD_MS) return false
+        val norm = currentPreferences.sensitivity.coerceIn(0, 100) / 100f
+        val allowedVelocity = MIN_MOVING_PINCH_VELOCITY +
+            norm * (MAX_MOVING_PINCH_VELOCITY - MIN_MOVING_PINCH_VELOCITY)
+        return startVelocity > allowedVelocity
+    }
+
+    private fun nowMonotonicMs(): Long {
+        return try {
+            SystemClock.elapsedRealtime()
+        } catch (_: Throwable) {
+            System.currentTimeMillis()
+        }
+    }
+
+    private fun matchCustomGesture(pose: Pose): GestureAction? {
+        val customPose = when (pose) {
+            Pose.OPEN_PALM -> CustomGesturePose.OPEN_PALM
+            Pose.FIST -> CustomGesturePose.FIST
+            Pose.PINCH -> CustomGesturePose.PINCH
+            Pose.POINTING -> CustomGesturePose.POINTING
+            Pose.VICTORY -> CustomGesturePose.VICTORY
+            Pose.THUMB_UP -> CustomGesturePose.THUMB_UP
+            Pose.THUMB_DOWN -> CustomGesturePose.THUMB_DOWN
+            Pose.THREE_FINGERS -> CustomGesturePose.THREE_FINGERS
+            Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
+            Pose.NONE -> null
+        } ?: return null
+
+        return customGesturesList.find { gesture ->
+            when (val trigger = gesture.triggerPose) {
+                is CustomGestureTrigger.PoseWithDirection ->
+                    trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+                is CustomGestureTrigger.FingerCount -> {
+                    val fingers = FINGERS_PER_POSE[pose] ?: return@find false
+                    fingers.size == trigger.extendedFingers &&
+                        (trigger.whichFingers.isEmpty() || fingers == trigger.whichFingers)
+                }
+                is CustomGestureTrigger.LandmarkTemplateTrigger -> false
+            }
+        }?.action
+    }
+
+    private fun performGlobalAction(service: AccessibilityService, globalAction: Int, action: GestureAction): Boolean {
+        val success = service.performGlobalAction(globalAction)
+        if (success) {
+            _dispatchedEvents.tryEmit(action.name)
+            onGestureDispatched?.invoke(action.name)
+        }
+        return success
     }
 
     private fun dispatchTap(service: AccessibilityService, x: Float, y: Float): Boolean {
@@ -343,7 +488,7 @@ class ActionDispatcher @Inject constructor(
     }
 
     private fun dispatchDoubleTap(service: AccessibilityService, x: Float, y: Float): Boolean {
-        val now = SystemClock.elapsedRealtime()
+        val now = nowMonotonicMs()
         if (pendingSecondTap && now - lastTapDispatchMs <= DOUBLE_TAP_WINDOW_MS) {
             pendingSecondTapJob?.cancel()
             pendingSecondTap = false
@@ -372,22 +517,28 @@ class ActionDispatcher @Inject constructor(
         val startX = x.coerceIn(0f, screenWidth.toFloat())
         val startY = y.coerceIn(0f, screenHeight.toFloat())
         path.moveTo(startX, startY)
-        path.lineTo((startX + dx * screenWidth * 0.22f).coerceIn(0f, screenWidth.toFloat()),
-            (startY + dy * screenHeight * 0.22f).coerceIn(0f, screenHeight.toFloat()))
-        return submitGesture(service, GestureDescription.Builder().addStroke(
-            GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS)
-        ).build(), if (dx > 0) GestureAction.SCROLL_RIGHT else if (dx < 0) GestureAction.SCROLL_LEFT else if (dy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP)
+        path.lineTo(
+            (startX + dx * screenWidth * 0.22f).coerceIn(0f, screenWidth.toFloat()),
+            (startY + dy * screenHeight * 0.22f).coerceIn(0f, screenHeight.toFloat())
+        )
+        return submitGesture(
+            service,
+            GestureDescription.Builder().addStroke(
+                GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS)
+            ).build(),
+            if (dx > 0) GestureAction.SCROLL_RIGHT else if (dx < 0) GestureAction.SCROLL_LEFT else if (dy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP
+        )
     }
 
     private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float): Boolean {
         if (!isDragging) {
             val path = Path()
             path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
-            lastDragStroke = GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS)
+            lastDragStroke = GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
             isDragging = submitGesture(service, GestureDescription.Builder().addStroke(lastDragStroke!!).build(), GestureAction.DRAG)
             dragCurrentX = x
             dragCurrentY = y
-            pinchStartTimeMs = SystemClock.elapsedRealtime()
+            pinchStartTimeMs = nowMonotonicMs()
             pinchStartX = x
             pinchStartY = y
             pinchIsDrag = isDragging
@@ -400,8 +551,8 @@ class ActionDispatcher @Inject constructor(
         val path = Path()
         path.moveTo(dragCurrentX, dragCurrentY)
         path.lineTo(x, y)
-        val nextStroke = lastDragStroke?.continueStroke(path, false, DRAG_STEP_DURATION_MS)
-            ?: GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS)
+        val nextStroke = lastDragStroke?.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
+            ?: GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
         val submitted = submitGesture(service, GestureDescription.Builder().addStroke(nextStroke).build(), GestureAction.DRAG)
         if (submitted) {
             lastDragStroke = nextStroke
@@ -440,17 +591,16 @@ class ActionDispatcher @Inject constructor(
         pinchStartTimeMs = 0L
     }
 
-    private fun pressKey(keyCode: Int): Boolean {
-        val audio = audioManager
-        val service = accessibilityServiceRef.get() ?: return false
+    private fun pressMediaPlayPause(): Boolean {
+        val audio = audioManager ?: return false
         return try {
-            val down = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
-            val up = KeyEvent(KeyEvent.ACTION_UP, keyCode)
-            service.dispatchKeyEvent(down)
-            service.dispatchKeyEvent(up)
+            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
+            _dispatchedEvents.tryEmit(GestureAction.MEDIA_PLAY_PAUSE.name)
+            onGestureDispatched?.invoke(GestureAction.MEDIA_PLAY_PAUSE.name)
             true
         } catch (e: Throwable) {
-            Timber.e(e, "dispatchKeyEvent failed: %s", keyCode)
+            Timber.e(e, "Media play/pause dispatch failed")
             false
         }
     }
@@ -458,8 +608,14 @@ class ActionDispatcher @Inject constructor(
     private fun pressVolume(up: Boolean): Boolean {
         val audio = audioManager ?: return false
         return try {
-            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, if (up) KeyEvent.KEYCODE_VOLUME_UP else KeyEvent.KEYCODE_VOLUME_DOWN))
-            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, if (up) KeyEvent.KEYCODE_VOLUME_UP else KeyEvent.KEYCODE_VOLUME_DOWN))
+            val action = if (up) GestureAction.VOLUME_UP else GestureAction.VOLUME_DOWN
+            audio.adjustSuggestedStreamVolume(
+                if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                AudioManager.USE_DEFAULT_STREAM_TYPE,
+                AudioManager.FLAG_SHOW_UI
+            )
+            _dispatchedEvents.tryEmit(action.name)
+            onGestureDispatched?.invoke(action.name)
             true
         } catch (e: Throwable) {
             Timber.e(e, "volume dispatch failed")
@@ -482,44 +638,4 @@ class ActionDispatcher @Inject constructor(
         Pose.THUMB_DOWN -> KEY_POSE_THUMB_DOWN
         else -> "pose_${pose.name.lowercase()}"
     }
-
-    private fun CustomGestureDirection.toGestureAction(): GestureAction = when (this) {
-        CustomGestureDirection.NONE -> GestureAction.NONE
-        CustomGestureDirection.LEFT -> GestureAction.SCROLL_LEFT
-        CustomGestureDirection.RIGHT -> GestureAction.SCROLL_RIGHT
-        CustomGestureDirection.UP -> GestureAction.SCROLL_UP
-        CustomGestureDirection.DOWN -> GestureAction.SCROLL_DOWN
-    }
-
-    private fun CustomGesturePose.toGestureAction(): GestureAction = when (this) {
-        CustomGesturePose.NONE -> GestureAction.NONE
-        CustomGesturePose.TAP -> GestureAction.TAP
-        CustomGesturePose.DOUBLE_TAP -> GestureAction.DOUBLE_TAP
-        CustomGesturePose.LONG_PRESS -> GestureAction.LONG_PRESS
-        CustomGesturePose.DRAG -> GestureAction.DRAG
-        CustomGesturePose.HOME -> GestureAction.HOME
-        CustomGesturePose.BACK -> GestureAction.BACK
-        CustomGesturePose.RECENTS -> GestureAction.RECENTS
-        CustomGesturePose.NOTIFICATIONS -> GestureAction.NOTIFICATIONS
-        CustomGesturePose.QUICK_SETTINGS -> GestureAction.QUICK_SETTINGS
-        CustomGesturePose.VOLUME_UP -> GestureAction.VOLUME_UP
-        CustomGesturePose.VOLUME_DOWN -> GestureAction.VOLUME_DOWN
-        CustomGesturePose.MEDIA_PLAY_PAUSE -> GestureAction.MEDIA_PLAY_PAUSE
-    }
-
-    private fun CustomGestureTrigger.toGestureAction(): GestureAction = when (this) {
-        is CustomGestureTrigger.PoseTrigger -> triggerPose.toGestureAction()
-        is CustomGestureTrigger.DirectionTrigger -> direction.toGestureAction()
-        is CustomGestureTrigger.LandmarkTemplateTrigger -> action.toGestureAction()
-    }
-
-    // The preference model historically exposed these fields. Keep this small
-    // bridge in one place so Phase-1 mapping changes don't alter user settings.
-    private val UserPreferences.pinchAction: CustomGesturePose get() = CustomGesturePose.TAP
-    private val UserPreferences.pointingAction: CustomGesturePose get() = CustomGesturePose.NONE
-    private val UserPreferences.victoryAction: CustomGesturePose get() = CustomGesturePose.MEDIA_PLAY_PAUSE
-    private val UserPreferences.thumbUpAction: CustomGesturePose get() = CustomGesturePose.VOLUME_UP
-    private val UserPreferences.thumbDownAction: CustomGesturePose get() = CustomGesturePose.VOLUME_DOWN
-    private val UserPreferences.pinchHoldAction: CustomGesturePose get() = CustomGesturePose.DRAG
-    private val UserPreferences.palmHomeAction: CustomGesturePose get() = CustomGesturePose.HOME
 }

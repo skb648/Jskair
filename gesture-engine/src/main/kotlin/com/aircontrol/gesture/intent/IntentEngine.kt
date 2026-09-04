@@ -31,7 +31,7 @@ class IntentEngine(
         event: GestureEvent,
         engineState: GestureEngineState,
         confidence: Float = 1f,
-        stationaryMs: Long = 0L,
+        stationaryMs: Long = SafetyPolicy.CLICK_SETTLE_MS,
         movementSincePinchStart: Float = 0f,
     ): GestureIntent {
         if (!isInteractiveState(engineState)) return noAction(event.timestampMs, "disarmed", confidence)

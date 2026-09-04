@@ -20,8 +20,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.mockito.kotlin.mock
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
 class ActionDispatcherTest {
 
     private lateinit var actionDispatcher: ActionDispatcher

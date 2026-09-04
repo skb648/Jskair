@@ -4,15 +4,16 @@ import android.app.Application
 import android.os.SystemClock
 import com.aircontrol.accessibility.GestureControlAccessibilityService
 import com.aircontrol.camera.CameraService
+import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.di.AccessibilityServiceEntryPoint
 import dagger.hilt.android.EntryPointAccessors
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
@@ -38,6 +39,13 @@ object RuntimeHealthMonitor {
         val settingsRepository = entryPoint.settingsRepository()
         job = CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
             val latestFrameMs = AtomicLong(0L)
+            val currentPrefs = AtomicReference(UserPreferences())
+
+            launch {
+                settingsRepository.userPreferences.collect { prefs ->
+                    currentPrefs.set(prefs)
+                }
+            }
 
             launch {
                 handTracker.handFrames.collect { _ ->
@@ -46,7 +54,7 @@ object RuntimeHealthMonitor {
             }
 
             while (true) {
-                val prefs = settingsRepository.userPreferences.value
+                val prefs = currentPrefs.get()
                 val service = CameraService.serviceState.value
                 val accessibility = GestureControlAccessibilityService.isConnected.value
                 val trackerReady = handTracker.isInitialized()

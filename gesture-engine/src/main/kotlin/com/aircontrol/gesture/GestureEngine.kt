@@ -174,22 +174,20 @@ class GestureEngine(
 
         if (transition.newState == GestureEngineState.ARMED && input.isDetected) {
             if (pose == Pose.OPEN_PALM) {
-                if (!palmHolding) {
+                val travel = if (palmHoldAnchorX >= 0f) {
+                    maxOf(kotlin.math.abs(lastPalmX - palmHoldAnchorX), kotlin.math.abs(lastPalmY - palmHoldAnchorY))
+                } else 0f
+                val isMoving = currentVelocity > 0.05f || travel > config.palmHomeMaxCursorMovement
+
+                if (!palmHolding || isMoving) {
                     palmHolding = true
                     palmHoldStartMs = timestampMs
                     palmHoldAnchorX = lastPalmX
                     palmHoldAnchorY = lastPalmY
-                } else {
-                    val travel = maxOf(kotlin.math.abs(lastPalmX - palmHoldAnchorX), kotlin.math.abs(lastPalmY - palmHoldAnchorY))
-                    if (travel > config.palmHomeMaxCursorMovement) {
-                        palmHoldStartMs = timestampMs
-                        palmHoldAnchorX = lastPalmX
-                        palmHoldAnchorY = lastPalmY
-                        palmHomeFired = false
-                    } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs && palmHomeConditionsMet(input, timestampMs)) {
-                        palmHomeFired = true
-                        _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
-                    }
+                    palmHomeFired = false
+                } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs && palmHomeConditionsMet(input, timestampMs)) {
+                    palmHomeFired = true
+                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
                 }
             } else resetPalmTracking()
         } else resetPalmTracking()
