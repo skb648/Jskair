@@ -7,7 +7,7 @@ import android.os.Build
 import android.os.StrictMode
 import com.aircontrol.camera.CameraService
 import com.aircontrol.runtime.RuntimeHealthMonitor
-dagger.hilt.android.HiltAndroidApp
+import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 
 @HiltAndroidApp
@@ -26,6 +26,8 @@ class AirControlApp : Application() {
             Timber.plant(Timber.DebugTree())
             Timber.d("AirControl application initialized")
         } else {
+            // Fix #115/#116: release tree only logs WARN+ERROR to avoid leaking
+            // a per-gesture activity trail to logcat.
             Timber.plant(ReleaseTree())
         }
     }
