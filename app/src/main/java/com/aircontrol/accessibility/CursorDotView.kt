@@ -1,211 +1,111 @@
 package com.aircontrol.accessibility
 
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RadialGradient
-import android.graphics.Shader
+import android.graphics.Path
+import android.graphics.RectF
 import android.view.View
-import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 
-/**
- * Apple Vision Pro Level Cursor - Premium Spatial Computing Design
- * 
- * Design Principles (from Apple Vision Pro):
- * - No blinking/pulsing animations that cause visual fatigue
- * - Smooth, stable cursor that feels "solid" and predictable
- * - Minimal visual feedback only on interaction (tap/hover)
- * - Zero jitter through proper filtering
- * 
- * Visual States:
- * - IDLE: Solid dot, no animation (stable, predictable)
- * - MOVING: Solid dot, trail effect (smooth motion feedback)
- * - HOVER: Slight scale up (1.05x) + glow (pre-interaction certainty)
- * - TAP: Quick scale down (0.95x) + haptic (immediate feedback)
- * - ARMED: Subtle ring indicator (system state clarity)
- */
+/** Desktop-style pointer rendered by the accessibility overlay. */
 class CursorDotView(
     context: Context,
     private val dotSizePx: Int,
     private val ringSizePx: Int,
 ) : View(context) {
 
-    private val accentColor = android.graphics.Color.parseColor("#2F81F7") // ElectricBlue
-
-    // ========== Paints ==========
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = accentColor
-        style = Paint.Style.FILL
+    private val density = resources.displayMetrics.density
+    private val pointerWidth = dotSizePx.toFloat()
+    private val pointerHeight = dotSizePx * 1.38f
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(85, 0, 0, 0) }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = maxOf(1.5f * density, 2f)
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
     }
-
-    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        alpha = 0 // Start invisible, only show on hover
-    }
-
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = accentColor
+        color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 2f * resources.displayMetrics.density
-        alpha = 120 // Subtle, not dominant
+        strokeWidth = maxOf(1.5f * density, 2f)
+        alpha = 210
     }
-
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = accentColor
-        style = Paint.Style.FILL
-        alpha = 0 // Start invisible
-    }
-
-    // ========== State Management ==========
-    private var isMoving = false
-    private var isHovering = false
-    private var isTapping = false
-
-    // F1: Dwell progress ring (0..1), drawn as an arc around the cursor.
-    private var dwellProgress = 0f
-
-    // F11: Ripple (on click) vs pulse (on gesture dispatched) — ripple for dwell, pulse for dispatch; distinct — an expanding ring on click.
-    private var rippleRadius = 0f
-    private var rippleAlpha = 0
-    private var rippleAnimator: ValueAnimator? = null
-    private val dwellRect = android.graphics.RectF()
     private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = accentColor
+        color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 2f * resources.displayMetrics.density
+        strokeWidth = maxOf(1.5f * density, 2f)
     }
-
-    // F9: Reduced motion — disable pulse/glow/ripple animations.
+    private val pointerPath = Path()
+    private val dwellRect = RectF()
+    private var isHovering = false
+    private var dwellProgress = 0f
     private var reducedMotion = false
-    init { setLayerType(LAYER_TYPE_HARDWARE, null) }
-    
-    // Smooth scale animation (Apple Vision Pro style)
-    private var currentScale = 1.0f
-    private var targetScale = 1.0f
-    
-    // Glow animation
-    private var currentGlowAlpha = 0
-    private var targetGlowAlpha = 0
-    
-    // BUG #1 FIX: Track animators to prevent stacking
+    private var currentScale = 1f
+    private var targetScale = 1f
     private var scaleAnimator: ValueAnimator? = null
-    private var glowAnimator: ValueAnimator? = null
+    private var rippleAnimator: ValueAnimator? = null
+    private var rippleProgress = 0f
+    private var rippleAlpha = 0
 
     var isArmed: Boolean = false
-        set(value) {
-            field = value
-            invalidate()
-        }
+        set(value) { field = value; invalidate() }
 
-    // ========== Movement Tracking ==========
     private val moveResetRunnable = Runnable {
-        isMoving = false
-        if (isAttachedToWindow) {
-            // Smooth return to idle state
-            targetScale = 1.0f
-            targetGlowAlpha = 0
-            animateScaleAndGlow()
-        }
+        targetScale = if (isHovering) 1.04f else 1f
+        animateScale()
     }
 
-    /**
-     * Notify cursor is moving - triggers motion trail effect
-     * NO BLINKING - just smooth motion feedback
-     */
     fun notifyMoving() {
-        if (!isMoving) {
-            isMoving = true
-            // Subtle motion feedback - slight scale increase
-            targetScale = 1.02f
-            targetGlowAlpha = 20 // Very subtle glow during motion
-            animateScaleAndGlow()
-        }
         removeCallbacks(moveResetRunnable)
-        postDelayed(moveResetRunnable, IDLE_TIMEOUT_MS)
+        targetScale = if (isHovering) 1.04f else 1f
+        animateScale()
+        postDelayed(moveResetRunnable, 140L)
     }
 
-    /**
-     * Notify cursor is hovering over interactive element
-     * Apple Vision Pro: Pre-interaction certainty through visual feedback
-     */
     fun notifyHover() {
         if (!isHovering) {
             isHovering = true
-            // Apple Vision Pro hover: 1.05x scale + outer glow
-            targetScale = 1.05f
-            targetGlowAlpha = 40 // Noticeable but not distracting
-            animateScaleAndGlow()
+            targetScale = 1.04f
+            animateScale()
         }
     }
 
-    /**
-     * Reset hover state when cursor leaves interactive element
-     * BUG #9 FIX: Allows hover to be triggered again
-     */
     fun resetHover() {
         if (isHovering) {
             isHovering = false
-            targetScale = 1.0f
-            targetGlowAlpha = 0
-            animateScaleAndGlow()
+            targetScale = 1f
+            animateScale()
         }
     }
 
-    /**
-     * Notify cursor tap/click action
-     * Apple Vision Pro: Immediate tactile feedback through visual compression
-     */
     fun notifyTap() {
-        isTapping = true
-        // Quick compression then spring back (0.95x -> 1.0x)
-        targetScale = 0.95f
-        animateScaleAndGlow()
-        
-        // Spring back after 100ms
-        postDelayed({
-            targetScale = 1.0f
-            animateScaleAndGlow()
-            isTapping = false
-        }, 100)
+        targetScale = 0.94f
+        animateScale()
+        postDelayed({ targetScale = if (isHovering) 1.04f else 1f; animateScale() }, 90L)
     }
 
-    /**
-     * Visual pulse effect for gesture feedback
-     * BUG #5 FIX: Uses internal scale animation instead of View scaling
-     * to avoid conflicts with other animations
-     */
-    fun pulse() {
-        if (reducedMotion) return
-        // Quick expansion then return (1.0x -> 1.15x -> 1.0x)
-        targetScale = 1.08f
-        animateScaleAndGlow()
-        
-        postDelayed({
-            targetScale = 1.0f
-            animateScaleAndGlow()
-        }, 150)
-    }
+    fun pulse() = ripple()
 
-    /**
-     * F11: Ripple feedback — an expanding ring on click (Vision Pro style).
-     * A softer, cleaner confirmation than the scale "pop".
-     */
     fun ripple() {
         if (reducedMotion) return
         rippleAnimator?.cancel()
-        rippleRadius = dotSizePx * 0.6f
-        rippleAlpha = 140
+        rippleProgress = 0f
+        rippleAlpha = 130
         rippleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 400
-            interpolator = AccelerateDecelerateInterpolator()
-            addUpdateListener { anim ->
-                val t = anim.animatedValue as Float
-                rippleRadius = dotSizePx * (0.6f + 1.6f * t)
-                rippleAlpha = (140 * (1f - t)).toInt()
+            duration = 280L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                rippleProgress = it.animatedValue as Float
+                rippleAlpha = (130f * (1f - rippleProgress)).toInt()
                 invalidate()
             }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
+            addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     rippleAlpha = 0
                     invalidate()
@@ -214,142 +114,85 @@ class CursorDotView(
         }.also { it.start() }
     }
 
-    /**
-     * F1: Sets the dwell progress ring (0..1). 0 = hidden, 1 = click imminent.
-     */
     fun setDwellProgress(progress: Float) {
         dwellProgress = progress.coerceIn(0f, 1f)
         invalidate()
     }
 
-    /**
-     * F9: Reduced motion — disables pulse/glow/ripple animations.
-     */
     fun setReducedMotion(reduced: Boolean) {
         reducedMotion = reduced
         if (reduced) {
-            rippleAnimator?.cancel()
             scaleAnimator?.cancel()
-            glowAnimator?.cancel()
-            currentScale = 1.0f
-            currentGlowAlpha = 0
-            glowPaint.alpha = 0
+            rippleAnimator?.cancel()
+            currentScale = 1f
+            targetScale = 1f
             rippleAlpha = 0
         }
         invalidate()
     }
 
-    /**
-     * Smooth animation using damped spring physics (Apple Vision Pro Layer 4)
-     * BUG #1 FIX: Cancel previous animators before starting new ones
-     */
-    private fun animateScaleAndGlow() {
-        if (!isAttachedToWindow) return
-        
-        // Cancel previous animators to prevent stacking
+    private fun animateScale() {
+        if (reducedMotion || !isAttachedToWindow) {
+            currentScale = targetScale
+            invalidate()
+            return
+        }
         scaleAnimator?.cancel()
-        glowAnimator?.cancel()
-        
-        // Animate scale with spring physics
         scaleAnimator = ValueAnimator.ofFloat(currentScale, targetScale).apply {
-            duration = 150 // Quick but smooth
-            interpolator = AccelerateDecelerateInterpolator()
-            addUpdateListener { animation ->
-                currentScale = animation.animatedValue as Float
-                invalidate()
-            }
-        }.also { it.start() }
-
-        // Animate glow alpha
-        glowAnimator = ValueAnimator.ofInt(currentGlowAlpha, targetGlowAlpha).apply {
-            duration = 150
-            interpolator = AccelerateDecelerateInterpolator()
-            addUpdateListener { animation ->
-                currentGlowAlpha = animation.animatedValue as Int
-                glowPaint.alpha = currentGlowAlpha
-                invalidate()
-            }
+            duration = 70L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { currentScale = it.animatedValue as Float; invalidate() }
         }.also { it.start() }
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        // NO pulse animation - stable, predictable cursor
+    private fun buildPointerPath(cx: Float, cy: Float): Path {
+        val w = pointerWidth
+        val h = pointerHeight
+        val left = cx - w * 0.42f
+        val top = cy - h * 0.50f
+        pointerPath.reset()
+        pointerPath.moveTo(left, top)
+        pointerPath.lineTo(left, top + h * 0.78f)
+        pointerPath.lineTo(left + w * 0.27f, top + h * 0.61f)
+        pointerPath.lineTo(left + w * 0.43f, top + h * 0.98f)
+        pointerPath.lineTo(left + w * 0.60f, top + h * 0.91f)
+        pointerPath.lineTo(left + w * 0.45f, top + h * 0.54f)
+        pointerPath.lineTo(left + w * 0.80f, top + h * 0.54f)
+        pointerPath.close()
+        return pointerPath
     }
-
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        scaleAnimator?.cancel(); glowAnimator?.cancel(); rippleAnimator?.cancel()
-        removeCallbacks(moveResetRunnable)
-    }
-
-    // ========== Cached Rendering ==========
-    private var cachedGradient: RadialGradient? = null
-    private var lastGradientWidth = 0
-    private var lastGradientHeight = 0
-    private var lastGradientDotSize = 0
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-
-        val centerX = width / 2f
-        val centerY = height / 2f
-
-        // Apply smooth scale transformation (Apple Vision Pro style)
+        val cx = width * 0.43f
+        val cy = height * 0.50f
         canvas.save()
-        canvas.scale(currentScale, currentScale, centerX, centerY)
+        canvas.scale(currentScale, currentScale, cx, cy)
+        val path = buildPointerPath(cx, cy)
+        canvas.save()
+        canvas.translate(1.5f * density, 1.5f * density)
+        canvas.drawPath(path, shadowPaint)
+        canvas.restore()
+        canvas.drawPath(path, fillPaint)
+        canvas.drawPath(path, outlinePaint)
 
-        // Draw hover glow (only when hovering or moving)
-        if (currentGlowAlpha > 0) {
-            val glowRadius = dotSizePx * 1.2f
-            canvas.drawCircle(centerX, centerY, glowRadius, glowPaint)
-        }
-
-        // Draw soft shadow (always present for depth)
-        val shadowRadius = dotSizePx * 0.8f
-        if (width != lastGradientWidth || height != lastGradientHeight) {
-            cachedGradient = RadialGradient(
-                centerX, centerY, shadowRadius,
-                android.graphics.Color.BLACK,
-                android.graphics.Color.TRANSPARENT,
-                Shader.TileMode.CLAMP,
-            )
-            lastGradientWidth = width
-            lastGradientHeight = height
-            lastGradientDotSize = dotSizePx
-        }
-        shadowPaint.shader = cachedGradient
-        shadowPaint.alpha = 30 // Subtle depth
-        canvas.drawCircle(centerX, centerY + 2f, shadowRadius, shadowPaint) // Offset for depth
-
-        // Draw armed ring (subtle system state indicator)
-        if (isArmed) {
-            canvas.drawCircle(centerX, centerY, ringSizePx * 0.9f, ringPaint)
-        }
-
-        // Draw cursor dot (solid, stable, no blinking)
-        val dotRadius = dotSizePx * 0.5f
-        canvas.drawCircle(centerX, centerY, dotRadius, dotPaint)
-
-        // F1: dwell progress ring (arc sweeping as the dwell click approaches).
+        if (isArmed) canvas.drawCircle(cx, cy, ringSizePx * 0.72f, ringPaint)
         if (dwellProgress > 0f) {
-            val r = dotSizePx * 0.9f
-            dwellRect.set(centerX - r, centerY - r, centerX + r, centerY + r)
-            val rect = dwellRect
-            canvas.drawArc(rect, -90f, 360f * dwellProgress, false, ringPaint)
+            val r = ringSizePx * 0.82f
+            dwellRect.set(cx - r, cy - r, cx + r, cy + r)
+            canvas.drawArc(dwellRect, -90f, 360f * dwellProgress, false, ringPaint)
         }
-
-        // F11: ripple ring (expanding on click).
         if (rippleAlpha > 0) {
             ripplePaint.alpha = rippleAlpha
-            canvas.drawCircle(centerX, centerY, rippleRadius, ripplePaint)
+            canvas.drawCircle(cx, cy, ringSizePx * (0.7f + rippleProgress), ripplePaint)
         }
-
         canvas.restore()
     }
 
-    companion object {
-        // Apple Vision Pro: NO pulse duration - stable cursor
-        private const val IDLE_TIMEOUT_MS = 150L // Quick return to idle
+    override fun onDetachedFromWindow() {
+        scaleAnimator?.cancel()
+        rippleAnimator?.cancel()
+        removeCallbacks(moveResetRunnable)
+        super.onDetachedFromWindow()
     }
 }
