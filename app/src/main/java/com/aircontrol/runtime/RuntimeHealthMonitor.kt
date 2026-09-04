@@ -4,9 +4,9 @@ import android.app.Application
 import android.os.SystemClock
 import com.aircontrol.accessibility.GestureControlAccessibilityService
 import com.aircontrol.camera.CameraService
+import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.di.AccessibilityServiceEntryPoint
 import com.aircontrol.tracking.HandTracker
-import com.aircontrol.data.repository.SettingsRepository
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,10 +38,10 @@ object RuntimeHealthMonitor {
         val handTracker = entryPoint.handTracker()
         val settingsRepository = entryPoint.settingsRepository()
         job = CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
-            var latestFrameMs = 0L
+            @Volatile var latestFrameMs = 0L
 
             launch {
-                handTracker.handFrames.collect { frame ->
+                handTracker.handFrames.collect { _ ->
                     latestFrameMs = SystemClock.elapsedRealtime()
                 }
             }
