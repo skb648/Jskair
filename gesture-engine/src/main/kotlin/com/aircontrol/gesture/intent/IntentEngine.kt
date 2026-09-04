@@ -10,7 +10,7 @@ import com.aircontrol.gesture.model.PinchPhase
  */
 class IntentEngine(
     private val minimumConfidence: Float = 0.55f,
-    private val doubleClickWindowMs: Long = 350L,
+    private val doubleClickWindowMs: Long = SafetyPolicy.DOUBLE_CLICK_WINDOW_MS,
 ) {
     init {
         require(minimumConfidence in 0f..1f)
@@ -31,6 +31,8 @@ class IntentEngine(
         event: GestureEvent,
         engineState: GestureEngineState,
         confidence: Float = 1f,
+        stationaryMs: Long = 0L,
+        movementSincePinchStart: Float = 0f,
     ): GestureIntent {
         if (!isInteractiveState(engineState)) return noAction(event.timestampMs, "disarmed", confidence)
         if (confidence < minimumConfidence) return noAction(event.timestampMs, "low-confidence", confidence)
@@ -52,20 +54,35 @@ class IntentEngine(
                 PinchPhase.START -> {
                     val x = event.anchoredX.coerceIn(0f, 1f)
                     val y = event.anchoredY.coerceIn(0f, 1f)
-                    val isDouble = lastClickTimestampMs != Long.MIN_VALUE &&
-                        event.timestampMs - lastClickTimestampMs in 1L..doubleClickWindowMs &&
-                        distanceSquared(x, y, lastClickX, lastClickY) <= DOUBLE_CLICK_MAX_DISTANCE_SQ
-                    lastClickTimestampMs = event.timestampMs
-                    lastClickX = x
-                    lastClickY = y
-                    GestureIntent(
-                        type = if (isDouble) IntentType.CLICK else IntentType.CLICK,
-                        x = x,
-                        y = y,
+                    val now = event.timestampMs
+                    val isDouble = SafetyPolicy.isDoubleClickCandidate(
                         confidence = confidence,
-                        source = if (isDouble) "pinch-double-click" else "pinch-click",
-                        timestampMs = event.timestampMs,
+                        nowMs = now,
+                        lastClickMs = lastClickTimestampMs,
+                        distanceSquared = distanceSquared(x, y, lastClickX, lastClickY),
                     )
+                    val clickSafe = SafetyPolicy.isClickSafe(
+                        confidence = confidence,
+                        stationaryMs = stationaryMs,
+                        travel = movementSincePinchStart,
+                        nowMs = now,
+                        lastClickMs = if (isDouble) Long.MIN_VALUE else lastClickTimestampMs,
+                    )
+                    if (!clickSafe) {
+                        noAction(now, "click-safety-gate", confidence)
+                    } else {
+                        lastClickTimestampMs = now
+                        lastClickX = x
+                        lastClickY = y
+                        GestureIntent(
+                            type = IntentType.CLICK,
+                            x = x,
+                            y = y,
+                            confidence = confidence,
+                            source = if (isDouble) "pinch-double-click" else "pinch-click",
+                            timestampMs = now,
+                        )
+                    }
                 }
                 PinchPhase.MOVE -> GestureIntent(
                     type = IntentType.DRAG,
@@ -86,7 +103,13 @@ class IntentEngine(
             )
 
             is GestureEvent.PoseTriggered -> noAction(event.timestampMs, "pose-awaiting-explicit-action", confidence)
-            is GestureEvent.CustomGestureTriggered -> noAction(event.timestampMs, "custom-awaiting-explicit-action", confidence)
+            is GestureEvent.CustomGestureTriggered -> {
+                if (confidence >= SafetyPolicy.MIN_CUSTOM_GESTURE_CONFIDENCE) {
+                    noAction(event.timestampMs, "custom-awaiting-explicit-action", confidence)
+                } else {
+                    noAction(event.timestampMs, "custom-confidence-gate", confidence)
+                }
+            }
             is GestureEvent.PalmHome -> noAction(event.timestampMs, "palm-home-awaiting-policy", confidence)
             is GestureEvent.Armed -> noAction(event.timestampMs, "armed", confidence)
             is GestureEvent.Disarmed -> noAction(event.timestampMs, "disarmed", confidence)
@@ -110,9 +133,5 @@ class IntentEngine(
         val dx = x1 - x2
         val dy = y1 - y2
         return dx * dx + dy * dy
-    }
-
-    companion object {
-        private const val DOUBLE_CLICK_MAX_DISTANCE_SQ = 0.0025f
     }
 }
