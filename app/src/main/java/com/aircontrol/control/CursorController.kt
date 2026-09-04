@@ -28,12 +28,7 @@ interface CursorController {
 class CursorControllerImpl @Inject constructor() : CursorController {
 
     private val _cursorState = MutableStateFlow(
-        CursorState(
-            x = 0.5f,
-            y = 0.5f,
-            isVisible = false,
-            isPressed = false,
-        ),
+        CursorState(0.5f, 0.5f, false, false),
     )
     override val cursorState: StateFlow<CursorState> = _cursorState
 
@@ -42,26 +37,40 @@ class CursorControllerImpl @Inject constructor() : CursorController {
             hide()
             return
         }
-        // Landmark 8 is the index-fingertip for real MediaPipe frames. Synthetic
-        // cursor frames (built by the accessibility service) carry a single
-        // landmark at index 0, so fall back to the first landmark when index 8
-        // is absent — previously getOrNull(8) always returned null for those
-        // frames and cursorState never updated.
-        val indexTip = handFrame.landmarks.getOrNull(8) ?: handFrame.landmarks.firstOrNull()
-        // Fallback to first landmark only for synthetic cursor frames (size 1); for real frames with <9 landmarks, ignore (wrist jitter)
-        if (indexTip != null) {
-            _cursorState.update { it.copy(
-                x = indexTip.x,
-                y = indexTip.y,
-                isVisible = true,
-            ) }
+
+        /*
+         * Cursor anchor deliberately uses the PALM, not the index fingertip.
+         *
+         * The fingertip moves dramatically during pinch/swipe/drag. Using it as
+         * the pointer anchor makes the cursor fight the gesture recognizer: a
+         * click gesture moves the pointer while the user is trying to hold it
+         * still. A palm anchor is much more stable and leaves finger motion free
+         * for gesture intent.
+         *
+         * We use the four MCP joints for the main palm centre and blend in the
+         * wrist. MCPs are less affected by finger articulation; the wrist keeps
+         * the anchor natural when the hand is rotated.
+         */
+        val lm = handFrame.landmarks
+        if (lm.size < HandFrame.LANDMARK_COUNT) return
+
+        val mcp = listOf(lm[5], lm[9], lm[13], lm[17])
+        val mcpX = mcp.sumOf { it.x.toDouble() }.toFloat() / mcp.size
+        val mcpY = mcp.sumOf { it.y.toDouble() }.toFloat() / mcp.size
+        val wrist = lm[0]
+
+        // 70% MCP centre + 30% wrist = stable palm anchor without a floating feel.
+        val palmX = (mcpX * 0.70f + wrist.x * 0.30f).coerceIn(0f, 1f)
+        val palmY = (mcpY * 0.70f + wrist.y * 0.30f).coerceIn(0f, 1f)
+
+        _cursorState.update {
+            it.copy(x = palmX, y = palmY, isVisible = true)
         }
     }
 
     override fun performClick() {
         _cursorState.update { it.copy(isPressed = true) }
         Timber.d("Cursor click performed")
-        // Haptic feedback is performed centrally by ActionDispatcher after actions.
     }
 
     override fun releaseClick() {
@@ -71,26 +80,15 @@ class CursorControllerImpl @Inject constructor() : CursorController {
 
     override fun show() {
         _cursorState.update { it.copy(isVisible = true, isPressed = false) }
-        Timber.d("Cursor shown")
     }
 
     override fun hide() {
         _cursorState.update { it.copy(isVisible = false) }
         clearPinClick()
-        Timber.d("Cursor hidden")
     }
 
-    /**
-     * Fix A-9: the position the click target is locked to. The dot the user aims
-     * with is smoothed, so a pinch that begins while the hand is moving must use
-     * the dot's position at that instant — not the live (ahead-of-the-dot) hand
-     * position, and not a re-smoothed value that has already drifted onward.
-     */
-    @Volatile
-    private var pinnedX: Float? = null
-
-    @Volatile
-    private var pinnedY: Float? = null
+    @Volatile private var pinnedX: Float? = null
+    @Volatile private var pinnedY: Float? = null
 
     fun pinClickPosition(x: Float, y: Float) {
         pinnedX = x
