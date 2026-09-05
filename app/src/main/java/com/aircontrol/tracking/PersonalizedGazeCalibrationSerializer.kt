@@ -1,0 +1,90 @@
+package com.aircontrol.tracking
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+sealed class CalibrationLoadResult {
+    data class Loaded(val model: PersonalizedGazeCalibrationModel) : CalibrationLoadResult()
+    data class Invalid(val reason: String) : CalibrationLoadResult()
+}
+
+object PersonalizedGazeCalibrationSerializer {
+    fun serialize(model: PersonalizedGazeCalibrationModel): String = JSONObject()
+        .put("modelVersion", model.modelVersion)
+        .put("featureSchemaVersion", model.featureSchemaVersion)
+        .put("modelType", model.modelType)
+        .put("regularization", model.regularization)
+        .put("transformSignature", model.transformSignature)
+        .put("means", JSONArray(model.standardization.means.toList()))
+        .put("stdDevs", JSONArray(model.standardization.stdDevs.toList()))
+        .put("coefficientsX", JSONArray(model.coefficientsX.toList()))
+        .put("coefficientsY", JSONArray(model.coefficientsY.toList()))
+        .put("trainingMetrics", metricsToJson(model.trainingMetrics))
+        .put("validationMetrics", metricsToJson(model.validationMetrics))
+        .put("screenWidthPx", model.screenWidthPx ?: JSONObject.NULL)
+        .put("screenHeightPx", model.screenHeightPx ?: JSONObject.NULL)
+        .put("createdAtMs", model.createdAtMs)
+        .toString()
+
+    fun deserialize(
+        raw: String?,
+        expectedModelVersion: Int = PersonalizedGazeCalibrationModel.MODEL_VERSION,
+        expectedFeatureSchemaVersion: Int = GazeCalibrationFeatureSchema.VERSION,
+        expectedTransformSignature: String,
+    ): CalibrationLoadResult {
+        if (raw.isNullOrBlank()) return CalibrationLoadResult.Invalid("serialized model is empty")
+        return try {
+            val root = JSONObject(raw)
+            val modelVersion = root.getInt("modelVersion")
+            val featureVersion = root.getInt("featureSchemaVersion")
+            val modelType = root.getString("modelType")
+            val signature = root.getString("transformSignature")
+            if (modelVersion != expectedModelVersion) return CalibrationLoadResult.Invalid("incompatible model version")
+            if (featureVersion != expectedFeatureSchemaVersion) return CalibrationLoadResult.Invalid("incompatible feature schema version")
+            if (modelType != PersonalizedGazeCalibrationModel.MODEL_TYPE) return CalibrationLoadResult.Invalid("incompatible model type")
+            if (signature != expectedTransformSignature) return CalibrationLoadResult.Invalid("incompatible transform signature")
+            val means = root.getJSONArray("means").toDoubleArrayStrict()
+            val stds = root.getJSONArray("stdDevs").toDoubleArrayStrict()
+            val cx = root.getJSONArray("coefficientsX").toDoubleArrayStrict()
+            val cy = root.getJSONArray("coefficientsY").toDoubleArrayStrict()
+            if (means.size != GazeCalibrationFeatureSchema.DIMENSION || stds.size != means.size) return CalibrationLoadResult.Invalid("incompatible standardization dimensions")
+            if (cx.size != cy.size || cx.size != QuadraticPolynomialFeatures.size(means.size)) return CalibrationLoadResult.Invalid("incompatible coefficient dimensions")
+            val width = root.optIntNullable("screenWidthPx")
+            val height = root.optIntNullable("screenHeightPx")
+            val model = PersonalizedGazeCalibrationModel(
+                modelVersion, featureVersion, modelType, root.getDouble("regularization"), signature,
+                Standardization(means, stds), cx, cy,
+                metricsFromJson(root.getJSONObject("trainingMetrics")),
+                metricsFromJson(root.getJSONObject("validationMetrics")),
+                width, height, root.getLong("createdAtMs"),
+            )
+            CalibrationLoadResult.Loaded(model)
+        } catch (e: Exception) {
+            CalibrationLoadResult.Invalid(e.message ?: "corrupt or invalid serialized model")
+        }
+    }
+
+    private fun metricsToJson(m: CalibrationMetrics): JSONObject = JSONObject()
+        .put("meanNormalizedError", m.meanNormalizedError)
+        .put("medianNormalizedError", m.medianNormalizedError)
+        .put("p95NormalizedError", m.p95NormalizedError)
+        .put("maxNormalizedError", m.maxNormalizedError)
+        .put("horizontalMae", m.horizontalMae)
+        .put("verticalMae", m.verticalMae)
+        .put("sampleCount", m.sampleCount)
+        .put("validationSampleCount", m.validationSampleCount)
+        .put("meanPixelError", m.meanPixelError ?: JSONObject.NULL)
+        .put("medianPixelError", m.medianPixelError ?: JSONObject.NULL)
+        .put("p95PixelError", m.p95PixelError ?: JSONObject.NULL)
+        .put("maxPixelError", m.maxPixelError ?: JSONObject.NULL)
+
+    private fun metricsFromJson(j: JSONObject): CalibrationMetrics = CalibrationMetrics(
+        j.getDouble("meanNormalizedError"), j.getDouble("medianNormalizedError"), j.getDouble("p95NormalizedError"), j.getDouble("maxNormalizedError"),
+        j.getDouble("horizontalMae"), j.getDouble("verticalMae"), j.getInt("sampleCount"), j.getInt("validationSampleCount"),
+        j.optDoubleNullable("meanPixelError"), j.optDoubleNullable("medianPixelError"), j.optDoubleNullable("p95PixelError"), j.optDoubleNullable("maxPixelError"),
+    )
+
+    private fun JSONArray.toDoubleArrayStrict(): DoubleArray = DoubleArray(length()) { i -> getDouble(i).also { require(it.isFinite()) } }
+    private fun JSONObject.optDoubleNullable(key: String): Double? = if (isNull(key)) null else optDouble(key).takeIf { it.isFinite() }
+    private fun JSONObject.optIntNullable(key: String): Int? = if (isNull(key)) null else getInt(key)
+}
