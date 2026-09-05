@@ -31,7 +31,7 @@ class EyeFeatureExtractorTest {
 
         // Mirroring moves anatomical left/right across the image; it must not swap
         // the returned left/right feature objects.
-        assertTrue(b.left!!.eyeCenterX > b.right!!.eyeCenterX)
+        assertTrue(b.left!!.eyeCenterX < b.right!!.eyeCenterX)
     }
 
     @Test
