@@ -6,6 +6,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
+private const val MIN_SAMPLE_QUALITY = 0.20f
+
 enum class CalibrationTarget(val x: Float, val y: Float) {
     TOP_LEFT(0.1f, 0.1f), TOP_CENTER(0.5f, 0.1f), TOP_RIGHT(0.9f, 0.1f),
     MIDDLE_LEFT(0.1f, 0.5f), CENTER(0.5f, 0.5f), MIDDLE_RIGHT(0.9f, 0.5f),
@@ -92,7 +94,6 @@ object RobustCalibrationSampleAggregator {
         val sorted = values.sorted()
         return if (sorted.size % 2 == 1) sorted[sorted.size / 2] else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) * 0.5
     }
-    private const val MIN_SAMPLE_QUALITY = 0.20f
 }
 
 /** Symmetric quadratic basis: intercept + all linear terms + x_i*x_j for i <= j. */
@@ -341,7 +342,7 @@ object PersonalizedGazeCalibrationFitter {
         val errors = ArrayList<Double>(samples.size)
         val horizontal = ArrayList<Double>(samples.size)
         val vertical = ArrayList<Double>(samples.size)
-        val pixelErrors = if (screenWidthPx != null && screenHeightPx != null) ArrayList(samples.size) else null
+        val pixelErrors: MutableList<Double>? = if (screenWidthPx != null && screenHeightPx != null) ArrayList<Double>(samples.size) else null
         for (sample in samples) {
             val basis = QuadraticPolynomialFeatures.expand(standardization.transform(sample.features.values))
             val px = dot(betaX, basis); val py = dot(betaY, basis)
