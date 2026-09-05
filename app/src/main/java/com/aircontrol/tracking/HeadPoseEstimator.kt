@@ -195,23 +195,30 @@ object HeadPoseEstimator {
         val determinant = dot3(r0, cross3(r1, r2))
         if (!determinant.isFinite() || determinant <= 0.90f) return null
 
-        // ZYX Euler decomposition: R = Rz(roll) * Ry(yaw) * Rx(pitch).
-        val yaw = Math.toDegrees(asin((-r2.x).coerceIn(-1f, 1f).toDouble())).toFloat()
-        val pitch = Math.toDegrees(atan2(r2.y.toDouble(), r2.z.toDouble())).toFloat()
-        val roll = Math.toDegrees(atan2(r0.y.toDouble(), r0.x.toDouble())).toFloat()
+        // The matrix is column-major, so the ZYX decomposition uses entries
+        // from the normalized third row and first two rows, not the third
+        // column. This recovers R20/R21/R22 for yaw/pitch and R10/R00 for roll.
+        val r20 = r0.z
+        val r21 = r1.z
+        val r22 = r2.z
+        val r00 = r0.x
+        val r10 = r1.x
+        val yaw = Math.toDegrees(asin((-r20).coerceIn(-1f, 1f).toDouble())).toFloat()
+        val pitch = Math.toDegrees(atan2(r21.toDouble(), r22.toDouble())).toFloat()
+        val roll = Math.toDegrees(atan2(r10.toDouble(), r00.toDouble())).toFloat()
         if (!yaw.isFinite() || !pitch.isFinite() || !roll.isFinite()) return null
         return RotationEstimate(yaw, pitch, roll, 0.98f)
     }
 
     /** Conservative landmark-only orientation fallback from eye line, face normal, and vertical axis. */
     private fun fallbackRotation(geometry: FaceGeometry): RotationEstimate? {
-        val right = normalize3(geometry.rightEye - geometry.leftEye) ?: return null
+        val horizontal = normalize3(geometry.leftEye - geometry.rightEye) ?: return null
         val upRaw = normalize3(geometry.forehead - geometry.chin) ?: return null
-        val upOrtho = normalize3(upRaw - right * dot3(upRaw, right)) ?: return null
-        val forward = normalize3(cross3(right, upOrtho)) ?: return null
+        val upOrtho = normalize3(upRaw - horizontal * dot3(upRaw, horizontal)) ?: return null
+        val forward = normalize3(cross3(horizontal, upOrtho)) ?: return null
         if (abs(forward.z) < 0.20f) return null
 
-        val roll = Math.toDegrees(atan2(right.y.toDouble(), right.x.toDouble())).toFloat()
+        val roll = Math.toDegrees(atan2(horizontal.y.toDouble(), horizontal.x.toDouble())).toFloat()
         val yaw = Math.toDegrees(atan2(forward.x.toDouble(), -forward.z.toDouble())).toFloat()
         val pitch = Math.toDegrees(atan2(forward.y.toDouble(), -forward.z.toDouble())).toFloat()
         if (!roll.isFinite() || !yaw.isFinite() || !pitch.isFinite()) return null
