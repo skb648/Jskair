@@ -21,6 +21,10 @@ data class FaceLandmark(
  * Landmark IDs remain MediaPipe semantic/anatomical IDs even when the source
  * image was mirrored for a front camera. Consumers must never infer anatomical
  * left/right from x position in the image.
+ *
+ * [facialTransformationMatrix] is optional preserved MediaPipe facial geometry
+ * metadata. It is stored verbatim as a 4x4 column-major matrix when available;
+ * pose estimation validates it before use and never trusts an invalid matrix.
  */
 data class FaceLandmarkFrame(
     val frameId: Long,
@@ -30,6 +34,7 @@ data class FaceLandmarkFrame(
     val trackerHeightPx: Int,
     val isFrontCameraMirrored: Boolean,
     val landmarks: List<FaceLandmark>,
+    val facialTransformationMatrix: FloatArray? = null,
 ) {
     init {
         require(frameId >= 0L) { "frameId must be non-negative" }
@@ -37,6 +42,9 @@ data class FaceLandmarkFrame(
         require(timestampMs >= 0L) { "timestampMs must be non-negative" }
         require(trackerWidthPx > 0) { "trackerWidthPx must be > 0" }
         require(trackerHeightPx > 0) { "trackerHeightPx must be > 0" }
+        require(facialTransformationMatrix == null || facialTransformationMatrix.size == 16) {
+            "facialTransformationMatrix must contain exactly 16 values"
+        }
     }
 
     fun isLandmarkIndexValid(index: Int): Boolean = index in landmarks.indices
