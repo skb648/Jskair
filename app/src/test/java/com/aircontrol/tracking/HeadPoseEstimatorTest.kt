@@ -70,7 +70,8 @@ class HeadPoseEstimatorTest {
         val features = EyeFeatureExtractor.extract(frame)
         val pose = HeadPoseEstimator.estimate(frame, features)
 
-        assertTrue(!features.isValid)
+        assertNull(features.left)
+        assertNotNull(features.right)
         assertTrue(!pose.isValid)
         assertEquals(HeadPoseSource.INVALID, pose.source)
         assertEquals(0f, pose.confidence, 0f)
