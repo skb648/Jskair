@@ -2,7 +2,6 @@ package com.aircontrol.tracking
 
 import java.security.MessageDigest
 import java.util.Locale
-import kotlin.math.abs
 
 /** Explicit source -> crop -> clockwise rotation -> horizontal mirror transform. */
 data class TransformPoint(val x: Float, val y: Float)
@@ -15,8 +14,8 @@ class CoordinateTransform(
     val mirroredHorizontally: Boolean,
     val transformVersion: Int = VERSION,
 ) {
-    val transformedWidthPx: Int = if (rotation == Rotation.DEG_90 || rotation == Rotation.DEG_270) crop.height else crop.width
-    val transformedHeightPx: Int = if (rotation == Rotation.DEG_90 || rotation == Rotation.DEG_270) crop.width else crop.height
+    val transformedWidthPx: Int = rotation.outputWidth(crop.width, crop.height)
+    val transformedHeightPx: Int = rotation.outputHeight(crop.width, crop.height)
     val coordinateConvention: CoordinateConvention = CoordinateConvention.X_RIGHT_Y_DOWN
     val signature: String = buildSignature()
 
@@ -30,9 +29,9 @@ class CoordinateTransform(
         requireSourcePoint(point)
         val cx = point.x - crop.leftPx
         val cy = point.y - crop.topPx
-        val (rx, ry) = rotateClockwise(cx, cy)
-        val x = if (mirroredHorizontally) transformedWidthPx - rx else rx
-        val result = TransformPoint(x, ry)
+        val rotated = rotateClockwise(cx, cy)
+        val x = if (mirroredHorizontally) transformedWidthPx - rotated.x else rotated.x
+        val result = TransformPoint(x, rotated.y)
         requireTransformedPoint(result)
         return result
     }
@@ -40,8 +39,8 @@ class CoordinateTransform(
     fun fromTracker(point: TransformPoint): TransformPoint {
         requireTransformedPoint(point)
         val unmirroredX = if (mirroredHorizontally) transformedWidthPx - point.x else point.x
-        val (cx, cy) = inverseRotateClockwise(unmirroredX, point.y)
-        val result = TransformPoint(cx + crop.leftPx, cy + crop.topPx)
+        val cropped = inverseRotateClockwise(unmirroredX, point.y)
+        val result = TransformPoint(cropped.x + crop.leftPx, cropped.y + crop.topPx)
         requireSourcePoint(result)
         return result
     }
@@ -91,8 +90,12 @@ class CoordinateTransform(
         require(point.x in 0f..sourceWidthPx.toFloat() && point.y in 0f..sourceHeightPx.toFloat()) {
             "source point outside source bounds"
         }
-        require(point.x + TOLERANCE >= crop.leftPx && point.x <= crop.leftPx + crop.width + TOLERANCE)
-        require(point.y + TOLERANCE >= crop.topPx && point.y <= crop.topPx + crop.height + TOLERANCE)
+        require(point.x + TOLERANCE >= crop.leftPx && point.x <= crop.leftPx + crop.width + TOLERANCE) {
+            "source point outside crop x bounds"
+        }
+        require(point.y + TOLERANCE >= crop.topPx && point.y <= crop.topPx + crop.height + TOLERANCE) {
+            "source point outside crop y bounds"
+        }
     }
 
     private fun requireTransformedPoint(point: TransformPoint) {
