@@ -122,5 +122,6 @@ class CoordinateTransform(
 
     companion object {
         const val VERSION = 1
+        private const val TOLERANCE = 1e-4f
     }
 }
