@@ -3,7 +3,6 @@ package com.aircontrol.tracking
 import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -35,6 +34,8 @@ data class HeadPoseEstimate(
     val rollDeg: Float,
     val translationXPx: Float,
     val translationYPx: Float,
+    val frameWidthPx: Int,
+    val frameHeightPx: Int,
     val faceScalePx: Float,
     val confidence: Float,
     val source: HeadPoseSource,
@@ -48,6 +49,8 @@ data class HeadPoseEstimate(
             rollDeg = 0f,
             translationXPx = 0f,
             translationYPx = 0f,
+            frameWidthPx = 0,
+            frameHeightPx = 0,
             faceScalePx = 0f,
             confidence = 0f,
             source = HeadPoseSource.INVALID,
@@ -69,34 +72,11 @@ object HeadPoseEstimator {
         val geometry = faceGeometry(frame, features) ?: return HeadPoseEstimate.invalid("degenerate face geometry")
         val matrixPose = frame.facialTransformationMatrix?.let(::extractMatrixRotation)
 
-        if (matrixPose != null) {
-            return HeadPoseEstimate(
-                yawDeg = matrixPose.yawDeg,
-                pitchDeg = matrixPose.pitchDeg,
-                rollDeg = matrixPose.rollDeg,
-                translationXPx = geometry.translationXPx,
-                translationYPx = geometry.translationYPx,
-                faceScalePx = geometry.faceScalePx,
-                confidence = (geometry.confidence * matrixPose.confidence).coerceIn(0f, 1f),
-                source = HeadPoseSource.MATRIX,
-                isValid = true,
-            )
-        }
+        if (matrixPose != null) return geometry.toPose(frame, matrixPose, HeadPoseSource.MATRIX)
 
-        val fallback = fallbackRotation(frame, geometry) ?:
-            return HeadPoseEstimate.invalid("matrix unavailable/invalid and landmark geometry unreliable")
-
-        return HeadPoseEstimate(
-            yawDeg = fallback.yawDeg,
-            pitchDeg = fallback.pitchDeg,
-            rollDeg = fallback.rollDeg,
-            translationXPx = geometry.translationXPx,
-            translationYPx = geometry.translationYPx,
-            faceScalePx = geometry.faceScalePx,
-            confidence = (geometry.confidence * fallback.confidence).coerceIn(0f, 1f),
-            source = HeadPoseSource.LANDMARK_FALLBACK,
-            isValid = true,
-        )
+        val fallback = fallbackRotation(geometry)
+            ?: return HeadPoseEstimate.invalid("matrix unavailable/invalid and landmark geometry unreliable")
+        return geometry.toPose(frame, fallback, HeadPoseSource.LANDMARK_FALLBACK)
     }
 
     private data class FaceGeometry(
@@ -110,7 +90,22 @@ object HeadPoseEstimator {
         val translationXPx: Float,
         val translationYPx: Float,
         val confidence: Float,
-    )
+    ) {
+        fun toPose(frame: FaceLandmarkFrame, rotation: RotationEstimate, source: HeadPoseSource): HeadPoseEstimate =
+            HeadPoseEstimate(
+                yawDeg = rotation.yawDeg,
+                pitchDeg = rotation.pitchDeg,
+                rollDeg = rotation.rollDeg,
+                translationXPx = translationXPx,
+                translationYPx = translationYPx,
+                frameWidthPx = frame.trackerWidthPx,
+                frameHeightPx = frame.trackerHeightPx,
+                faceScalePx = faceScalePx,
+                confidence = (confidence * rotation.confidence).coerceIn(0f, 1f),
+                source = source,
+                isValid = true,
+            )
+    }
 
     private data class RotationEstimate(
         val yawDeg: Float,
@@ -131,26 +126,26 @@ object HeadPoseEstimator {
         val nose = frame.landmark3(FacePoseLandmarks.NOSE_TIP) ?: return null
         val forehead = frame.landmark3(FacePoseLandmarks.FOREHEAD) ?: return null
         val chin = frame.landmark3(FacePoseLandmarks.CHIN) ?: return null
-        if (!left.isFinite() || !right.isFinite() || !nose.isFinite() || !forehead.isFinite() || !chin.isFinite()) {
-            return null
-        }
+        if (!left.isFinite() || !right.isFinite() || !nose.isFinite() || !forehead.isFinite() || !chin.isFinite()) return null
 
         val interEye = distance2D(left, right)
         val faceVertical = distance3(forehead, chin)
-        if (!interEye.isFinite() || !faceVertical.isFinite() || interEye <= EPSILON || faceVertical <= EPSILON) {
-            return null
-        }
+        if (!interEye.isFinite() || !faceVertical.isFinite() || interEye <= EPSILON || faceVertical <= EPSILON) return null
 
         val faceCenter = (left + right) * 0.5f
         val translationX = faceCenter.x - frame.trackerWidthPx * 0.5f
         val translationY = faceCenter.y - frame.trackerHeightPx * 0.5f
-        val scale = interEye
-        val symmetry = abs(distance3(nose, faceCenter) - distance3(nose, (forehead + chin) * 0.5f)) /
-            max(faceVertical, EPSILON)
-        val confidence = (1f - symmetry * 2f).coerceIn(0f, 1f)
-        if (!translationX.isFinite() || !translationY.isFinite() || !scale.isFinite() || scale <= EPSILON) return null
+        if (!translationX.isFinite() || !translationY.isFinite()) return null
 
-        return FaceGeometry(left, right, faceCenter, nose, forehead, chin, scale, translationX, translationY, confidence)
+        // Internal consistency only. Low consistency is rejected rather than
+        // converted into a fabricated neutral pose.
+        val noseFromEyes = distance3(nose, faceCenter)
+        val noseFromVerticalMidpoint = distance3(nose, (forehead + chin) * 0.5f)
+        val symmetryError = abs(noseFromEyes - noseFromVerticalMidpoint) / max(faceVertical, EPSILON)
+        val confidence = (1f - symmetryError).coerceIn(0f, 1f)
+        if (confidence < 0.05f) return null
+
+        return FaceGeometry(left, right, faceCenter, nose, forehead, chin, interEye, translationX, translationY, confidence)
     }
 
     private fun FaceLandmarkFrame.eyeCenter3(
@@ -166,11 +161,7 @@ object HeadPoseEstimator {
     private fun FaceLandmarkFrame.landmark3(index: Int): Point3? {
         val landmark = landmark(index) ?: return null
         if (!landmark.isFinite()) return null
-        return Point3(
-            landmark.x * trackerWidthPx,
-            landmark.y * trackerHeightPx,
-            landmark.z,
-        )
+        return Point3(landmark.x * trackerWidthPx, landmark.y * trackerHeightPx, landmark.z)
     }
 
     /** Validate and decompose a 4x4 column-major rotation block without trusting it blindly. */
@@ -196,7 +187,8 @@ object HeadPoseEstimator {
         val determinant = dot3(r0, cross3(r1, r2))
         if (!determinant.isFinite() || determinant <= 0.90f) return null
 
-        val yaw = Math.toDegrees(asin((-r2.x).coerceIn(-1f, 1f).toDouble()).toFloat().toDouble()).toFloat()
+        // ZYX Euler decomposition: R = Rz(roll) * Ry(yaw) * Rx(pitch).
+        val yaw = Math.toDegrees(asin((-r2.x).coerceIn(-1f, 1f).toDouble())).toFloat()
         val pitch = Math.toDegrees(atan2(r2.y.toDouble(), r2.z.toDouble())).toFloat()
         val roll = Math.toDegrees(atan2(r0.y.toDouble(), r0.x.toDouble())).toFloat()
         if (!yaw.isFinite() || !pitch.isFinite() || !roll.isFinite()) return null
@@ -204,7 +196,7 @@ object HeadPoseEstimator {
     }
 
     /** Conservative landmark-only orientation fallback from eye line, face normal, and vertical axis. */
-    private fun fallbackRotation(frame: FaceLandmarkFrame, geometry: FaceGeometry): RotationEstimate? {
+    private fun fallbackRotation(geometry: FaceGeometry): RotationEstimate? {
         val right = normalize3(geometry.rightEye - geometry.leftEye) ?: return null
         val upRaw = normalize3(geometry.forehead - geometry.chin) ?: return null
         val upOrtho = normalize3(upRaw - right * dot3(upRaw, right)) ?: return null
@@ -216,13 +208,7 @@ object HeadPoseEstimator {
         val pitch = Math.toDegrees(atan2(forward.y.toDouble(), -forward.z.toDouble())).toFloat()
         if (!roll.isFinite() || !yaw.isFinite() || !pitch.isFinite()) return null
         if (abs(yaw) > MAX_FALLBACK_YAW_DEG || abs(pitch) > MAX_FALLBACK_PITCH_DEG) return null
-
-        val noseAlignment = distanceToLine3(geometry.nose, geometry.leftEye, geometry.rightEye) / geometry.faceScalePx
-        val verticalAlignment = distanceToLine3(geometry.nose, geometry.forehead, geometry.chin) /
-            max(distance3(geometry.forehead, geometry.chin), EPSILON)
-        val confidence = (1f - (noseAlignment * 0.5f + verticalAlignment * 0.5f)).coerceIn(0f, 1f)
-        if (confidence < 0.10f) return null
-        return RotationEstimate(yaw, pitch, roll, confidence)
+        return RotationEstimate(yaw, pitch, roll, 0.75f)
     }
 
     private fun distance2D(a: Point3, b: Point3): Float = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
@@ -234,14 +220,5 @@ object HeadPoseEstimator {
     private fun normalize3(a: Point3): Point3? {
         val n = norm3(a)
         return if (n.isFinite() && n > EPSILON) a * (1f / n) else null
-    }
-
-    private fun distanceToLine3(point: Point3, lineA: Point3, lineB: Point3): Float {
-        val direction = lineB - lineA
-        val lengthSquared = dot3(direction, direction)
-        if (!lengthSquared.isFinite() || lengthSquared <= EPSILON) return Float.POSITIVE_INFINITY
-        val projection = dot3(point - lineA, direction) / lengthSquared
-        val closest = lineA + direction * projection
-        return distance3(point, closest)
     }
 }
