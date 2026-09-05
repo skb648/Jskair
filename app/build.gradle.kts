@@ -136,6 +136,7 @@ dependencies {
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.turbine)
     testImplementation(libs.robolectric)
+    testImplementation(libs.org.json)
     androidTestImplementation(composeBom)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
