@@ -136,7 +136,9 @@ class PersonalizedGazeCalibrationTest {
     @Test fun serializationRoundTripAndCompatibilityRejection() {
         val model = calibrationModelFixture()
         val raw = model.toSerialized()
+        println("SERIALIZATION_DIAGNOSTIC rawNull=${raw == null}")
         val loaded = PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransform = transform)
+        println("SERIALIZATION_DIAGNOSTIC loaded=$loaded")
         val restored = when (loaded) {
             is CalibrationLoadResult.Loaded -> loaded.model
             is CalibrationLoadResult.Invalid -> throw AssertionError("Unexpected calibration load result: ${loaded.reason}")
