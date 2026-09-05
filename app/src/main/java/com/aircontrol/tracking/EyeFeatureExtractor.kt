@@ -144,8 +144,13 @@ object EyeFeatureExtractor {
 
         fun p(index: Int): PointPx {
             val landmark = points.getValue(index)!!
+            // Fix (A5 wiring + tests): normalized coordinates are converted into a
+            // canonical unmirrored "person view" — for a mirrored front-camera
+            // frame the x axis is flipped back so anatomical identity and all
+            // downstream features are frame-convention independent.
+            val x = if (frame.isFrontCameraMirrored) 1f - landmark.x else landmark.x
             return PointPx(
-                landmark.x * frame.trackerWidthPx,
+                x * frame.trackerWidthPx,
                 landmark.y * frame.trackerHeightPx,
             )
         }

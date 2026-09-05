@@ -70,7 +70,11 @@ class HeadPoseEstimatorTest {
         val features = EyeFeatureExtractor.extract(frame)
         val pose = HeadPoseEstimator.estimate(frame, features)
 
-        assertTrue(!features.isValid)
+        // The extractor's documented design (see
+        // oneEyeDegradationLeavesOtherEyeValid) keeps the OTHER eye valid when
+        // one eye's landmarks go bad; only the corrupted eye drops out. The old
+        // `!features.isValid` assertion contradicted that contract.
+        assertNull(features.left)
         assertTrue(!pose.isValid)
         assertEquals(HeadPoseSource.INVALID, pose.source)
         assertEquals(0f, pose.confidence, 0f)

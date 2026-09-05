@@ -5,7 +5,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+// The serializer round-trips through android's org.json, which is only present
+// in a Robolectric sandbox (plain JUnit throws "not mocked").
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class PersonalizedGazeCalibrationTest {
     @Test fun featureVectorOrderingIsDeterministic() {
         val a = GazeCalibrationFeatureVectorBuilder.from(normalizedFixture())!!

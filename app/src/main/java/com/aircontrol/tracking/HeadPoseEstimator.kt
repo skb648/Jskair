@@ -163,8 +163,12 @@ object HeadPoseEstimator {
         if (!landmark.isFinite()) return null
         // MediaPipe z is face-relative and width-normalized; place it in the
         // same scale basis as aspect-correct tracker x/y before 3D geometry use.
+        // Fix (A5 wiring + tests): x is first flipped into the canonical
+        // unmirrored person view, matching EyeFeatureExtractor, so mirrored and
+        // unmirrored frames produce identical geometry.
+        val x = if (isFrontCameraMirrored) 1f - landmark.x else landmark.x
         return Point3(
-            landmark.x * trackerWidthPx,
+            x * trackerWidthPx,
             landmark.y * trackerHeightPx,
             landmark.z * trackerWidthPx,
         )
@@ -194,9 +198,15 @@ object HeadPoseEstimator {
         if (!determinant.isFinite() || determinant <= 0.90f) return null
 
         // ZYX Euler decomposition: R = Rz(roll) * Ry(yaw) * Rx(pitch).
-        val yaw = Math.toDegrees(asin((-r2.x).coerceIn(-1f, 1f).toDouble())).toFloat()
-        val pitch = Math.toDegrees(atan2(r2.y.toDouble(), r2.z.toDouble())).toFloat()
-        val roll = Math.toDegrees(atan2(r0.y.toDouble(), r0.x.toDouble())).toFloat()
+        // Fix (dead-code bug): the decomposition must read the ROW elements of R.
+        // With column-major storage the row-major element m_rc lives at
+        // values[c*4 + r], so m20 = values[2], m21 = values[6], m22 = values[10],
+        // m10 = values[1], m00 = values[0]. (The old code decomposed the columns
+        // with ad-hoc signs, which returned -yaw/interchanged angles.)
+        // yaw = asin(-m20), pitch = atan2(m21, m22), roll = atan2(m10, m00).
+        val yaw = Math.toDegrees(asin((-values[2]).coerceIn(-1f, 1f).toDouble())).toFloat()
+        val pitch = Math.toDegrees(atan2(values[6].toDouble(), values[10].toDouble())).toFloat()
+        val roll = Math.toDegrees(atan2(values[1].toDouble(), values[0].toDouble())).toFloat()
         if (!yaw.isFinite() || !pitch.isFinite() || !roll.isFinite()) return null
         return RotationEstimate(yaw, pitch, roll, 0.98f)
     }
@@ -209,9 +219,15 @@ object HeadPoseEstimator {
         val forward = normalize3(cross3(right, upOrtho)) ?: return null
         if (abs(forward.z) < 0.20f) return null
 
-        val roll = Math.toDegrees(atan2(right.y.toDouble(), right.x.toDouble())).toFloat()
-        val yaw = Math.toDegrees(atan2(forward.x.toDouble(), -forward.z.toDouble())).toFloat()
-        val pitch = Math.toDegrees(atan2(forward.y.toDouble(), -forward.z.toDouble())).toFloat()
+        // Coordinates here are the canonical unmirrored person view
+        // (x: image right, y: down, z: toward the viewer), so the neutral axes
+        // are right = (-1, 0, 0), up = (0, -1, 0), forward = (0, 0, 1).
+        // Fix (dead-code bug): the old formulas measured roll from +x and yaw/
+        // pitch against -z, which turned every neutral face into yaw = pitch =
+        // roll = 180° and made the fallback permanently fail its ±70° gate.
+        val roll = Math.toDegrees(atan2(right.y.toDouble(), (-right.x).toDouble())).toFloat()
+        val yaw = Math.toDegrees(atan2(forward.x.toDouble(), forward.z.toDouble())).toFloat()
+        val pitch = Math.toDegrees(atan2(forward.y.toDouble(), forward.z.toDouble())).toFloat()
         if (!roll.isFinite() || !yaw.isFinite() || !pitch.isFinite()) return null
         if (abs(yaw) > MAX_FALLBACK_YAW_DEG || abs(pitch) > MAX_FALLBACK_PITCH_DEG) return null
         return RotationEstimate(yaw, pitch, roll, 0.75f)
