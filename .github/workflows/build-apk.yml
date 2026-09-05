@@ -35,6 +35,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
       - name: Make Gradle executable
         run: chmod +x ./gradlew
+      - name: Run all Gradle tests
+        run: ./gradlew --no-daemon --stacktrace test
+      - name: Run required module unit tests
+        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :gesture-engine:test
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
       - name: Verify APK
