@@ -82,7 +82,7 @@ object HeadPoseNormalizer {
             irisDiameterOverEyeWidth = eye.irisDiameterOverEyeWidth,
             eyelidOpening = eye.eyelidOpening,
             ear = eye.ear,
-            eyeCenterFromFaceCenterX = eye. eyeCenterFromFaceCenterX,
+            eyeCenterFromFaceCenterX = eye.eyeCenterFromFaceCenterX,
             eyeCenterFromFaceCenterY = eye.eyeCenterFromFaceCenterY,
             quality = eye.quality,
         )
