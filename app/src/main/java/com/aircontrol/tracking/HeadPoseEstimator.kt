@@ -118,6 +118,8 @@ object HeadPoseEstimator {
         operator fun plus(other: Point3): Point3 = Point3(x + other.x, y + other.y, z + other.z)
         operator fun minus(other: Point3): Point3 = Point3(x - other.x, y - other.y, z - other.z)
         operator fun times(scale: Float): Point3 = Point3(x * scale, y * scale, z * scale)
+
+        fun isFinite(): Boolean = x.isFinite() && y.isFinite() && z.isFinite()
     }
 
     private fun faceGeometry(frame: FaceLandmarkFrame, features: BinocularEyeFeatures): FaceGeometry? {
