@@ -25,9 +25,13 @@ class EyeFeatureExtractorTest {
 
         // Anatomical identity is tied to MediaPipe semantic IDs, never x ordering.
         assertEquals(a.left!!.irisAlongAxis, b.left!!.irisAlongAxis, 1e-6f)
-        assertEquals(a.left.irisPerpendicular, -b.left.irisPerpendicular, 1e-6f)
+        assertEquals(a.left.irisDiameterOverEyeWidth, b.left.irisDiameterOverEyeWidth, 1e-6f)
         assertEquals(a.right!!.irisAlongAxis, b.right!!.irisAlongAxis, 1e-6f)
-        assertEquals(a.right.irisPerpendicular, -b.right.irisPerpendicular, 1e-6f)
+        assertEquals(a.right.irisDiameterOverEyeWidth, b.right.irisDiameterOverEyeWidth, 1e-6f)
+
+        // Mirroring moves anatomical left/right across the image; it must not swap
+        // the returned left/right feature objects.
+        assertTrue(b.left!!.eyeCenterX > b.right!!.eyeCenterX)
     }
 
     @Test
@@ -44,7 +48,7 @@ class EyeFeatureExtractorTest {
         assertNotNull(left)
 
         // Corner delta is (120 px, 20 px), so aspect-correct Euclidean width is
-        // sqrt(120^2 + 20^2), not sqrt(.12^2 + .04^2) in raw normalized space.
+        // sqrt(120^2 + 20^2), not a distance computed from raw normalized values.
         val expected = kotlin.math.hypot(120.0, 20.0).toFloat()
         assertEquals(expected, left!!.eyeWidthPx, 1e-3f)
     }
