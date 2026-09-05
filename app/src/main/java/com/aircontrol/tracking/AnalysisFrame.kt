@@ -45,8 +45,11 @@ data class CropRect(val leftPx: Int, val topPx: Int, val width: Int, val height:
 enum class Rotation(val degrees: Int) {
     DEG_0(0), DEG_90(90), DEG_180(180), DEG_270(270);
 
-    fun outputWidth(cropWidth: Int): Int = if (this == DEG_90 || this == DEG_270) cropWidth else cropWidth
-    fun outputHeight(cropHeight: Int): Int = if (this == DEG_90 || this == DEG_270) cropHeight else cropHeight
+    fun outputWidth(cropWidth: Int, cropHeight: Int = cropWidth): Int =
+        if (this == DEG_90 || this == DEG_270) cropHeight else cropWidth
+
+    fun outputHeight(cropWidth: Int, cropHeight: Int = cropWidth): Int =
+        if (this == DEG_90 || this == DEG_270) cropWidth else cropHeight
 
     companion object {
         fun fromDegrees(degrees: Int): Rotation = when (((degrees % 360) + 360) % 360) {
