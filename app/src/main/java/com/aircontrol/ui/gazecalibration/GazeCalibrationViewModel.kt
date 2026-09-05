@@ -151,16 +151,16 @@ class GazeCalibrationViewModel @Inject constructor(
                     rawSumX += obs.rawX
                     rawSumY += obs.rawY
                     val vector = obs.featureVector ?: return@collect
-                    when (val result = CalibrationSample.create(
+                    // Fix (compile): acceptOrNull avoids naming the nested
+                    // Result type from outside its file.
+                    val sample = CalibrationSample.acceptOrNull(
                         target = target,
                         featureVector = vector,
                         timestampMs = obs.timestampMs,
                         quality = obs.quality,
                         poseValid = obs.poseValid,
-                    )) {
-                        is CalibrationSample.Result.Accepted -> samples.add(result.sample)
-                        is CalibrationSample.Result.Rejected -> Unit // quality gate inside
-                    }
+                    )
+                    if (sample != null) samples.add(sample)
                 }
             }
 

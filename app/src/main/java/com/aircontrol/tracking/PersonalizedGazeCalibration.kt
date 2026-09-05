@@ -57,6 +57,23 @@ data class CalibrationSample(
             if (featureVector.values.any { !it.isFinite() }) return Result.Rejected(RejectionReason.NON_FINITE)
             return Result.Accepted(CalibrationSample(target, target.x, target.y, featureVector, timestampMs, quality))
         }
+
+        /**
+         * Fix (compile): `Result` is nested inside this companion object, which
+         * makes it awkward to name from other files. This plain companion
+         * function exposes the outcome without the caller having to spell the
+         * nested type out.
+         */
+        fun acceptOrNull(
+            target: CalibrationTarget,
+            featureVector: CalibrationFeatureVector?,
+            timestampMs: Long,
+            quality: Float,
+            poseValid: Boolean,
+        ): CalibrationSample? = when (val result = create(target, featureVector, timestampMs, quality, poseValid)) {
+            is Result.Accepted -> result.sample
+            is Result.Rejected -> null
+        }
     }
 }
 
