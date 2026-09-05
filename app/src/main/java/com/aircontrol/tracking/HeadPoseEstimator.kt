@@ -7,7 +7,6 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** Stable face anchors used only by the isolated eye-tracking pose foundation. */
 object FacePoseLandmarks {
     const val NOSE_TIP = 1
     const val FOREHEAD = 10
@@ -20,14 +19,6 @@ enum class HeadPoseSource {
     INVALID,
 }
 
-/**
- * Head pose and face-frame geometry expressed in tracker coordinates.
- *
- * Angles are degrees. The matrix convention is the MediaPipe-style 4x4
- * column-major layout. Pose orientation is extracted using the ZYX Euler
- * convention (roll around Z, yaw around Y, pitch around X). Translation is the
- * binocular eye-center in tracker pixels relative to the tracker center.
- */
 data class HeadPoseEstimate(
     val yawDeg: Float,
     val pitchDeg: Float,
@@ -60,7 +51,6 @@ data class HeadPoseEstimate(
     }
 }
 
-/** Pure, isolated head-pose estimator. It has no camera/runtime dependencies. */
 object HeadPoseEstimator {
     private const val EPSILON = 1e-6f
     private const val MATRIX_ORTHOGONAL_TOLERANCE = 0.08f
@@ -139,8 +129,6 @@ object HeadPoseEstimator {
         val translationY = faceCenter.y - frame.trackerHeightPx * 0.5f
         if (!translationX.isFinite() || !translationY.isFinite()) return null
 
-        // Internal consistency only. Low consistency is rejected rather than
-        // converted into a fabricated neutral pose.
         val noseFromEyes = distance3(nose, faceCenter)
         val noseFromVerticalMidpoint = distance3(nose, (forehead + chin) * 0.5f)
         val symmetryError = abs(noseFromEyes - noseFromVerticalMidpoint) / max(faceVertical, EPSILON)
@@ -163,8 +151,6 @@ object HeadPoseEstimator {
     private fun FaceLandmarkFrame.landmark3(index: Int): Point3? {
         val landmark = landmark(index) ?: return null
         if (!landmark.isFinite()) return null
-        // MediaPipe z is face-relative and width-normalized; place it in the
-        // same scale basis as aspect-correct tracker x/y before 3D geometry use.
         return Point3(
             landmark.x * trackerWidthPx,
             landmark.y * trackerHeightPx,
@@ -172,7 +158,6 @@ object HeadPoseEstimator {
         )
     }
 
-    /** Validate and decompose a 4x4 column-major rotation block without trusting it blindly. */
     private fun extractMatrixRotation(values: FloatArray): RotationEstimate? {
         if (values.size != 16 || values.any { !it.isFinite() }) return null
 
@@ -195,22 +180,13 @@ object HeadPoseEstimator {
         val determinant = dot3(r0, cross3(r1, r2))
         if (!determinant.isFinite() || determinant <= 0.90f) return null
 
-        // The matrix is column-major, so the ZYX decomposition uses entries
-        // from the normalized third row and first two rows, not the third
-        // column. This recovers R20/R21/R22 for yaw/pitch and R10/R00 for roll.
-        val r20 = r0.z
-        val r21 = r1.z
-        val r22 = r2.z
-        val r00 = r0.x
-        val r10 = r1.x
-        val yaw = Math.toDegrees(asin((-r20).coerceIn(-1f, 1f).toDouble())).toFloat()
-        val pitch = Math.toDegrees(atan2(r21.toDouble(), r22.toDouble())).toFloat()
-        val roll = Math.toDegrees(atan2(r10.toDouble(), r00.toDouble())).toFloat()
+        val yaw = Math.toDegrees(asin((-r0.z).coerceIn(-1f, 1f).toDouble())).toFloat()
+        val pitch = Math.toDegrees(atan2(r1.z.toDouble(), r2.z.toDouble())).toFloat()
+        val roll = Math.toDegrees(atan2(r0.y.toDouble(), r0.x.toDouble())).toFloat()
         if (!yaw.isFinite() || !pitch.isFinite() || !roll.isFinite()) return null
         return RotationEstimate(yaw, pitch, roll, 0.98f)
     }
 
-    /** Conservative landmark-only orientation fallback from eye line, face normal, and vertical axis. */
     private fun fallbackRotation(geometry: FaceGeometry): RotationEstimate? {
         val horizontal = normalize3(geometry.leftEye - geometry.rightEye) ?: return null
         val upRaw = normalize3(geometry.forehead - geometry.chin) ?: return null
