@@ -137,8 +137,10 @@ class PersonalizedGazeCalibrationTest {
         val model = calibrationModelFixture()
         val raw = model.toSerialized()
         val loaded = PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransform = transform)
-        assertTrue("Unexpected calibration load result: $loaded", loaded is CalibrationLoadResult.Loaded)
-        val restored = (loaded as CalibrationLoadResult.Loaded).model
+        val restored = when (loaded) {
+            is CalibrationLoadResult.Loaded -> loaded.model
+            is CalibrationLoadResult.Invalid -> throw AssertionError("Unexpected calibration load result: ${loaded.reason}")
+        }
         assertArrayEquals(model.coefficientsX, restored.coefficientsX, 0.0)
         assertArrayEquals(model.coefficientsY, restored.coefficientsY, 0.0)
         assertEquals(model.transformSignature, restored.transformSignature)
@@ -164,20 +166,7 @@ class PersonalizedGazeCalibrationTest {
     }
 
     private fun normalizedFixture(frameWidth: Int = 800, frameHeight: Int = 600, scale: Float = 120f): NormalizedBinocularEyeFeatures {
-        fun eye(offset: Float) = NormalizedEyeFeatures(
-            eyeCenterX = 0.4f + offset,
-            eyeCenterY = 0.5f,
-            irisCenterX = 0.42f + offset,
-            irisCenterY = 0.5f,
-            irisAlongAxis = 0.52f,
-            irisPerpendicular = 0.02f,
-            irisDiameterOverEyeWidth = 0.3f,
-            eyelidOpening = 0.4f,
-            ear = 0.38f,
-            eyeCenterFromFaceCenterX = offset,
-            eyeCenterFromFaceCenterY = 0f,
-            quality = 0.95f,
-        )
+        fun eye(offset: Float) = NormalizedEyeFeatures(0.4f + offset, 0.5f, 0.42f + offset, 0.5f, 0.52f, 0.02f, 0.3f, 0.4f, 0.38f, offset, 0f, 0.95f)
         val pose = HeadPoseEstimate(0f, 0f, 0f, 0f, 0f, frameWidth, frameHeight, scale, 0.95f, HeadPoseSource.MATRIX, true)
         return NormalizedBinocularEyeFeatures(eye(0.1f), eye(-0.1f), pose)
     }
