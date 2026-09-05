@@ -81,7 +81,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val engine: GestureEngine get() = engineRef.get()
     private var engineEventsJob: Job? = null
     @Volatile
-    private var currentSensitivity: Int = 50
+    private var currentSensitivity: Int = 70
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
         extraBufferCapacity = 16,

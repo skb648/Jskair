@@ -180,7 +180,20 @@ class SettingsViewModel @Inject constructor(
 
     fun updateBlinkClickEnabled(enabled: Boolean) {
         viewModelScope.launch {
+            // Fix C6: blink clicks are driven by the face tracker, which only
+            // runs when "Eye is Mouse" is on. Enabling blink without eye mode
+            // silently did nothing; turn eye mode on with it (the subtitle says so).
+            if (enabled) {
+                settingsRepository.updateEyeTrackingEnabled(true)
+            }
             settingsRepository.updateBlinkClickEnabled(enabled)
+        }
+    }
+
+    /** Fix A10: user-tunable minimum blink duration. */
+    fun updateBlinkWindowMs(durationMs: Int) {
+        viewModelScope.launch {
+            settingsRepository.updateBlinkWindowMs(durationMs)
         }
     }
 

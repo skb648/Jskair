@@ -21,9 +21,9 @@ object Suppression {
 
     private val active = AtomicInteger(0)
 
-    val isSuppressedFlow: Boolean get() = active.get() > 0
-
-    fun isSuppressed(): Boolean = isSuppressedFlow
+    // Fix D2: the old property was named `isSuppressedFlow` but returned a plain
+    // Boolean — it was not a Flow and the name misled every reader.
+    fun isSuppressed(): Boolean = active.get() > 0
 
     /** Marks one setup flow as being on screen. Must be paired with [release]. */
     fun acquire() {

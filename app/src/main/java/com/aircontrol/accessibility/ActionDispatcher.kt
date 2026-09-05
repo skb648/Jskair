@@ -120,6 +120,17 @@ class ActionDispatcher @Inject constructor(
 
         private const val MAX_DRAG_STEP_FRACTION = 0.15f
 
+        // Fix P1: a pinch-held-MOVE must travel this far (fraction of screen
+        // width) before the dispatcher starts a DRAG stroke. Previously the
+        // first MOVE frame — which the engine emits on EVERY frame of a held
+        // pinch, moving or not — started a continued drag stroke immediately,
+        // and Pinch END then saw isDragging and returned *without* dispatching
+        // the tap. Every "tap" was really an abandoned drag stroke
+        // (DOWN…CANCEL), which apps and OEMs treat inconsistently: the
+        // "pinch registers visually but nothing clicks" complaint.
+        private const val DRAG_START_SLOP_FRACTION = 0.025f
+        private const val MIN_DRAG_START_SLOP_PX = 12f
+
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"
         const val KEY_SWIPE_UP = "swipe_up"
@@ -135,22 +146,48 @@ class ActionDispatcher @Inject constructor(
         @Volatile private var cursorGain = 0.5f
         @Volatile private var sitBackModeEnabled = false
 
+        /**
+         * Fix B1: the pointer-gain factor derived from the "Cursor Speed"
+         * setting. 0 → 0.5× (slow, precise), 50 (default) → 1.0× (unchanged
+         * from the previous fixed behaviour), 100 → 1.5× (fast). The gain is
+         * applied around the screen centre after the dead-zone mapping, so the
+         * screen edges stay reachable at every gain (results are clamped).
+         */
+        private fun pointerGainFactor(): Float = 0.5f + cursorGain.coerceIn(0f, 1f)
+
+        /**
+         * Fix A2: gaze coordinates are already screen-normalized (either the
+         * calibrated affine/personalized output or the gain+invert applied in
+         * the service). They must be mapped straight to pixels — routing them
+         * through the hand mapping's margins and dead zones shifted the whole
+         * eye cursor up by ~21% of the screen even after a perfect calibration.
+         */
+        fun normalizeDirect(norm: Float, screenDim: Int): Float =
+            if (screenDim <= 0) 0f else norm.coerceIn(0f, 1f) * screenDim
+
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             if (screenWidth <= 0) return 0f
             val margin = 0.10f
             val active = 1.0f - 2f * margin
             val clamped = normX.coerceIn(0f, 1f)
             val mapped = ((clamped - margin) / active).coerceIn(0f, 1f)
-            return mapped * screenWidth
+            // Fix B1: apply the user's pointer gain (default 1.0× at 50%).
+            val amplified = 0.5f + (mapped - 0.5f) * pointerGainFactor()
+            return amplified.coerceIn(0f, 1f) * screenWidth
         }
 
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
             if (screenHeight <= 0) return 0f
-            val topDeadZone = if (sitBackModeEnabled) 0.20f else 0.30f
+            // Fix B2: 0.30 top dead-zone meant the hand had to be pushed very
+            // low in the camera frame to reach the bottom of the screen. 0.20
+            // (and 0.10 in sit-back mode) keeps the whole screen reachable with
+            // comfortable hand heights.
+            val topDeadZone = if (sitBackModeEnabled) 0.10f else 0.20f
             val active = 1.0f - topDeadZone
             val clamped = normY.coerceIn(0f, 1f)
             val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
-            return mapped * screenHeight
+            val amplified = 0.5f + (mapped - 0.5f) * pointerGainFactor()
+            return amplified.coerceIn(0f, 1f) * screenHeight
         }
 
         fun setCursorMapping(cursorGainPercent: Int, sitBackMode: Boolean) {
@@ -203,6 +240,10 @@ class ActionDispatcher @Inject constructor(
     @Volatile private var pinchStartY = 0f
     @Volatile private var pinchStartVelocity = 0f
     @Volatile private var pinchIsDrag = false
+
+    // Fix P1: pinch start mapped to pixels, used for the drag-start slop test.
+    @Volatile private var pinchStartPixelX = 0f
+    @Volatile private var pinchStartPixelY = 0f
 
     @Volatile private var lastTapDispatchMs = 0L
     @Volatile private var pendingSecondTap = false
@@ -270,6 +311,8 @@ class ActionDispatcher @Inject constructor(
         isDragging = false
         pinchIsDrag = false
         pinchStartTimeMs = 0L
+        pinchStartPixelX = 0f
+        pinchStartPixelY = 0f
     }
 
     internal fun actionAllowed(action: GestureAction): Boolean {
@@ -291,6 +334,14 @@ class ActionDispatcher @Inject constructor(
         cursorY: Float,
         screenWidth: Int,
         screenHeight: Int,
+        /**
+         * Fix A3: true when the coordinates come from the eye/gaze cursor.
+         * Gaze coordinates are screen-normalized and must be mapped straight
+         * to pixels (see [normalizeDirect]) instead of through the hand's
+         * dead-zone mapping — the previous mismatch made eye-mode pinch clicks
+         * land where the *hand* was, not where the user was looking.
+         */
+        fromGaze: Boolean = false,
     ): Boolean {
         if (engineState != GestureEngineState.ARMED &&
             engineState != GestureEngineState.EXECUTING
@@ -306,6 +357,8 @@ class ActionDispatcher @Inject constructor(
                     pinchStartY = cursorY
                     pinchStartVelocity = event.velocity
                     pinchIsDrag = false
+                    pinchStartPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
+                    pinchStartPixelY = mapCursorY(cursorY, screenHeight, fromGaze)
                     return true
                 }
                 PinchPhase.MOVE -> {
@@ -313,11 +366,21 @@ class ActionDispatcher @Inject constructor(
                     val customPinchHold = matchCustomGesture(Pose.PINCH)
                     val action = customPinchHold ?: gestureMap[KEY_POSE_PINCH_HOLD] ?: GestureAction.DRAG
                     if (!actionAllowed(action)) return false
-                    val targetX = if (cursorX in 0f..1f) normalizeToScreenX(cursorX, screenWidth) else cursorX
-                    val targetY = if (cursorY in 0f..1f) normalizeToScreenY(cursorY, screenHeight) else cursorY
-                    return if (action == GestureAction.DRAG) {
-                        dispatchDrag(service, targetX, targetY)
-                    } else false
+                    val targetX = mapCursorX(cursorX, screenWidth, fromGaze)
+                    val targetY = mapCursorY(cursorY, screenHeight, fromGaze)
+                    if (action == GestureAction.DRAG) {
+                        // Fix P1: while the pinch has not moved beyond the slop
+                        // radius, this is still a pending TAP — do not start a
+                        // drag stroke. A clean tap is dispatched on END below.
+                        if (!isDragging) {
+                            val slop = maxOf(MIN_DRAG_START_SLOP_PX, screenWidth * DRAG_START_SLOP_FRACTION)
+                            val dx = targetX - pinchStartPixelX
+                            val dy = targetY - pinchStartPixelY
+                            if (kotlin.math.sqrt(dx * dx + dy * dy) < slop) return true
+                        }
+                        return dispatchDrag(service, targetX, targetY, screenWidth, screenHeight)
+                    }
+                    return false
                 }
                 PinchPhase.END -> {
                     if (isDragging) {
@@ -333,7 +396,7 @@ class ActionDispatcher @Inject constructor(
                     val customPinchAction = matchCustomGesture(Pose.PINCH)
                     val action = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
                     if (!actionAllowed(action)) return false
-                    return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight)
+                    return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight, fromGaze)
                 }
             }
         }
@@ -363,8 +426,23 @@ class ActionDispatcher @Inject constructor(
 
         if (!actionAllowed(action)) return false
 
-        return executeAction(action, cursorX, cursorY, screenWidth, screenHeight)
+        return executeAction(action, cursorX, cursorY, screenWidth, screenHeight, fromGaze)
     }
+
+    /**
+     * Maps a cursor coordinate to pixels. Fix D6: inputs are ALWAYS
+     * screen-normalized [0,1] — the old `value in 0f..1f` range sniffing
+     * remapped genuine pixel values that happened to lie in 0..1, and mis-
+     * classified normalized edge values; the source (gaze vs hand) is now an
+     * explicit flag instead of a guess from the magnitude.
+     */
+    private fun mapCursorX(cursorX: Float, screenWidth: Int, fromGaze: Boolean): Float =
+        if (fromGaze) normalizeDirect(cursorX, screenWidth)
+        else normalizeToScreenX(cursorX, screenWidth)
+
+    private fun mapCursorY(cursorY: Float, screenHeight: Int, fromGaze: Boolean): Float =
+        if (fromGaze) normalizeDirect(cursorY, screenHeight)
+        else normalizeToScreenY(cursorY, screenHeight)
 
     private fun executeAction(
         action: GestureAction,
@@ -372,10 +450,11 @@ class ActionDispatcher @Inject constructor(
         cursorY: Float,
         screenWidth: Int,
         screenHeight: Int,
+        fromGaze: Boolean = false,
     ): Boolean {
         val service = accessibilityServiceRef.get() ?: return false
-        val targetPixelX = if (cursorX in 0f..1f) normalizeToScreenX(cursorX, screenWidth) else cursorX
-        val targetPixelY = if (cursorY in 0f..1f) normalizeToScreenY(cursorY, screenHeight) else cursorY
+        val targetPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
+        val targetPixelY = mapCursorY(cursorY, screenHeight, fromGaze)
 
         return when (action) {
             GestureAction.NONE -> false
@@ -404,24 +483,38 @@ class ActionDispatcher @Inject constructor(
             GestureAction.TAP -> dispatchTap(service, targetPixelX, targetPixelY)
             GestureAction.DOUBLE_TAP -> dispatchDoubleTap(service, targetPixelX, targetPixelY)
             GestureAction.LONG_PRESS -> dispatchLongPress(service, targetPixelX, targetPixelY)
-            GestureAction.DRAG -> dispatchDrag(service, targetPixelX, targetPixelY)
+            GestureAction.DRAG -> dispatchDrag(service, targetPixelX, targetPixelY, screenWidth, screenHeight)
         }
     }
 
+    /**
+     * Blink taps are gaze-only: their coordinates are screen-normalized and are
+     * mapped directly to pixels (Fix A1/A2 — previously they landed on the
+     * frozen (0.5, 0.5) cursor state, i.e. always the screen centre).
+     */
     fun dispatchBlinkTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.blinkClickEnabled) return false
         val service = accessibilityServiceRef.get() ?: return false
         if (!actionAllowed(GestureAction.TAP)) return false
-        val pxX = if (normX in 0f..1f) normalizeToScreenX(normX, screenWidth) else normX
-        val pxY = if (normY in 0f..1f) normalizeToScreenY(normY, screenHeight) else normY
+        val pxX = normalizeDirect(normX, screenWidth)
+        val pxY = normalizeDirect(normY, screenHeight)
         return dispatchTap(service, pxX, pxY)
     }
 
-    fun dispatchDwellTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
+    fun dispatchDwellTap(
+        normX: Float,
+        normY: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        /** Fix A2: dwell ticks from the gaze cursor map directly; hand-path dwell keeps the hand mapping. */
+        fromGaze: Boolean = false,
+    ): Boolean {
         val service = accessibilityServiceRef.get() ?: return false
         if (!actionAllowed(GestureAction.TAP)) return false
-        val pxX = if (normX in 0f..1f) normalizeToScreenX(normX, screenWidth) else normX
-        val pxY = if (normY in 0f..1f) normalizeToScreenY(normY, screenHeight) else normY
+        // Fix D6: coordinates are always screen-normalized — no pixel/normalized
+        // range guessing.
+        val pxX = if (fromGaze) normalizeDirect(normX, screenWidth) else normalizeToScreenX(normX, screenWidth)
+        val pxY = if (fromGaze) normalizeDirect(normY, screenHeight) else normalizeToScreenY(normY, screenHeight)
         return dispatchTap(service, pxX, pxY)
     }
 
@@ -530,7 +623,7 @@ class ActionDispatcher @Inject constructor(
         )
     }
 
-    private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float): Boolean {
+    private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!isDragging) {
             val path = Path()
             path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
@@ -545,8 +638,13 @@ class ActionDispatcher @Inject constructor(
             return isDragging
         }
 
-        val deltaX = (x - dragCurrentX).coerceIn(-screenSafeStep(screenWidth = 1080f), screenSafeStep(screenWidth = 1080f))
-        val deltaY = (y - dragCurrentY).coerceIn(-screenSafeStep(screenWidth = 1080f), screenSafeStep(screenWidth = 1080f))
+        // Fix B3: the per-step clamp used a hardcoded 1080px "screen". On 2K/QHD
+        // panels the steps were far too small (sluggish drags); on low-res panels
+        // too large (skippy drags). Use the real panel dimensions, per axis.
+        val maxStepX = screenSafeStep(screenWidth.toFloat())
+        val maxStepY = screenSafeStep(screenHeight.toFloat())
+        val deltaX = (x - dragCurrentX).coerceIn(-maxStepX, maxStepX)
+        val deltaY = (y - dragCurrentY).coerceIn(-maxStepY, maxStepY)
         if (deltaX == 0f && deltaY == 0f) return true
         val path = Path()
         path.moveTo(dragCurrentX, dragCurrentY)

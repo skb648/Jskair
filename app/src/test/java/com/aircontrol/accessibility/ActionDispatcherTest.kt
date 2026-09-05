@@ -82,16 +82,18 @@ class ActionDispatcherTest {
     }
 
     // ========== normalizeToScreenY ==========
-    // Dead-zone mapping: activePos = (normY - 0.40) / 0.60, clamped to [0,1].
-    // MediaPipe Y is 0 at the top of the image. The top 40% is a dead zone
+    // Dead-zone mapping (Fix B2): activePos = (normY - 0.20) / 0.80, clamped to
+    // [0,1], then amplified by the pointer-gain factor (default 1.0× at 50%).
+    // MediaPipe Y is 0 at the top of the image. The top 20% is a dead zone
     // clamped to the screen top so the user does not have to raise their hand to
-    // the camera's top edge to reach the top of the screen.
+    // the camera's top edge to reach the top of the screen — while the bottom of
+    // the screen stays reachable without pushing the hand out of frame.
 
     @Test
     fun `normalizeToScreenY maps active zone center to screen center`() {
         val screenHeight = 2400
-        val result = ActionDispatcher.normalizeToScreenY(0.65f, screenHeight)
-        // (0.65 - 0.30) / 0.70 = 0.5 -> 1200
+        val result = ActionDispatcher.normalizeToScreenY(0.6f, screenHeight)
+        // (0.6 - 0.20) / 0.80 = 0.5 -> 1200
         assertEquals(1200f, result, 1f)
     }
 
@@ -99,7 +101,7 @@ class ActionDispatcherTest {
     fun `normalizeToScreenY clamps top dead zone to top of screen`() {
         val screenHeight = 2400
         val top = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(0.3f, screenHeight)
+        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(0.2f, screenHeight)
         assertEquals(0f, top, 0.01f)
         assertEquals(0f, deadZoneEdge, 0.01f)
     }
@@ -143,9 +145,9 @@ class ActionDispatcherTest {
     }
 
     @Test
-    fun `normalizeToScreenY 0,65 on 2400 screen gives 1200`() {
-        // (0.65 - 0.3) / 0.7 = 0.5 -> 1200
-        val result = ActionDispatcher.normalizeToScreenY(0.65f, 2400)
+    fun `normalizeToScreenY 0,6 on 2400 screen gives 1200`() {
+        // Fix B2: (0.6 - 0.2) / 0.8 = 0.5 -> 1200 (gain 1.0x at the default 50%)
+        val result = ActionDispatcher.normalizeToScreenY(0.6f, 2400)
         assertEquals(1200f, result, 0.01f)
     }
 

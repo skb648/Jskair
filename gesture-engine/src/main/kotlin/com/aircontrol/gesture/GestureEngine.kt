@@ -229,7 +229,11 @@ class GestureEngine(
 
         val effectiveCursorX = if (currentPinchPhase == PinchPhase.START) pinchAnchoredX else lastPalmX
         val effectiveCursorY = if (currentPinchPhase == PinchPhase.START) pinchAnchoredY else lastPalmY
-        if (input.isDetected && hasPalmPosition && (transition.newState == GestureEngineState.ARMING || transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.COOLDOWN)) {
+        if (input.isDetected && hasPalmPosition && (transition.newState == GestureEngineState.ARMING || transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN)) {
+            // Fix B4: EXECUTING is included so the dot keeps following the palm
+            // while a triggered action is in flight. Previously the dot froze
+            // for the duration of every EXECUTING burst, which read as a stutter
+            // right at the moment the user was most engaged.
             val isSilent = transition.newState == GestureEngineState.ARMING
             val hint = if (lowConfidence) LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF else null
             _gestureEvents.tryEmit(GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs, isSilent, hint))

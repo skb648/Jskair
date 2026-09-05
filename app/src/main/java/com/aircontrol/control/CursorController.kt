@@ -18,6 +18,16 @@ data class CursorState(
 interface CursorController {
     val cursorState: StateFlow<CursorState>
     fun updatePosition(handFrame: HandFrame)
+
+    /**
+     * Fix A1: direct normalized-position update for cursor sources that do not
+     * carry a full 21-landmark hand frame (gaze/eye cursor). The previous design
+     * fed a synthetic 1-landmark HandFrame into [updatePosition], which failed
+     * `isDetected` and called hide() — so the stored position stayed frozen at
+     * (0.5, 0.5) forever and blink-to-click always tapped the screen centre.
+     */
+    fun updatePosition(x: Float, y: Float)
+
     fun performClick()
     fun releaseClick()
     fun show()
@@ -65,6 +75,16 @@ class CursorControllerImpl @Inject constructor() : CursorController {
 
         _cursorState.update {
             it.copy(x = palmX, y = palmY, isVisible = true)
+        }
+    }
+
+    /**
+     * Fix A1: gaze/synthetic cursors update the position directly. Coordinates
+     * are screen-normalized [0,1] and are made visible immediately.
+     */
+    override fun updatePosition(x: Float, y: Float) {
+        _cursorState.update {
+            it.copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f), isVisible = true)
         }
     }
 

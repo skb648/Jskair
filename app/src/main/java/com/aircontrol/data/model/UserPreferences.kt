@@ -2,7 +2,11 @@ package com.aircontrol.data.model
 
 data class UserPreferences(
     val gesturesEnabled: Boolean = true,
-    val sensitivity: Int = 50,
+    // Fix: default raised 50 → 70. At 50 the swipe displacement band required a
+    // noticeably larger arm sweep than most users expect ("swipe ke liye haath
+    // bahut ghumaana padta hai"); 70 lands in the comfortable part of the
+    // 0.60..1.40 swipe-ease band without making accidental swipes likely.
+    val sensitivity: Int = 70,
     val handPreference: HandPreference = HandPreference.ANY,
     val analysisFps: Int = 24,
     val cursorEnabled: Boolean = true,
@@ -55,8 +59,16 @@ data class UserPreferences(
 
     // Blink-to-click (Eye Aspect Ratio): both eyes closed 300–800ms → click.
     val blinkClickEnabled: Boolean = false,
+    // Fix A10: user-tunable minimum blink duration (ms). Natural blinks are
+    // 100–250ms; the old fixed 300ms minimum demanded a slow, deliberate blink.
+    // 150–500 slider range, max = min + 500.
+    val blinkWindowMs: Int = 300,
     // Persisted 5-point gaze calibration coefficients (comma-separated, 6 floats).
     val gazeCalibration: String = "",
+    // Fix A5: serialized personalized (head-pose-aware, 9-point ridge) gaze
+    // calibration model. Empty string = not calibrated. Takes priority over
+    // [gazeCalibration] when present and loadable.
+    val personalizedGazeCalibration: String = "",
 ) {
     /**
      * Legacy name for the smoothing slider. The stored key is `cursor_speed` for

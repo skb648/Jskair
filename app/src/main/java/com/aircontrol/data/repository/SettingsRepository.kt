@@ -61,7 +61,13 @@ interface SettingsRepository {
 
     suspend fun updateBlinkClickEnabled(enabled: Boolean)
 
+    /** Fix A10: user-tunable minimum blink duration (150–500ms). */
+    suspend fun updateBlinkWindowMs(durationMs: Int)
+
     suspend fun updateGazeCalibration(coeffs: String)
+
+    /** Fix A5: persists/clears the serialized personalized gaze calibration model. */
+    suspend fun updatePersonalizedGazeCalibration(json: String)
 
     // Gesture map
     val gestureMapConfig: Flow<GestureMapConfig>

@@ -63,7 +63,9 @@ private object PreferencesKeys {
     val GAZE_SENSITIVITY = intPreferencesKey("gaze_sensitivity")
     val GAZE_INVERT_X = booleanPreferencesKey("gaze_invert_x")
     val BLINK_CLICK_ENABLED = booleanPreferencesKey("blink_click_enabled")
+    val BLINK_WINDOW_MS = intPreferencesKey("blink_window_ms")
     val GAZE_CALIBRATION = stringPreferencesKey("gaze_calibration")
+    val PERSONALIZED_GAZE_CALIBRATION = stringPreferencesKey("personalized_gaze_calibration")
 }
 
 @Singleton
@@ -284,11 +286,26 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Updated blinkClickEnabled: %s", enabled)
     }
 
+    override suspend fun updateBlinkWindowMs(durationMs: Int) {
+        val clamped = durationMs.coerceIn(150, 500)
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.BLINK_WINDOW_MS] = clamped
+        }
+        Timber.d("Updated blinkWindowMs: %d", clamped)
+    }
+
     override suspend fun updateGazeCalibration(coeffs: String) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.GAZE_CALIBRATION] = coeffs
         }
         Timber.d("Updated gazeCalibration")
+    }
+
+    override suspend fun updatePersonalizedGazeCalibration(json: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] = json
+        }
+        Timber.d("Updated personalizedGazeCalibration (length=%d)", json.length)
     }
 
     override suspend fun updateGestureAction(key: String, action: String) {
@@ -405,7 +422,7 @@ class SettingsRepositoryImpl @Inject constructor(
 
     private fun mapPreferences(preferences: Preferences): UserPreferences = UserPreferences(
         gesturesEnabled = preferences[PreferencesKeys.GESTURES_ENABLED] ?: true,
-        sensitivity = preferences[PreferencesKeys.SENSITIVITY] ?: 50,
+        sensitivity = preferences[PreferencesKeys.SENSITIVITY] ?: 70,
         handPreference = preferences[PreferencesKeys.HAND_PREFERENCE]
             ?.let { stored -> runCatching { HandPreference.valueOf(stored) }.getOrNull() }
             ?: HandPreference.ANY,
@@ -435,7 +452,9 @@ class SettingsRepositoryImpl @Inject constructor(
         gazeSensitivity = preferences[PreferencesKeys.GAZE_SENSITIVITY] ?: 50,
         gazeInvertX = preferences[PreferencesKeys.GAZE_INVERT_X] ?: true,
         blinkClickEnabled = preferences[PreferencesKeys.BLINK_CLICK_ENABLED] ?: false,
+        blinkWindowMs = preferences[PreferencesKeys.BLINK_WINDOW_MS] ?: 300,
         gazeCalibration = preferences[PreferencesKeys.GAZE_CALIBRATION] ?: "",
+        personalizedGazeCalibration = preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] ?: "",
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {

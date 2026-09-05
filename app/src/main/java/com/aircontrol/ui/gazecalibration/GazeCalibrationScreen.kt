@@ -56,7 +56,7 @@ fun GazeCalibrationScreen(
 
     // Auto-collect only when a NEW point becomes active (not on error changes).
     LaunchedEffect(state.currentPointIndex, state.prerequisitesChecked) {
-        if (state.prerequisitesChecked && !state.isComplete && !state.eyeTrackingDisabled) {
+        if (state.prerequisitesChecked && !state.isComplete && state.error == null) {
             viewModel.collectCurrentPoint()
         }
     }
@@ -89,25 +89,6 @@ fun GazeCalibrationScreen(
         ) {
             when {
                 !state.prerequisitesChecked -> CircularProgressIndicator(color = ElectricBlue)
-                state.eyeTrackingDisabled -> {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(32.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.gaze_calibration_need_eye_tracking),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onBackground,
-                        )
-                        Button(
-                            onClick = onNavigateBack,
-                            modifier = Modifier.padding(top = 24.dp),
-                        ) {
-                            Text(stringResource(R.string.gaze_calibration_go_back))
-                        }
-                    }
-                }
                 state.isComplete -> {
                     Text(
                         text = stringResource(R.string.gaze_calibration_complete),
@@ -119,22 +100,38 @@ fun GazeCalibrationScreen(
                         onNavigateBack()
                     }
                 }
-                state.error -> {
+                // Fix C4: every failure now says exactly what is wrong and what
+                // to do about it, instead of a generic "error, retry?" loop.
+                state.error != null -> {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(32.dp),
                     ) {
                         Text(
-                            text = stringResource(R.string.calibration_error_hint),
+                            text = gazeErrorText(state.error),
                             style = MaterialTheme.typography.bodyLarge,
                             textAlign = TextAlign.Center,
                             color = ErrorRed,
                         )
-                        Button(
-                            onClick = { viewModel.retryCurrentPoint() },
-                            modifier = Modifier.padding(top = 24.dp),
-                        ) {
-                            Text(stringResource(R.string.gaze_calibration_retry))
+                        val needsActionOutsideScreen = state.error in listOf(
+                            GazeCalibrationError.EYE_TRACKING_DISABLED,
+                            GazeCalibrationError.MASTER_SWITCH_OFF,
+                            GazeCalibrationError.CAMERA_NOT_RUNNING,
+                        )
+                        if (needsActionOutsideScreen) {
+                            Button(
+                                onClick = onNavigateBack,
+                                modifier = Modifier.padding(top = 24.dp),
+                            ) {
+                                Text(stringResource(R.string.gaze_calibration_go_back))
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.retryCurrentPoint() },
+                                modifier = Modifier.padding(top = 24.dp),
+                            ) {
+                                Text(stringResource(R.string.gaze_calibration_retry))
+                            }
                         }
                         Button(
                             onClick = { viewModel.restartCalibration() },
@@ -146,7 +143,7 @@ fun GazeCalibrationScreen(
                 }
                 else -> {
                     CalibrationCanvas(
-                        targets = GazeCalibrationViewModel.CALIBRATION_POINTS,
+                        targets = GazeCalibrationViewModel.CALIBRATION_TARGET_POINTS,
                         pointIndex = state.currentPointIndex,
                         isCollecting = state.isCollecting,
                     )
@@ -154,6 +151,22 @@ fun GazeCalibrationScreen(
             }
         }
     }
+}
+
+@Composable
+private fun gazeErrorText(error: GazeCalibrationError?): String = when (error) {
+    GazeCalibrationError.EYE_TRACKING_DISABLED ->
+        stringResource(R.string.gaze_calibration_need_eye_tracking)
+    GazeCalibrationError.MASTER_SWITCH_OFF ->
+        stringResource(R.string.gaze_calibration_error_master_off)
+    GazeCalibrationError.CAMERA_NOT_RUNNING ->
+        stringResource(R.string.gaze_calibration_error_camera)
+    GazeCalibrationError.FACE_NOT_VISIBLE ->
+        stringResource(R.string.gaze_calibration_error_face)
+    GazeCalibrationError.NOT_ENOUGH_SAMPLES ->
+        stringResource(R.string.gaze_calibration_error_samples)
+    GazeCalibrationError.FIT_FAILED, null ->
+        stringResource(R.string.gaze_calibration_error_fit)
 }
 
 @Composable

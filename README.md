@@ -9,7 +9,7 @@
   delegate can die inside OEM graphics drivers before Kotlin can catch anything), 24 FPS
   adaptive, 5 FPS scan when idle, plus a watchdog that rebuilds the pipeline if the
   tracker ever goes missing
-- **Gesture Engine:** Pure Kotlin module — static poses (pinch, victory, thumb, etc.) + dynamic swipes + 5-point gaze calibration
+- **Gesture Engine:** Pure Kotlin module — static poses (pinch, victory, thumb, etc.) + dynamic swipes + 9-point personalized gaze calibration (head-pose aware ridge model, with a same-session affine fallback)
 - **Cursor:** OneEuro + dead-zone smoothing, dwell-to-click, blink-to-click
 - **Privacy:** `INTERNET` permission never requested, all processing on-device, `canRetrieveWindowContent=false`
 - **Accessibility:** `TYPE_ACCESSIBILITY_OVERLAY` (no `SYSTEM_ALERT_WINDOW` needed)

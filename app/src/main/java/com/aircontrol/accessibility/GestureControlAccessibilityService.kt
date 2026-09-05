@@ -25,7 +25,6 @@ import com.aircontrol.util.collectGuarded
 import com.aircontrol.util.launchGuarded
 import com.aircontrol.tracking.Handedness
 import com.aircontrol.tracking.HandFrame
-import com.aircontrol.tracking.Landmark3D
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -98,8 +97,18 @@ class GestureControlAccessibilityService : AccessibilityService() {
         beta = DEFAULT_CURSOR_SMOOTHER_BETA,
     )
 
-    // Gaze EMA filter for "eye is mouse" mode.
-    private val gazeEmaFilter = com.aircontrol.tracking.EmaFilter(alpha = GAZE_EMA_ALPHA)
+    // Gaze smoothing for "eye is mouse" mode.
+    // Fix E1: the gaze cursor used a FIXED-alpha EMA. Fixed smoothing cannot
+    // have both "still = steady" and "moving = instant": at alpha 0.2 the dot
+    // trailed the eyes by ~100ms (laggy) and between iris-landmark quantization
+    // steps it snapped in visible jumps ("teleport"). One Euro is
+    // velocity-adaptive — heavy filtering when the gaze is still, near-zero
+    // latency on saccades — plus its micro dead-zone kills the quantization
+    // steps. Slightly hotter constants than the hand cursor: gaze needs snappy.
+    private val gazeCursorSmoother = CursorSmoother(
+        minCutoff = GAZE_SMOOTHER_MIN_CUTOFF,
+        beta = GAZE_SMOOTHER_BETA,
+    )
 
     // Blink detector for blink-to-click.
     private val blinkDetector = com.aircontrol.tracking.BlinkDetector()
@@ -116,6 +125,30 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var stationarySinceMs: Long = 0L
     @Volatile private var dwellFired: Boolean = false
     @Volatile private var hoverActive: Boolean = false
+
+    // Fix A8 (full): dwell intent detection. A dwell click now requires a
+    // *deliberate arrival*: the travel accumulated while the cursor was moving
+    // must exceed a saccade-sized minimum before the fixation may accumulate a
+    // dwell (reading drifts word-to-word in tiny steps and never qualifies),
+    // and after a dwell fires the cursor must leave a re-arm radius before
+    // another dwell can even start (no machine-gun taps while staring).
+    @Volatile private var dwellMovingTravel: Float = 0f
+    @Volatile private var fixationDwellAllowed: Boolean = false
+    @Volatile private var dwellFireX: Float = 0.5f
+    @Volatile private var dwellFireY: Float = 0.5f
+
+    // Gaze ("eye is mouse") cursor state (Fixes A1/A3/A6/A8).
+    /** Latest smoothed gaze cursor position in screen-normalized coordinates. */
+    @Volatile private var gazeCursorX: Float = 0.5f
+    @Volatile private var gazeCursorY: Float = 0.5f
+    /** Consecutive undetected gaze frames (hysteresis before hiding the dot). */
+    @Volatile private var gazeMissCount: Int = 0
+    /** When the face became continuously visible again (dwell grace, Fix A8). */
+    @Volatile private var faceStableSinceMs: Long = 0L
+    /** Monotonic timestamp of the last detected face frame (palm hint, Fix A10). */
+    @Volatile private var lastFaceDetectedMs: Long = 0L
+    /** Last serialized personalized model pushed to the tracker (avoids re-parsing). */
+    @Volatile private var lastAppliedPersonalizedCalibration: String? = null
 
     // F12 gesture hint toast debounce.
     @Volatile private var lastHandDetectedMs: Long = 0L
@@ -385,6 +418,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 gestureDetector?.updateSwipeRequiresOpenHand(prefs.swipeRequiresOpenHand)
                 gazeCalibration = com.aircontrol.tracking.GazeCalibration.fromString(prefs.gazeCalibration)
 
+                // Fix A5: push the persisted personalized gaze model into the
+                // tracker. Parsed once per change (not per emission); a stale or
+                // signature-mismatched model silently falls back to ratios.
+                if (prefs.personalizedGazeCalibration != lastAppliedPersonalizedCalibration) {
+                    lastAppliedPersonalizedCalibration = prefs.personalizedGazeCalibration
+                    val model = if (prefs.personalizedGazeCalibration.isBlank()) null
+                    else when (
+                        val loaded = com.aircontrol.tracking.PersonalizedGazeCalibrationSerializer.deserialize(
+                            prefs.personalizedGazeCalibration,
+                            expectedTransformSignature = com.aircontrol.tracking.GazeCalibrationFeatureSchema.TRANSFORM_SIGNATURE,
+                        )
+                    ) {
+                        is com.aircontrol.tracking.CalibrationLoadResult.Loaded -> loaded.model
+                        is com.aircontrol.tracking.CalibrationLoadResult.Invalid -> {
+                            Timber.w("Personalized gaze model rejected: %s — using fallback", loaded.reason)
+                            null
+                        }
+                    }
+                    faceTracker?.updatePersonalizedModel(model)
+                }
+
+                // Fix A10: push the user's blink-duration window into the detector.
+                blinkDetector.updateConfig(
+                    minBlinkMs = prefs.blinkWindowMs.toLong(),
+                    maxBlinkMs = prefs.blinkWindowMs.toLong() + 500L,
+                )
+
                 withContext(Dispatchers.Main) {
                     // Fix C-1: overlay creation is wrapped. On some OEM ROMs
                     // addView(TYPE_ACCESSIBILITY_OVERLAY) throws while the service is
@@ -533,20 +593,39 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
                         !currentPreferences.cursorEnabled) return@gaze
                     if (!gaze.isDetected) {
-                        withContext(Dispatchers.Main) { cursorOverlay?.hide() }
-                        cursorController?.hide()
-                        gazeEmaFilter.reset()
-                        blinkDetector.reset()
+                        // Fix A6: hysteresis. A single borderline frame (face
+                        // slightly small, one eye occluded) used to hide the dot
+                        // outright, and the 200 ms fade-in/out then fought the
+                        // next detection — visible as constant flicker at normal
+                        // holding distances. Hide only after a few consecutive
+                        // misses; a single re-detection restores immediately.
+                        gazeMissCount++
+                        if (gazeMissCount >= GAZE_HIDE_MISS_FRAMES) {
+                            gazeMissCount = 0
+                            faceStableSinceMs = 0L
+                            withContext(Dispatchers.Main) { cursorOverlay?.hide() }
+                            cursorController?.hide()
+                            gazeCursorSmoother.reset()
+                            blinkDetector.reset()
+                        }
                         return@gaze
                     }
+                    gazeMissCount = 0
+                    lastFaceDetectedMs = SystemClock.elapsedRealtime()
 
                     if (currentPreferences.blinkClickEnabled) {
-                        val blinkResult = blinkDetector.update(gaze.ear, System.currentTimeMillis())
+                        // Fix A7: the blink window must be measured on the
+                        // monotonic clock like the rest of the pipeline; wall
+                        // time broke (phantom/missed blinks) whenever the user
+                        // changed system time or NTP synced.
+                        val blinkResult = blinkDetector.update(gaze.ear, SystemClock.elapsedRealtime())
                         if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
-                            val cursor = cursorController?.cursorState?.value
-                            val cx = cursor?.x ?: gaze.x
-                            val cy = cursor?.y ?: gaze.y
-                            actionDispatcher?.dispatchBlinkTap(cx, cy, screenWidth, screenHeight)
+                            // Fix A1: click where the eye cursor actually is.
+                            // The old code read cursorState, which was never
+                            // updated by the gaze path (its synthetic hand frame
+                            // failed isDetected), so every blink tapped (0.5,
+                            // 0.5) — dead centre of the screen.
+                            actionDispatcher?.dispatchBlinkTap(gazeCursorX, gazeCursorY, screenWidth, screenHeight)
                             resetDwellState()
                             return@gaze
                         } else if (blinkResult != com.aircontrol.tracking.BlinkResult.NONE) {
@@ -557,28 +636,40 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     if (currentPreferences.blinkClickEnabled && blinkDetector.isClosed())
                         return@gaze
 
-                    val (nx, ny) = mapGazeToDisplay(gaze.x, gaze.y)
-                    val (smoothX, smoothY) = gazeEmaFilter.filter(nx, ny)
+                    // Fix A5: personalized predictions are already screen-space;
+                    // only the legacy ratio path needs gain/invert/affine.
+                    val (nx, ny) = if (gaze.personalized) {
+                        gaze.x.coerceIn(0f, 1f) to gaze.y.coerceIn(0f, 1f)
+                    } else {
+                        mapGazeToDisplay(gaze.x, gaze.y)
+                    }
+                    // Fix E1: velocity-adaptive One Euro smoothing — no fixed-alpha
+                    // lag on saccades, no quantization "teleports" when still.
+                    val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
+                    gazeCursorX = smoothX
+                    gazeCursorY = smoothY
 
                     withContext(Dispatchers.Main) {
                         cursorOverlay?.show()
-                        cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
+                        // Fix A2: direct mapping — gaze coords are screen-space
+                        // and must not pass through the hand dead-zone mapping.
+                        cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
                     }
-                    // Fix A-15: dwell-to-click was only ever driven from the hand
-                    // "cursor moved" path, so an eye-tracking user turning on
-                    // "look and hold to click" got nothing at all — the single most
-                    // useful accessibility feature for that mode. Gaze now feeds the
-                    // same stillness/dwell machine (using the monotonic clock the
-                    // hand path uses).
-                    handleCursorStillness(smoothX, smoothY, SystemClock.elapsedRealtime())
-                    cursorController?.updatePosition(
-                        HandFrame(
-                            landmarks = listOf(Landmark3D(smoothX, smoothY, 0f)),
-                            handedness = Handedness.UNKNOWN,
-                            timestampMs = System.currentTimeMillis(),
-                            confidence = 1f,
-                        ),
-                    )
+                    // Fix A1: keep the shared cursor state truthful for this path.
+                    cursorController?.updatePosition(smoothX, smoothY)
+
+                    // Fix A8: after (re)acquiring the face, saccade settling and
+                    // re-detection jumps used to count as "still" gaze — a dwell
+                    // click could fire the instant the face came back. Require a
+                    // short stable-presence grace before dwell accumulates.
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (faceStableSinceMs == 0L) faceStableSinceMs = nowMs
+                    if (nowMs - faceStableSinceMs >= GAZE_DWELL_STABLE_MS) {
+                        // Fix A-15: gaze feeds the same stillness/dwell machine as
+                        // the hand path (monotonic clock), with fromGaze so the
+                        // eventual tap maps directly to pixels (Fix A2).
+                        handleCursorStillness(smoothX, smoothY, nowMs, isGaze = true)
+                    }
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating gaze cursor — skipping")
                 }
@@ -596,6 +687,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 }
                 if (armed) { /* no hint needed */ }
                 else if (now - lastHandDetectedMs in 0L..6000L && now - lastHintShownMs > 30_000L) {
+                    lastHintShownMs = now
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@GestureControlAccessibilityService,
+                            R.string.show_open_palm_hint,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+                // Fix A10: in eye mode, pinch clicks still need the hand engine
+                // to be ARMED (show an open palm first). With blink and dwell
+                // off, a user whose face is tracked but who never shows a palm
+                // got zero clicks and zero explanation — surface the same hint.
+                else if (
+                    currentPreferences.eyeTrackingEnabled &&
+                    !currentPreferences.blinkClickEnabled &&
+                    !currentPreferences.dwellEnabled &&
+                    now - lastFaceDetectedMs in 0L..6000L &&
+                    now - lastHintShownMs > 30_000L
+                ) {
                     lastHintShownMs = now
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
@@ -638,7 +749,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 // it hit the thing next to it". The click now uses the exact
                 // position the dot is drawn at (captured at pinch START so it does
                 // not drift while the fingers close).
-                if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) {
+                //
+                // Fix A3: in eye mode the *gaze* dot is what the user aims with.
+                // Pinch START pins the current gaze position, MOVE drags along the
+                // live gaze cursor, and END taps the pinned position — so the click
+                // lands where the user is looking instead of where the hand hangs
+                // in the camera frame.
+                val eyeMode = currentPreferences.eyeTrackingEnabled && currentPreferences.cursorEnabled
+                if (eyeMode) {
+                    when (event.phase) {
+                        com.aircontrol.gesture.model.PinchPhase.START -> {
+                            (cursorController as? com.aircontrol.control.CursorControllerImpl)
+                                ?.pinClickPosition(gazeCursorX, gazeCursorY)
+                            cursorX = gazeCursorX
+                            cursorY = gazeCursorY
+                        }
+                        com.aircontrol.gesture.model.PinchPhase.MOVE -> {
+                            cursorX = gazeCursorX
+                            cursorY = gazeCursorY
+                        }
+                        else -> {
+                            val pinned = (cursorController as? com.aircontrol.control.CursorControllerImpl)
+                                ?.pinnedClickPosition()
+                            cursorX = pinned?.first ?: gazeCursorX
+                            cursorY = pinned?.second ?: gazeCursorY
+                        }
+                    }
+                } else if (event.phase == com.aircontrol.gesture.model.PinchPhase.MOVE) {
                     cursorX = event.x
                     cursorY = event.y
                 } else {
@@ -702,14 +839,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     withContext(Dispatchers.Main) {
                         cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                     }
-                    cursorController?.updatePosition(
-                        HandFrame(
-                            landmarks = listOf(Landmark3D(smoothX, smoothY, 0f)),
-                            handedness = Handedness.UNKNOWN, // fix #60
-                            timestampMs = event.timestampMs,
-                            confidence = 1f,
-                        ),
-                    )
+                    // Fix A1 (hand path): the synthetic 1-landmark HandFrame below
+                    // failed HandFrame.isDetected, so CursorController.hide() ran
+                    // instead of ever updating the position. Use the direct
+                    // normalized update so the shared cursor state is truthful.
+                    cursorController?.updatePosition(smoothX, smoothY)
                 }
                 return
             }
@@ -727,8 +861,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Dispatch action. Path construction/geometry is done on Default; the
         // actual service.dispatchGesture() call runs on Main inside the dispatcher.
         val dispatcher = actionDispatcher ?: return
+        // Fix A3: gaze-originated pinches map straight to screen pixels.
+        val dispatchedWithGaze = currentPreferences.eyeTrackingEnabled && event is GestureEvent.Pinch
         val dispatched = withContext(Dispatchers.Main) {
-            dispatcher.dispatch(event, engineState, cursorX, cursorY, screenWidth, screenHeight)
+            dispatcher.dispatch(
+                event, engineState, cursorX, cursorY, screenWidth, screenHeight,
+                fromGaze = dispatchedWithGaze,
+            )
         }
 
         // Update controller pressed state for pinch.
@@ -912,6 +1051,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private fun resetDwellState() {
         dwellFired = false
         stationarySinceMs = 0L
+        dwellMovingTravel = 0f
+        fixationDwellAllowed = false
         // Throttle main-thread hop.
         serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
     }
@@ -919,8 +1060,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
     /**
      * Fix #40: use the passed timestampMs (monotonic elapsedRealtime from the
      * camera pipeline) rather than System.currentTimeMillis().
+     *
+     * Fix A2: [isGaze] selects the pixel mapping for the dwell tap — gaze
+     * coordinates map straight to pixels, hand coordinates keep the hand
+     * dead-zone mapping.
      */
-    private fun handleCursorStillness(x: Float, y: Float, timestampMs: Long) {
+    private fun handleCursorStillness(x: Float, y: Float, timestampMs: Long, isGaze: Boolean = false) {
         val dx = x - lastCursorX
         val dy = y - lastCursorY
         val dist = kotlin.math.sqrt(dx * dx + dy * dy)
@@ -934,12 +1079,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.resetHover() }
             }
             stationarySinceMs = timestampMs
-            dwellFired = false
+            dwellMovingTravel += dist
+            // Fix A8: after a dwell fires it stays latched until the cursor
+            // leaves the re-arm radius — micro-drift around the clicked spot
+            // must not re-start the dwell machine.
+            if (dwellFired) {
+                val fireDx = x - dwellFireX
+                val fireDy = y - dwellFireY
+                if (kotlin.math.sqrt(fireDx * fireDx + fireDy * fireDy) >= DWELL_REARM_RADIUS) {
+                    dwellFired = false
+                }
+            }
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
             return
         }
 
         if (stationarySinceMs == 0L) stationarySinceMs = timestampMs
+
+        // Fix A8: the first still frame after a movement decides whether this
+        // fixation may ever dwell. Gaze mode requires a deliberate, saccade-
+        // sized arrival (reading steps are ~0.01–0.04 and never qualify; a
+        // deliberate look across the screen is ≥0.05). Hand dwells are always
+        // deliberate by nature (a hand does not "read").
+        if (dwellMovingTravel > 0f) {
+            fixationDwellAllowed = !isGaze || dwellMovingTravel >= GAZE_DELIBERATE_SACCADE_MIN
+            dwellMovingTravel = 0f
+        }
+
         val stillMs = timestampMs - stationarySinceMs
 
         if (!hoverActive && stillMs >= HOVER_AFTER_MS) {
@@ -948,12 +1114,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
 
         if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired &&
-            stillMs >= currentPreferences.dwellDurationMs
+            fixationDwellAllowed && stillMs >= currentPreferences.dwellDurationMs
         ) {
             dwellFired = true
-            actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight)
+            dwellFireX = x
+            dwellFireY = y
+            actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight, fromGaze = isGaze)
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
-        } else if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired) {
+        } else if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired &&
+            fixationDwellAllowed
+        ) {
             val progress = (stillMs.toFloat() / currentPreferences.dwellDurationMs)
                 .coerceIn(0f, 1f)
             // Throttle dwell ring updates to ~30fps to avoid main-thread spam (fix #62).
@@ -1042,6 +1212,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         private const val STATIONARY_THRESHOLD = 0.008f
         private const val HOVER_AFTER_MS = 150L
-        private const val GAZE_EMA_ALPHA = 0.2f
+
+        // Fix E1: gaze One Euro constants — a little hotter than the hand
+        // cursor's (1.1 / 0.9) because gaze targets are small and saccades are
+        // the fastest human movement; the dead-zone inside CursorSmoother
+        // handles the sub-threshold jitter.
+        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.6f
+        private const val GAZE_SMOOTHER_BETA = 1.1f
+
+        // Fix A6: consecutive missed gaze frames tolerated before the dot hides.
+        private const val GAZE_HIDE_MISS_FRAMES = 4
+
+        // Fix A8: the face must be continuously visible this long before gaze
+        // dwell can accumulate (post-(re)acquisition settling grace).
+        private const val GAZE_DWELL_STABLE_MS = 500L
+
+        // Fix A8 (full): gaze dwell requires an arrival of at least this much
+        // travel (normalized) — reading saccades (0.01–0.04) never qualify, a
+        // deliberate look at a target does (≥0.05).
+        private const val GAZE_DELIBERATE_SACCADE_MIN = 0.05f
+
+        // Fix A8 (full): after a dwell click, the cursor must move this far from
+        // the click point before another dwell can fire.
+        private const val DWELL_REARM_RADIUS = 0.03f
     }
 }

@@ -11,14 +11,15 @@ import android.widget.FrameLayout
 import timber.log.Timber
 
 /**
- * Accessibility overlay that renders the cursor dot on screen.
+ * Accessibility overlay that renders the pointer (a small desktop-style arrow,
+ * not a literal dot — see CursorDotView) on screen.
  * Uses TYPE_ACCESSIBILITY_OVERLAY so it works without SYSTEM_ALERT_WINDOW
  * when the accessibility service is enabled.
  *
- * Cursor rendering:
- * - 24dp accent-colored dot with soft shadow
+ * Pointer rendering (Fix B5: docs now say "pointer", matching what is drawn):
+ * - Desktop-style arrow pointer with soft shadow
  * - Subtle idle pulse animation when not moving
- * - Small ring around cursor when state machine is ARMED
+ * - Small ring around pointer when state machine is ARMED
  * - 200ms fade-out when hand is lost
  * - Minimal dead-zone to prevent drift at tiny movements
  * - Low-latency direct position update (no exponential smoothing on top of One Euro)
@@ -89,15 +90,27 @@ class CursorOverlay(
      * CRITICAL FIX: Added exponential interpolation for sub-pixel smoothness (Apple Vision Pro level)
      * This provides buttery smooth cursor movement without visible jumps or stuttering.
      */
-    fun updatePosition(normX: Float, normY: Float, screenW: Int, screenHeight: Int) {
+    fun updatePosition(normX: Float, normY: Float, screenW: Int, screenHeight: Int, directMapping: Boolean = false) {
         if (!isAdded) return
 
         // Cancel pending hide
         cancelPendingHide()
 
-        // Map normalized coords to screen pixels (with mirroring and full coverage)
-        val targetX = ActionDispatcher.normalizeToScreenX(normX, screenW)
-        val targetY = ActionDispatcher.normalizeToScreenY(normY, screenHeight)
+        // Map normalized coords to screen pixels (with mirroring and full coverage).
+        // Fix A2: gaze/eye coordinates are already screen-normalized — mapping
+        // them through the hand's margin/dead-zone transform shifted the eye
+        // cursor away from where the user actually looks (and away from where
+        // the click then landed).
+        val targetX = if (directMapping) {
+            ActionDispatcher.normalizeDirect(normX, screenW)
+        } else {
+            ActionDispatcher.normalizeToScreenX(normX, screenW)
+        }
+        val targetY = if (directMapping) {
+            ActionDispatcher.normalizeDirect(normY, screenHeight)
+        } else {
+            ActionDispatcher.normalizeToScreenY(normY, screenHeight)
+        }
 
         // Set position directly. Smoothing is handled by the One Euro filter in
         // GestureControlAccessibilityService (CursorSmoother); applying a second

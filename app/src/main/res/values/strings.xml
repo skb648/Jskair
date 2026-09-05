@@ -187,7 +187,13 @@
     <string name="gaze_calibration_need_eye_tracking">Eye tracking is not enabled. Turn on "Eye is Mouse" in Settings, then run calibration.</string>
     <string name="gaze_calibration_go_back">Go Back</string>
     <string name="gaze_calibration_calibrated">Calibrated ✓ — tap to re-run</string>
-    <string name="gaze_calibration_run">Run the 5-point gaze calibration</string>
+    <string name="gaze_calibration_run">Run the 9-point gaze calibration</string>
+    <!-- Fix C4: specific, actionable calibration failures -->
+    <string name="gaze_calibration_error_master_off">Gestures are switched off. Turn the master switch on the Home screen back on, then return here.</string>
+    <string name="gaze_calibration_error_camera">Tracking is not running. Go back, make sure gestures are on and the camera is active, then return here.</string>
+    <string name="gaze_calibration_error_face">Your face is not visible. Hold the phone at arm\'s length in good light so both eyes are clearly visible, then retry.</string>
+    <string name="gaze_calibration_error_samples">Could not collect enough stable samples for this dot. Keep your head still while looking at the dot, then retry.</string>
+    <string name="gaze_calibration_error_fit">Calibration could not be saved reliably. Restart it and keep your head still the whole time.</string>
 
     <!-- Notification -->
     <string name="notification_channel_name">Hand Tracking</string>
@@ -262,8 +268,12 @@
     <string name="settings_eye_is_mouse_subtitle">Cursor follows your gaze; pinch to click</string>
     <string name="settings_invert_gaze">Invert Horizontal Gaze</string>
     <string name="settings_invert_gaze_subtitle">Flip left/right if gaze direction feels reversed</string>
+    <!-- Fix C2/C3: honest hints shown while a calibration is active -->
+    <string name="settings_gaze_calibrated_hint">Calibrated — sensitivity and invert apply only before calibration. Re-run calibration to change them.</string>
     <string name="settings_blink_click">Blink to Click</string>
-    <string name="settings_blink_click_subtitle">Blink (300–800ms) to click where you are looking</string>
+    <string name="settings_blink_click_subtitle">Blink slowly (300–800ms) to click where you are looking — turns on Eye is Mouse automatically</string>
+    <string name="settings_blink_window">Blink Speed (minimum)</string>
+    <string name="settings_blink_window_subtitle">Lower = a quicker, more natural blink clicks; higher = fewer accidental clicks</string>
     <string name="settings_percent_value">%d%%</string>
     <string name="settings_duration_ms_value">%dms</string>
 

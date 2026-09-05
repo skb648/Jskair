@@ -76,6 +76,9 @@ class CameraService : LifecycleService() {
         /** How often the watchdog checks the pipeline (ms). */
         private const val WATCHDOG_PERIOD_MS = 5_000L
 
+        /** Fix A9: analysis FPS cap while eye tracking is active (dual models). */
+        private const val EYE_MODE_FPS_CAP = 20
+
         /** After a tracker is found missing, retry every N ticks. */
         private const val TRACKER_RETRY_TICKS = 3
 
@@ -160,6 +163,9 @@ class CameraService : LifecycleService() {
     private var nextTrackerRetryTick: Int = TRACKER_RETRY_TICKS
     private val pipelineJobs = mutableListOf<Job>()
     private val jobsLock = Any()
+
+    /** Guards face-tracker init/close against a fast off→on settings toggle (Fix D7). */
+    private val faceTrackerLock = Any()
 
     private lateinit var thermalMonitor: com.aircontrol.tracking.ThermalMonitor
     private var thermalMonitoringJob: Job? = null
@@ -314,7 +320,15 @@ class CameraService : LifecycleService() {
         synchronized(jobsLock) {
             pipelineJobs.add(serviceScope.launchGuarded("camera settings", restart = true) {
                 settingsRepository.userPreferences.collectGuarded("camera settings") { prefs ->
-                    configuredFps = if (prefs.batterySaver) minOf(15, prefs.analysisFps) else prefs.analysisFps
+                    // Fix A9: in eye mode two landmarkers run per frame on the CPU.
+                    // Capping the analysis rate at 20 fps (only in eye mode) cuts
+                    // the combined CPU load ~20–35% while the One Euro-smoothed
+                    // gaze cursor stays visually smooth; battery saver still wins.
+                    configuredFps = when {
+                        prefs.batterySaver -> minOf(15, prefs.analysisFps)
+                        prefs.eyeTrackingEnabled -> minOf(EYE_MODE_FPS_CAP, prefs.analysisFps)
+                        else -> prefs.analysisFps
+                    }
                     adaptiveFpsController.updateConfiguredFps(configuredFps)
                     if (eyeTrackingEnabled != prefs.eyeTrackingEnabled) {
                         eyeTrackingEnabled = prefs.eyeTrackingEnabled
@@ -323,8 +337,22 @@ class CameraService : LifecycleService() {
                             // MediaPipe cannot allocate a GPU delegate. A throw here used to
                             // kill the collector (and the process). Now: log, keep hands
                             // working, and retry the next time the toggle changes.
-                            runCatching { withContext(Dispatchers.Default) { faceTracker.initialize() } }
+                            runCatching {
+                                withContext(Dispatchers.Default) {
+                                    synchronized(faceTrackerLock) { faceTracker.initialize() }
+                                }
+                            }
                                 .onFailure { Timber.e(it, "Face tracker init failed; eye mode stays off") }
+                        } else if (!eyeTrackingEnabled && faceTracker.isInitialized()) {
+                            // Fix D7: the face landmarker used to stay loaded (tens of MB of
+                            // native model memory) after eye mode was switched off. Release it;
+                            // the toggle-on path above re-initializes on demand.
+                            serviceScope.launch(Dispatchers.Default) {
+                                synchronized(faceTrackerLock) {
+                                    runCatching { faceTracker.close() }
+                                        .onFailure { Timber.e(it, "Face tracker close on disable failed") }
+                                }
+                            }
                         }
                     }
                 }
@@ -333,6 +361,17 @@ class CameraService : LifecycleService() {
                 handTracker.handFrames.collectGuarded("hand fps") { frame ->
                     if (frame.isDetected) adaptiveFpsController.onHandDetected(frame.timestampMs)
                     else adaptiveFpsController.onHandLost(frame.timestampMs)
+                }
+            })
+            // Fix A4: face presence also keeps the analysis at full FPS. In eye
+            // mode the user's hands are usually down — with only the hand signal
+            // wired, the controller dropped to 5 fps scan mode after 5 seconds
+            // and the gaze cursor turned into a slideshow exactly in the mode
+            // where the face is the active input.
+            pipelineJobs.add(serviceScope.launchGuarded("face fps", restart = true) {
+                faceTracker.gazeObservations.collectGuarded("face fps") { obs ->
+                    if (obs.faceDetected) adaptiveFpsController.onHandDetected(obs.timestampMs)
+                    else adaptiveFpsController.onHandLost(obs.timestampMs)
                 }
             })
         }

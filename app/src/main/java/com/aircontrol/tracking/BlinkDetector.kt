@@ -11,9 +11,23 @@ package com.aircontrol.tracking
  */
 class BlinkDetector(
     private val earThreshold: Float = 0.22f, // Chashma users EAR 0.18, 0.22 still triggers (was 0.20 too low for glasses reflection)
-    private val minBlinkMs: Long = 300L,
-    private val maxBlinkMs: Long = 800L,
+    minBlinkMs: Long = 300L,
+    maxBlinkMs: Long = 800L,
 ) {
+    // Fix A10: the blink window is user-tunable ("Blink duration" slider in
+    // Settings). The 300–800ms window demanded an unnaturally slow, deliberate
+    // blink; now the minimum is adjustable (150–500ms) and the maximum follows
+    // at min + 500ms, so a user can pick a natural-feeling blink while still
+    // keeping natural (100–250ms) blinks excluded at the default.
+    private var minBlinkMs: Long = minBlinkMs
+    private var maxBlinkMs: Long = maxBlinkMs
+
+    /** Updates the blink duration window (clamped to a sane band). */
+    fun updateConfig(minBlinkMs: Long, maxBlinkMs: Long) {
+        this.minBlinkMs = minBlinkMs.coerceIn(120L, 800L)
+        this.maxBlinkMs = maxBlinkMs.coerceIn(this.minBlinkMs + 200L, 2_000L)
+    }
+
     private var closedStartMs: Long = -1L
     private var wasClosed = false
 

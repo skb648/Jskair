@@ -84,13 +84,18 @@ package com.aircontrol.gesture.config
  *   feels — previously it was clamped to 0.08, i.e. always ignored.
  */
 data class GestureEngineConfig(
-    val sensitivity: Int = 50,
+    val sensitivity: Int = 70,
     val poseDebounceFrames: Int = 4,
     val poseDebounceMs: Long = 120L,
     val fingerExtensionThreshold: Float = 1.0f,
     val thumbExtensionAngleDeg: Float = 140f,
     val pinchDistanceRatio: Float = 0.22f,
-    val swipeWindowMs: Long = 500L,
+    // Fix (swipe latency): 500ms window + 300ms cooldown added a visible
+    // 0.3–0.6s "did it register?" delay to every swipe. A fast hand swipe
+    // completes in ~200–300ms; a 350ms window still holds enough intermediate
+    // samples for every consistency check, and a 220ms cooldown still blocks
+    // double-fires while feeling immediate.
+    val swipeWindowMs: Long = 350L,
     val swipeDisplacementRatio: Float = 0.06f,
     val swipeVelocityThreshold: Float = 1.2f,
     val swipeAxisDominanceRatio: Float = 2.0f,
@@ -99,7 +104,7 @@ data class GestureEngineConfig(
     val cooldownDurationMs: Long = 100L,
     val autoDisarmTimeoutMs: Long = 10_000L,
     val fistDisarmDurationMs: Long = 1000L,
-    val swipeCooldownMs: Long = 300L,
+    val swipeCooldownMs: Long = 220L,
     val palmHomeHoldMs: Long = 2500L,
     val palmHomeMinHandSizeNormalized: Float = 0.26f,
     val palmHomeMaxCursorMovement: Float = 0.05f,

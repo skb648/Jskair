@@ -70,12 +70,14 @@ fun SettingsScreen(
     var dwellDuration by remember { mutableFloatStateOf(preferences.dwellDurationMs.toFloat()) }
     var cursorGain by remember { mutableFloatStateOf(preferences.cursorGain.toFloat()) }
     var gazeSensitivity by remember { mutableFloatStateOf(preferences.gazeSensitivity.toFloat()) }
+    var blinkWindow by remember { mutableFloatStateOf(preferences.blinkWindowMs.toFloat()) }
     var isDraggingSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingCursorSpeed by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingHoldDuration by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingDwellDuration by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingCursorGain by remember { androidx.compose.runtime.mutableStateOf(false) }
     var isDraggingGazeSensitivity by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var isDraggingBlinkWindow by remember { androidx.compose.runtime.mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
     LaunchedEffect(preferences.sensitivity) { if (!isDraggingSensitivity) sensitivity = preferences.sensitivity.toFloat() }
     LaunchedEffect(preferences.cursorSpeed) { if (!isDraggingCursorSpeed) cursorSpeed = preferences.cursorSpeed.toFloat() }
@@ -83,6 +85,7 @@ fun SettingsScreen(
     LaunchedEffect(preferences.dwellDurationMs) { if (!isDraggingDwellDuration) dwellDuration = preferences.dwellDurationMs.toFloat() }
     LaunchedEffect(preferences.cursorGain) { if (!isDraggingCursorGain) cursorGain = preferences.cursorGain.toFloat() }
     LaunchedEffect(preferences.gazeSensitivity) { if (!isDraggingGazeSensitivity) gazeSensitivity = preferences.gazeSensitivity.toFloat() }
+    LaunchedEffect(preferences.blinkWindowMs) { if (!isDraggingBlinkWindow) blinkWindow = preferences.blinkWindowMs.toFloat() }
 
     Scaffold(
         topBar = {
@@ -346,23 +349,45 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))
 
-            SettingSliderCard(
-                title = stringResource(R.string.settings_gaze_sensitivity),
-                valueLabel = stringResource(R.string.settings_percent_value, gazeSensitivity.toInt()),
-                value = gazeSensitivity,
-                onValueChange = { isDraggingGazeSensitivity = true; gazeSensitivity = it },
-                onValueChangeFinished = { isDraggingGazeSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
-                valueRange = 0f..100f,
-            )
+            // Fix C2/C3: "Gaze Sensitivity" and "Invert Horizontal Gaze" only
+            // affect the *uncalibrated* gain/invert path. Once a calibration is
+            // saved they are dead controls — silently showing sliders that do
+            // nothing was pure confusion. Show an honest hint instead.
+            if (preferences.gazeCalibration.isNotBlank() ||
+                preferences.personalizedGazeCalibration.isNotBlank()
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(Dimens.cardCornerRadius),
+                ) {
+                    Column(modifier = Modifier.padding(Dimens.paddingMedium)) {
+                        Text(
+                            text = stringResource(R.string.settings_gaze_calibrated_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                SettingSliderCard(
+                    title = stringResource(R.string.settings_gaze_sensitivity),
+                    valueLabel = stringResource(R.string.settings_percent_value, gazeSensitivity.toInt()),
+                    value = gazeSensitivity,
+                    onValueChange = { isDraggingGazeSensitivity = true; gazeSensitivity = it },
+                    onValueChangeFinished = { isDraggingGazeSensitivity = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeSensitivity(gazeSensitivity.toInt()) },
+                    valueRange = 0f..100f,
+                )
 
-            Spacer(modifier = Modifier.height(Dimens.spacing8))
+                Spacer(modifier = Modifier.height(Dimens.spacing8))
 
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_invert_gaze),
-                subtitle = stringResource(R.string.settings_invert_gaze_subtitle),
-                checked = preferences.gazeInvertX,
-                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeInvertX(it) },
-            )
+                SettingSwitchRow(
+                    title = stringResource(R.string.settings_invert_gaze),
+                    subtitle = stringResource(R.string.settings_invert_gaze_subtitle),
+                    checked = preferences.gazeInvertX,
+                    onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGazeInvertX(it) },
+                )
+            }
 
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
@@ -371,6 +396,19 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_blink_click_subtitle),
                 checked = preferences.blinkClickEnabled,
                 onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBlinkClickEnabled(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            // Fix A10: tunable blink window — the fixed 300ms minimum forced an
+            // unnaturally slow blink; now the user picks what feels natural.
+            SettingSliderCard(
+                title = stringResource(R.string.settings_blink_window),
+                valueLabel = stringResource(R.string.settings_duration_ms_value, blinkWindow.toInt()),
+                value = blinkWindow,
+                onValueChange = { isDraggingBlinkWindow = true; blinkWindow = it },
+                onValueChangeFinished = { isDraggingBlinkWindow = false; haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateBlinkWindowMs(blinkWindow.toInt()) },
+                valueRange = 150f..500f,
             )
 
             Spacer(modifier = Modifier.height(Dimens.spacing12))

@@ -4,6 +4,16 @@ import kotlin.math.abs
 
 object GazeCalibrationFeatureSchema {
     const val VERSION = 1
+
+    /**
+     * Fix A5: canonical signature of the feature pipeline that produced the
+     * calibration samples (model → extraction → head pose → normalization →
+     * this feature vector). Persisted models are only deserialized when the
+     * signature matches, so a code change to any stage invalidates stale
+     * models instead of silently predicting garbage.
+     */
+    const val TRANSFORM_SIGNATURE = "facelandmarker-478:eyefeatures-v1:headpose-v1:normalizer-v1:featvec-v1"
+
     val NAMES: List<String> = listOf(
         "left_iris_along","left_iris_perpendicular","left_iris_diameter_over_eye_width",
         "left_eyelid_opening","left_ear","left_eye_center_from_face_x","left_eye_center_from_face_y",

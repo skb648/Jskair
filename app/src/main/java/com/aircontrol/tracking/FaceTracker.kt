@@ -16,11 +16,25 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.Volatile
 
+/**
+ * Cursor-facing gaze sample.
+ *
+ * - Uncalibrated: (x, y) are raw iris-ratio coordinates in [0,1] (camera space).
+ * - Personalized model active ([personalized] = true): (x, y) are the model's
+ *   prediction already in *screen-normalized* space — consumers must map them
+ *   straight to pixels, never through the hand-cursor dead-zone mapping.
+ *
+ * Fix D1: the sample now carries its own monotonic [timestampMs] (previously a
+ * no-op `copyTimestamp()` lost the result timestamp, and downstream filters had
+ * no time base for dt-aware smoothing).
+ */
 data class GazePoint(
     val x: Float,
     val y: Float,
     val ear: Float = 1f,
     val confidence: Float,
+    val timestampMs: Long = 0L,
+    val personalized: Boolean = false,
 ) {
     val isDetected: Boolean get() = confidence >= MIN_GAZE_CONFIDENCE
 
@@ -30,12 +44,48 @@ data class GazePoint(
     }
 }
 
+/**
+ * A raw per-frame observation for calibration and face-presence tracking.
+ *
+ * Always carries the legacy iris ratios (`rawX`, `rawY`) so the 5-point affine
+ * fallback can be fitted from the same session, plus the advanced feature
+ * vector (head-pose normalized) used by the personalized model.
+ */
+data class GazeObservation(
+    val rawX: Float,
+    val rawY: Float,
+    val ear: Float,
+    /** Min(binocular eye quality, head-pose confidence); 0 when no face. */
+    val quality: Float,
+    val poseValid: Boolean,
+    val featureVector: CalibrationFeatureVector?,
+    val timestampMs: Long,
+    val faceDetected: Boolean,
+)
+
 interface FaceTracker {
     val gazePoints: SharedFlow<GazePoint>
+
+    /**
+     * Per-frame raw observations (face presence, iris ratios, head-pose
+     * normalized feature vectors). Emitted for every analyzed frame while the
+     * face tracker is initialized — including "no face" frames, which the
+     * camera service uses to drive the adaptive FPS controller (Fix A4).
+     */
+    val gazeObservations: SharedFlow<GazeObservation>
+
     fun initialize()
     fun processFrame(mpImage: MPImage, timestampMs: Long)
     fun close()
     fun isInitialized(): Boolean
+
+    /**
+     * Fix A5: installs (or clears, with null) the personalized gaze model.
+     * When set and the current frame yields a valid feature vector, predicted
+     * screen-space coordinates are emitted as [GazePoint]s with
+     * `personalized = true`; otherwise the tracker falls back to iris ratios.
+     */
+    fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?)
 }
 
 @Singleton
@@ -49,11 +99,25 @@ class FaceTrackerImpl @Inject constructor(
     private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
+    // Fix A5: the active personalized model (null = legacy ratio mode).
+    @Volatile private var personalizedModel: PersonalizedGazeCalibrationModel? = null
+
+    // Dimensions of the last submitted image (the mirrored/rotated analysis
+    // bitmap), needed to build aspect-correct FaceLandmarkFrames.
+    @Volatile private var lastImageWidthPx: Int = 0
+    @Volatile private var lastImageHeightPx: Int = 0
+
     private val _gazePoints = MutableSharedFlow<GazePoint>(
         extraBufferCapacity = 32,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gazePoints: SharedFlow<GazePoint> = _gazePoints.asSharedFlow()
+
+    private val _gazeObservations = MutableSharedFlow<GazeObservation>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    override val gazeObservations: SharedFlow<GazeObservation> = _gazeObservations.asSharedFlow()
 
     override fun initialize() {
         if (_isInitialized) {
@@ -77,9 +141,20 @@ class FaceTrackerImpl @Inject constructor(
         Timber.i("FaceTracker initialized successfully")
     }
 
+    override fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?) {
+        personalizedModel = model
+        Timber.i(
+            if (model != null) "Personalized gaze model activated (trained %d, val p95 %.4f)"
+                .format(model.createdAtMs, model.validationMetrics.p95NormalizedError)
+            else "Personalized gaze model cleared — falling back to iris ratios",
+        )
+    }
+
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
         if (isClosing || !_isInitialized) return
         val landmarker = faceLandmarker ?: return
+        lastImageWidthPx = mpImage.width
+        lastImageHeightPx = mpImage.height
         val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
             lastSubmittedTimestampMs + 1L
         } else {
@@ -122,21 +197,114 @@ class FaceTrackerImpl @Inject constructor(
 
         val faceLandmarks = result.faceLandmarks()
         if (faceLandmarks.isEmpty()) {
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f))
+            val ts = resultTimestampMs.coerceAtLeast(0L)
+            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f, timestampMs = ts))
+            _gazeObservations.tryEmit(
+                GazeObservation(0.5f, 0.5f, 1f, 0f, false, null, ts, faceDetected = false),
+            )
             return
         }
 
-        val gaze = computeGaze(faceLandmarks[0])
+        val landmarks = faceLandmarks[0]
+        val ts = resultTimestampMs.coerceAtLeast(0L)
+        val ear = computeAverageEar(landmarks)
+
+        // ---- Fix A5: advanced pipeline (features + head pose + normalization) ----
+        var featureVector: CalibrationFeatureVector? = null
+        var poseValid = false
+        var advancedQuality = 0f
+        val width = lastImageWidthPx
+        val height = lastImageHeightPx
+        if (landmarks.size >= CanonicalEyes.MIN_LANDMARK_COUNT && width > 0 && height > 0) {
+            // A single bad frame must never kill the cursor: any failure here
+            // simply falls back to the legacy iris-ratio gaze below.
+            runCatching {
+                val frame = buildFaceLandmarkFrame(result, landmarks, ts, width, height)
+                val features = EyeFeatureExtractor.extract(frame)
+                val pose = HeadPoseEstimator.estimate(frame, features)
+                val normalized = HeadPoseNormalizer.normalize(features, pose)
+                val vector = GazeCalibrationFeatureVectorBuilder.from(normalized)
+                if (vector != null) {
+                    featureVector = vector
+                    poseValid = pose.isValid
+                    val eyeQuality = minOf(
+                        features.left?.quality ?: 0f,
+                        features.right?.quality ?: 0f,
+                    )
+                    advancedQuality = minOf(eyeQuality, pose.confidence).coerceIn(0f, 1f)
+                }
+            }.onFailure { Timber.e(it, "Advanced gaze pipeline failed — using iris-ratio fallback") }
+        }
+
+        // ---- Personalized prediction wins whenever it is available ----
+        val model = personalizedModel
+        if (model != null && featureVector != null) {
+            val prediction = runCatching { model.predict(featureVector!!) }
+            prediction.getOrNull()?.let { (px, py) ->
+                val x = px.coerceIn(0f, 1f)
+                val y = py.coerceIn(0f, 1f)
+                _gazePoints.tryEmit(
+                    GazePoint(
+                        x = x,
+                        y = y,
+                        ear = ear,
+                        // Honest quality — never force-detected. The consumer's
+                        // hysteresis decides visibility from real signal quality.
+                        confidence = advancedQuality,
+                        timestampMs = ts,
+                        personalized = true,
+                    ),
+                )
+                _gazeObservations.tryEmit(
+                    GazeObservation(
+                        rawX = x, rawY = y, ear = ear, quality = advancedQuality,
+                        poseValid = poseValid, featureVector = featureVector, timestampMs = ts,
+                        faceDetected = true,
+                    ),
+                )
+                return
+            }
+        }
+
+        // ---- Legacy iris-ratio gaze (fallback + affine calibration source) ----
+        val gaze = computeGaze(landmarks)
         if (gaze != null) {
-            _gazePoints.tryEmit(gaze.copyTimestamp(resultTimestampMs))
+            _gazePoints.tryEmit(gaze.copy(timestampMs = ts))
+            _gazeObservations.tryEmit(
+                GazeObservation(
+                    rawX = gaze.x, rawY = gaze.y, ear = ear,
+                    quality = gaze.confidence,
+                    poseValid = poseValid,
+                    featureVector = featureVector,
+                    timestampMs = ts,
+                    faceDetected = true,
+                ),
+            )
         } else {
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f))
+            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f, timestampMs = ts))
+            _gazeObservations.tryEmit(
+                GazeObservation(0.5f, 0.5f, ear, 0f, poseValid, featureVector, ts, faceDetected = true),
+            )
         }
     }
 
-    // Timestamp is retained by the collector through the flow sample timing; the
-    // helper is deliberately allocation-free and documents the source timestamp.
-    private fun GazePoint.copyTimestamp(@Suppress("UNUSED_PARAMETER") timestampMs: Long): GazePoint = this
+    private fun buildFaceLandmarkFrame(
+        result: FaceLandmarkerResult,
+        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        timestampMs: Long,
+        widthPx: Int,
+        heightPx: Int,
+    ): FaceLandmarkFrame = FaceLandmarkFrame(
+        frameId = timestampMs,
+        timestampNs = timestampMs * 1_000_000L,
+        timestampMs = timestampMs,
+        trackerWidthPx = widthPx,
+        trackerHeightPx = heightPx,
+        isFrontCameraMirrored = true,
+        landmarks = landmarks.map { FaceLandmark(it.x(), it.y(), it.z()) },
+        facialTransformationMatrix = result.facialTransformationMatrixes()
+            .firstOrNull()?.copyOf(),
+    )
 
     private fun computeGaze(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
@@ -232,6 +400,10 @@ class FaceTrackerImpl @Inject constructor(
                 .setMinFaceDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinFacePresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
+                // Fix A5: the head-pose estimator strongly prefers the fused
+                // 4x4 facial transformation matrix over its landmark fallback;
+                // request it from the landmarker (cost is negligible on CPU).
+                .setOutputFacialTransformationMatrixes(true)
                 .setResultListener { result, _ ->
                     handleResult(result, result.timestampMs())
                 }

@@ -61,6 +61,12 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
     /** Timestamp of the last detected swipe, used for cooldown. */
     private var lastSwipeTimestampMs: Long = 0L
 
+    /**
+     * Fix S1: consecutive frames for which the pose gate has disallowed
+     * swipes. The window is only wiped once this exceeds the grace period.
+     */
+    private var disallowedFrames: Int = 0
+
     /** Minimum time between consecutive swipe detections. */
     private var swipeCooldownMs: Long = config.swipeCooldownMs
 
@@ -102,11 +108,24 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // accumulated motion instead of keeping it. Otherwise the movement the
         // user made *while pointing* would be "completed" the moment they opened
         // their palm and scroll the page for no visible reason.
+        //
+        // Fix S1: ...but only after the pose has been disallowed for a few
+        // CONSECUTIVE frames. During a fast open-palm swipe the classifier
+        // flickers (OPEN_PALM → FOUR_FINGERS → OPEN_PALM) for 1-2 frames as
+        // the hand accelerates, and the instant wipe below threw away a
+        // half-completed swipe on every flicker — the "swipe sometimes works,
+        // sometimes nothing happens" complaint. A short grace keeps genuine
+        // pointing swipes from completing (the wipe still happens quickly),
+        // while a flickering palm no longer murders an in-flight swipe.
         if (!gestureAllowed) {
-            wristWindow.clear()
-            indexTipWindow.clear()
+            disallowedFrames++
+            if (disallowedFrames > POSE_GATE_GRACE_FRAMES) {
+                wristWindow.clear()
+                indexTipWindow.clear()
+            }
             return SwipeResult(detected = false)
         }
+        disallowedFrames = 0
 
         val wrist = input.landmarks[LandmarkIndex.WRIST]
         val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
@@ -260,12 +279,22 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             )
         }
 
-        // Determine direction based on dominant axis
-        val direction = if (isHorizontalDominant) {
-            if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
-        } else {
-            if (displacementY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
-        }
+        // Determine direction from the SIGNED SUM of the moving steps, not just
+        // the endpoint displacement (Fix: swipe direction accuracy).
+        //
+        // A natural hand swipe travels in a slight arc. The *endpoint*
+        // displacement can point a few degrees off the throw — or even flip the
+        // dominant axis on a curved path — which made fast swipes read as the
+        // wrong direction or fall to the diagonal filters. The signed sum of
+        // per-step motion is the arc-robust "net throw" of the hand: noise and
+        // small hooks cancel out, and the axis the hand actually travelled
+        // along wins.
+        val direction = signedThrowDirection(window)
+            ?: if (isHorizontalDominant) {
+                if (displacementX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
+            } else {
+                if (displacementY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
+            }
 
         // Bug: Swipe Up/Down Confusion Fix — STRICT DIRECTIONAL ANGLE FILTER
         // for vertical swipes.
@@ -369,6 +398,35 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             displacementY = displacementY,
             peakVelocity = peakVelocity,
         )
+    }
+
+    /**
+     * Fix (swipe direction accuracy): net-throw direction from the signed sum of
+     * per-step motion, ignoring sub-threshold jitter steps. A natural hand swipe
+     * travels in a slight arc; the endpoint displacement can point off-axis or
+     * even flip the dominant axis on a curved path, which read as the WRONG
+     * direction. The signed sum is the arc-robust "net throw": noise and small
+     * hooks cancel out. Returns null when both sums are negligible; the caller
+     * then falls back to the endpoint-displacement direction.
+     */
+    internal fun signedThrowDirection(window: ArrayDeque<PositionSample>): SwipeDirection? {
+        if (window.size < 3) return null
+        var sumX = 0f
+        var sumY = 0f
+        for (i in 1 until window.size) {
+            val dx = window[i].x - window[i - 1].x
+            val dy = window[i].y - window[i - 1].y
+            if (kotlin.math.abs(dx) >= MIN_INTERMEDIATE_DISPLACEMENT) sumX += dx
+            if (kotlin.math.abs(dy) >= MIN_INTERMEDIATE_DISPLACEMENT) sumY += dy
+        }
+        val absSumX = kotlin.math.abs(sumX)
+        val absSumY = kotlin.math.abs(sumY)
+        if (absSumX < EPSILON && absSumY < EPSILON) return null
+        return if (absSumX > absSumY) {
+            if (sumX > 0f) SwipeDirection.RIGHT else SwipeDirection.LEFT
+        } else {
+            if (sumY > 0f) SwipeDirection.DOWN else SwipeDirection.UP
+        }
     }
 
     /**
@@ -510,6 +568,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         lastSwipeTimestampMs = 0L
         lastSampleTimestampMs = 0L
         measuredFrameIntervalMs = 0L
+        disallowedFrames = 0
     }
 
     companion object {
@@ -543,6 +602,12 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // vertical motion, but two or more reversals indicate genuine erratic
         // drift, not a deliberate swipe.
         private const val MAX_VERTICAL_REVERSALS = 1
+
+        // Fix S1: how many consecutive pose-gated frames tolerate keeping the
+        // swipe window before it is wiped. 2 frames (~80ms at 24fps) absorbs
+        // classifier flicker during fast palm swipes without letting a
+        // pointing-hand sweep complete later.
+        private const val POSE_GATE_GRACE_FRAMES = 2
     }
 
     /**
