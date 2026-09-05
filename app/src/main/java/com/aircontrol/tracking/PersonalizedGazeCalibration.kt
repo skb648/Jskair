@@ -33,11 +33,17 @@ data class CalibrationSample(
         require(target.x == targetX && target.y == targetY)
     }
 
+    // Fix (compile): nested-in-COMPANION types cannot be named as
+    // `CalibrationSample.Result` from other files (only via `.Companion.`),
+    // which broke every external consumer including this class's own tests.
+    // Class-level nesting keeps the natural `CalibrationSample.Result.X`
+    // path working everywhere.
+    sealed class Result {
+        data class Accepted(val sample: CalibrationSample) : Result()
+        data class Rejected(val reason: RejectionReason) : Result()
+    }
+
     companion object {
-        sealed class Result {
-            data class Accepted(val sample: CalibrationSample) : Result()
-            data class Rejected(val reason: RejectionReason) : Result()
-        }
         enum class RejectionReason {
             INVALID_FEATURES, INVALID_POSE, NON_FINITE, LOW_QUALITY, INVALID_TARGET, INVALID_TIMESTAMP,
         }
