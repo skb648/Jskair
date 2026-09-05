@@ -3,8 +3,6 @@ package com.aircontrol.tracking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,25 +37,25 @@ class PersonalizedGazeCalibrationTest {
 
     @Test fun insufficientSampleFittingFailsExplicitly() {
         val result = PersonalizedGazeCalibrationFitter.fit(
-            rawSamples = listOf(sample(CalibrationTarget.CENTER, 0)),
-            transformSignature = "sig-v1", createdAtMs = 1L,
+            rawSamples = listOf(sample(CalibrationTarget.CENTER, 0)), transformSignature = "sig-v1", createdAtMs = 1L,
         )
         assertFalse(result.isSuccess)
         assertTrue(result.failure!!.contains("insufficient"))
     }
 
     @Test fun polynomialFeatureGenerationIsStable() {
-        val expanded = QuadraticPolynomialFeatures.expand(doubleArrayOf(2.0, 3.0, 4.0))
-        assertEquals(1 + 3 + 8 * 9 / 2, expanded.size)
+        val input = DoubleArray(GazeCalibrationFeatureSchema.DIMENSION) { it + 2.0 }
+        val expanded = QuadraticPolynomialFeatures.expand(input)
+        assertEquals(1 + GazeCalibrationFeatureSchema.DIMENSION + 23 * 24 / 2, expanded.size)
         assertEquals(1.0, expanded[0], 0.0)
         assertEquals(2.0, expanded[1], 0.0)
-        assertEquals(4.0, expanded[4], 0.0)
-        assertEquals(6.0, expanded[5], 0.0)
+        assertEquals(3.0, expanded[2], 0.0)
+        assertEquals(4.0, expanded[24], 0.0)
+        assertEquals(6.0, expanded[25], 0.0)
     }
 
     @Test fun ridgeRegularizationProducesFiniteModelOnCollinearData() {
-        val samples = calibrationFixtureSamples()
-        val fit = PersonalizedGazeCalibrationFitter.fit(samples, regularization = 0.1, transformSignature = "sig-v1", createdAtMs = 10L)
+        val fit = PersonalizedGazeCalibrationFitter.fit(calibrationFixtureSamples(), regularization = 0.1, transformSignature = "sig-v1", createdAtMs = 10L)
         assertTrue(fit.isSuccess)
         assertTrue(fit.model!!.coefficientsX.all { it.isFinite() })
     }
@@ -77,8 +75,7 @@ class PersonalizedGazeCalibrationTest {
             PersonalizedGazeCalibrationModel(
                 1, 1, PersonalizedGazeCalibrationModel.MODEL_TYPE, 0.1, "sig-v1",
                 Standardization(DoubleArray(23), DoubleArray(23) { 1.0 }),
-                DoubleArray(size) { if (it == 2) Double.NaN else 0.0 }, DoubleArray(size),
-                metrics(), metrics(), createdAtMs = 1L,
+                DoubleArray(size) { if (it == 2) Double.NaN else 0.0 }, DoubleArray(size), metrics(), metrics(), createdAtMs = 1L,
             )
         }
     }
@@ -87,8 +84,8 @@ class PersonalizedGazeCalibrationTest {
         val split = TargetBalancedValidationSplit.split(calibrationFixtureSamples(), 0.20)
         assertEquals(144, split.training.size)
         assertEquals(36, split.validation.size)
-        assertEquals(16, split.training.groupBy { it.target }.values.first().size)
-        assertEquals(4, split.validation.groupBy { it.target }.values.first().size)
+        assertTrue(split.training.groupBy { it.target }.values.all { it.size == 16 })
+        assertTrue(split.validation.groupBy { it.target }.values.all { it.size == 4 })
         assertTrue(split.training.none { t -> split.validation.any { it.timestampMs == t.timestampMs && it.target == t.target } })
     }
 
@@ -124,25 +121,27 @@ class PersonalizedGazeCalibrationTest {
         assertArrayEquals(model.coefficientsX, restored.coefficientsX, 0.0)
         assertArrayEquals(model.coefficientsY, restored.coefficientsY, 0.0)
         assertEquals(model.transformSignature, restored.transformSignature)
-        assertTrue(PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransformSignature = "other").let { it is CalibrationLoadResult.Invalid })
-        assertTrue(PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedFeatureSchemaVersion = 99, expectedTransformSignature = "sig-v1").let { it is CalibrationLoadResult.Invalid })
+        assertTrue(PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransformSignature = "other") is CalibrationLoadResult.Invalid)
+        assertTrue(PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedFeatureSchemaVersion = 99, expectedTransformSignature = "sig-v1") is CalibrationLoadResult.Invalid)
     }
 
     @Test fun corruptedSerializedModelRejected() {
-        val result = PersonalizedGazeCalibrationSerializer.deserialize("{not-json", expectedTransformSignature = "sig-v1")
-        assertTrue(result is CalibrationLoadResult.Invalid)
+        assertTrue(PersonalizedGazeCalibrationSerializer.deserialize("{not-json", expectedTransformSignature = "sig-v1") is CalibrationLoadResult.Invalid)
     }
 
     @Test fun modelVersionCompatibilityIsExplicit() {
-        val model = calibrationModelFixture()
-        val raw = model.toSerialized()
+        val raw = calibrationModelFixture().toSerialized()
         assertTrue(PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedModelVersion = 99, expectedTransformSignature = "sig-v1") is CalibrationLoadResult.Invalid)
     }
 
-    @Test fun pixelErrorConversionUsesScreenDimensions() {
-        val normalized = 0.1
-        val error = kotlin.math.sqrt((normalized * 1920) * (normalized * 1920) + (0.05 * 1080) * (0.05 * 1080))
-        assertEquals(error, kotlin.math.sqrt((normalized * 1920) * (normalized * 1920) + (0.05 * 1080) * (0.05 * 1080)), 1e-9)
+    @Test fun pixelErrorConversionIsPresentWhenScreenDimensionsAreProvided() {
+        val model = PersonalizedGazeCalibrationFitter.fit(
+            calibrationFixtureSamples(), transformSignature = "sig-v1", screenWidthPx = 1920, screenHeightPx = 1080, createdAtMs = 1L,
+        ).model!!
+        assertTrue(model.validationMetrics.meanPixelError!!.isFinite())
+        assertTrue(model.validationMetrics.p95PixelError!!.isFinite())
+        assertTrue(model.validationMetrics.maxPixelError!!.isFinite())
+        assertTrue(model.validationMetrics.meanPixelError!! >= model.validationMetrics.meanNormalizedError)
     }
 
     @Test fun scaleNormalizedFeatureConsistency() {
@@ -165,11 +164,11 @@ class PersonalizedGazeCalibrationTest {
 
     private fun sample(target: CalibrationTarget, timestamp: Long, valueOffset: Float = 0f): CalibrationSample {
         val v = FloatArray(GazeCalibrationFeatureSchema.DIMENSION) { i -> when (i) { 0 -> target.x + valueOffset; 1 -> target.y + valueOffset; 7 -> target.x; 8 -> target.y; 17 -> (target.x - .5f) * 20f; 18 -> (target.y - .5f) * 20f; else -> (i + 1) * 0.01f } }
-        return CalibrationSample(target, target.x, target.y, CalibrationFeatureVector(GazeCalibrationFeatureSchema.VERSION, v), timestamp.toLong(), 0.95f)
+        return CalibrationSample(target, target.x, target.y, CalibrationFeatureVector(GazeCalibrationFeatureSchema.VERSION, v), timestamp, 0.95f)
     }
 
     private fun calibrationFixtureSamples(): List<CalibrationSample> = buildList {
-        var timestamp = 1
+        var timestamp = 1L
         for (target in CalibrationTargets.ALL) repeat(20) { index -> add(sample(target, timestamp++, valueOffset = (index - 9.5f) * 0.0001f)) }
     }
 
