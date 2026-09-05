@@ -15,10 +15,10 @@ object PersonalizedGazeCalibrationSerializer {
         .put("modelType", model.modelType)
         .put("regularization", model.regularization)
         .put("transformSignature", model.transformSignature)
-        .put("means", JSONArray(model.standardization.means.toList()))
-        .put("stdDevs", JSONArray(model.standardization.stdDevs.toList()))
-        .put("coefficientsX", JSONArray(model.coefficientsX.toList()))
-        .put("coefficientsY", JSONArray(model.coefficientsY.toList()))
+        .put("means", model.standardization.means.toJsonArray())
+        .put("stdDevs", model.standardization.stdDevs.toJsonArray())
+        .put("coefficientsX", model.coefficientsX.toJsonArray())
+        .put("coefficientsY", model.coefficientsY.toJsonArray())
         .put("trainingMetrics", metricsToJson(model.trainingMetrics))
         .put("validationMetrics", metricsToJson(model.validationMetrics))
         .put("screenWidthPx", model.screenWidthPx ?: JSONObject.NULL)
@@ -62,7 +62,7 @@ object PersonalizedGazeCalibrationSerializer {
                 modelVersion = modelVersion,
                 featureSchemaVersion = featureVersion,
                 modelType = modelType,
-                regularization = root.getDouble("regularization"),
+                regularization = root.getDouble("regularization").also { require(it.isFinite()) },
                 transformSignature = signature,
                 standardization = Standardization(means, stds),
                 coefficientsX = cx,
@@ -94,12 +94,12 @@ object PersonalizedGazeCalibrationSerializer {
         .put("maxPixelError", m.maxPixelError ?: JSONObject.NULL)
 
     private fun metricsFromJson(j: JSONObject): CalibrationMetrics = CalibrationMetrics(
-        j.getDouble("meanNormalizedError"),
-        j.getDouble("medianNormalizedError"),
-        j.getDouble("p95NormalizedError"),
-        j.getDouble("maxNormalizedError"),
-        j.getDouble("horizontalMae"),
-        j.getDouble("verticalMae"),
+        j.getDouble("meanNormalizedError").also { require(it.isFinite()) },
+        j.getDouble("medianNormalizedError").also { require(it.isFinite()) },
+        j.getDouble("p95NormalizedError").also { require(it.isFinite()) },
+        j.getDouble("maxNormalizedError").also { require(it.isFinite()) },
+        j.getDouble("horizontalMae").also { require(it.isFinite()) },
+        j.getDouble("verticalMae").also { require(it.isFinite()) },
         j.getInt("sampleCount"),
         j.getInt("validationSampleCount"),
         j.optDoubleNullable("meanPixelError"),
@@ -108,7 +108,8 @@ object PersonalizedGazeCalibrationSerializer {
         j.optDoubleNullable("maxPixelError"),
     )
 
+    private fun DoubleArray.toJsonArray(): JSONArray = JSONArray().also { array -> for (value in this) array.put(value.also { require(it.isFinite()) }) }
     private fun JSONArray.toDoubleArrayStrict(): DoubleArray = DoubleArray(length()) { i -> getDouble(i).also { require(it.isFinite()) } }
-    private fun JSONObject.optDoubleNullable(key: String): Double? = if (isNull(key)) null else getDouble(key).takeIf { it.isFinite() }
+    private fun JSONObject.optDoubleNullable(key: String): Double? = if (isNull(key)) null else getDouble(key).also { require(it.isFinite()) }
     private fun JSONObject.optIntNullable(key: String): Int? = if (isNull(key)) null else getInt(key)
 }
