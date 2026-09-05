@@ -134,7 +134,13 @@ class PersonalizedGazeCalibrationTest {
     }
 
     @Test fun serializationRoundTripAndCompatibilityRejection() {
-        val model = calibrationModelFixture()
+        val model = try {
+            calibrationModelFixture()
+        } catch (e: Throwable) {
+            println("SERIALIZATION_DIAGNOSTIC fixture construction failed: ${e::class.qualifiedName}: ${e.message}")
+            e.printStackTrace()
+            throw e
+        }
         val raw = model.toSerialized()
         println("SERIALIZATION_DIAGNOSTIC rawNull=${raw == null}")
         val loaded = PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransform = transform)
