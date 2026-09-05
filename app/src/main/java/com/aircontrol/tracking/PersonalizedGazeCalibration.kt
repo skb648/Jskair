@@ -67,7 +67,7 @@ data class RobustCalibrationSamples(
     val rejected: List<CalibrationSample>,
 )
 
-/** Robust filtering. Its statistics are only allowed to be learned from training observations. */
+/** Robust filtering; callers must only pass the training partition. */
 object RobustCalibrationSampleAggregator {
     fun filter(trainingSamples: List<CalibrationSample>): RobustCalibrationSamples {
         val retained = ArrayList<CalibrationSample>()
@@ -285,7 +285,7 @@ object PersonalizedGazeCalibrationFitter {
         val rawSplit = TargetBalancedValidationSplit.split(rawSamples, validationFraction)
         if (!rawSplit.isValid) throw CalibrationFitException("validation split is empty")
 
-        // ONLY training observations may affect robust filtering and standardization.
+        // Validation is untouched. Only the training partition is robust-filtered or standardized.
         val robustTraining = RobustCalibrationSampleAggregator.filter(rawSplit.training)
         val training = robustTraining.retained
         if (training.size < MIN_TOTAL_SAMPLES) throw CalibrationFitException("insufficient training observations after robust filtering")
@@ -299,8 +299,8 @@ object PersonalizedGazeCalibrationFitter {
         val basis = training.map { QuadraticPolynomialFeatures.expand(standardization.transform(it.features.values)) }
         val betaX = solveRidge(basis, training.map { it.targetX.toDouble() }, regularization)
         val betaY = solveRidge(basis, training.map { it.targetY.toDouble() }, regularization)
-        val trainingMetrics = metrics(training, standardization, betaX, betaY, screenWidthPx, screenHeightPx)
-        val validationMetrics = metrics(rawSplit.validation, standardization, betaX, betaY, screenWidthPx, screenHeightPx)
+        val trainingMetrics = metrics(training, standardization, betaX, betaY, screenWidthPx, screenHeightPx, false)
+        val validationMetrics = metrics(rawSplit.validation, standardization, betaX, betaY, screenWidthPx, screenHeightPx, true)
 
         CalibrationFitResult(
             PersonalizedGazeCalibrationModel(
@@ -398,6 +398,7 @@ object PersonalizedGazeCalibrationFitter {
         betaY: DoubleArray,
         screenWidthPx: Int?,
         screenHeightPx: Int?,
+        isValidation: Boolean,
     ): CalibrationMetrics {
         if (samples.isEmpty()) throw CalibrationFitException("cannot compute metrics on empty dataset")
         val errors = ArrayList<Double>(samples.size)
@@ -414,7 +415,11 @@ object PersonalizedGazeCalibrationFitter {
             horizontal += abs(dx)
             vertical += abs(dy)
             errors += sqrt(dx * dx + dy * dy)
-            if (pixelErrors != null) pixelErrors += sqrt((dx * screenWidthPx!!).let { it * it } + (dy * screenHeightPx!!).let { it * it })
+            if (pixelErrors != null) {
+                val dxPx = dx * screenWidthPx!!
+                val dyPx = dy * screenHeightPx!!
+                pixelErrors += sqrt(dxPx * dxPx + dyPx * dyPx)
+            }
         }
         val sorted = errors.sorted()
         val pixels = pixelErrors?.sorted()
@@ -426,7 +431,7 @@ object PersonalizedGazeCalibrationFitter {
             horizontalMae = horizontal.average(),
             verticalMae = vertical.average(),
             sampleCount = samples.size,
-            validationSampleCount = if (samples === samples) 0 else 0,
+            validationSampleCount = if (isValidation) samples.size else 0,
             meanPixelError = pixels?.average(),
             medianPixelError = pixels?.let { quantile(it, 0.50) },
             p95PixelError = pixels?.let { quantile(it, 0.95) },
@@ -450,6 +455,6 @@ object PersonalizedGazeCalibrationFitter {
 
     const val MODEL_TERM_COUNT = 300
     const val MIN_SAMPLES_PER_TARGET = 80
-    const val MIN_TOTAL_SAMPLES = MIN_SAMPLES_PER_TARGET * 9 - 0
-    const val MIN_VALIDATION_SAMPLES = 81
+    const val MIN_TOTAL_SAMPLES = 900
+    const val MIN_VALIDATION_SAMPLES = 180
 }
