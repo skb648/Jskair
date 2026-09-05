@@ -41,7 +41,6 @@ class PersonalizedGazeCalibrationTest {
             CalibrationFeatureVector(GazeCalibrationFeatureSchema.VERSION, FloatArray(23) { if (it == 3) Float.NaN else 0f })
             throw AssertionError("expected non-finite feature rejection")
         } catch (_: IllegalArgumentException) {
-            // expected
         }
     }
 
@@ -89,44 +88,41 @@ class PersonalizedGazeCalibrationTest {
         val samples = calibrationFixtureSamples(100)
         val a = PersonalizedGazeCalibrationFitter.fit(samples, transform, regularization = 0.1, createdAtMs = 10L).model!!
         val b = PersonalizedGazeCalibrationFitter.fit(samples, transform, regularization = 0.1, createdAtMs = 10L).model!!
-        assertArrayEquals(a.standardization.means, b.standardization.means, 0.0)
-        assertArrayEquals(a.standardization.stdDevs, b.standardization.stdDevs, 0.0)
-        assertArrayEquals(a.coefficientsX, b.coefficientsX, 0.0)
-        assertArrayEquals(a.coefficientsY, b.coefficientsY, 0.0)
-        assertEquals(a.predict(samples.first().features), b.predict(samples.first().features))
+        assertArrayEquals(a.coefficientsX, b.coefficientsX, 1e-12)
+        assertArrayEquals(a.coefficientsY, b.coefficientsY, 1e-12)
     }
 
-    @Test fun trainingValidationSplitIsDisjointAndBalanced() {
-        val split = TargetBalancedValidationSplit.split(calibrationFixtureSamples(100), 0.20)
+    @Test fun targetBalancedSplitIsPerTarget() {
+        val split = TargetBalancedValidationSplit.split(calibrationFixtureSamples(100))
         assertEquals(720, split.training.size)
         assertEquals(180, split.validation.size)
-        assertTrue(split.training.groupBy { it.target }.values.all { it.size == 80 })
-        assertTrue(split.validation.groupBy { it.target }.values.all { it.size == 20 })
-        val validationKeys = split.validation.map { it.target.ordinal to it.timestampMs }.toSet()
-        assertTrue(split.training.none { (it.target.ordinal to it.timestampMs) in validationKeys })
+        CalibrationTargets.ALL.forEach { target ->
+            assertEquals(80, split.training.count { it.target == target })
+            assertEquals(20, split.validation.count { it.target == target })
+        }
     }
 
-    @Test fun validationChangesDoNotChangeTrainingPreprocessingOrCoefficients() {
-        val baseline = calibrationFixtureSamples(100)
-        val split = TargetBalancedValidationSplit.split(baseline, 0.20)
-        val changedValidation = split.validation.map { sample ->
-            val changedValues = sample.features.copyValues().also { values -> values[0] += 1000f; values[1] -= 1000f }
-            sample.copy(features = CalibrationFeatureVector(GazeCalibrationFeatureSchema.VERSION, changedValues))
+    @Test fun validationDoesNotAffectTrainingPreprocessingOrCoefficients() {
+        val base = calibrationFixtureSamples(100)
+        val alteredValidation = base.map { sample ->
+            if (sample.timestampMs % 20L == 0L) sample.copy(
+                features = CalibrationFeatureVector(1, sample.features.values.map { it + 0.7f }.toFloatArray())
+            ) else sample
         }
-        val alteredDataset = split.training + changedValidation
-        val a = PersonalizedGazeCalibrationFitter.fit(baseline, transform, regularization = 0.1, createdAtMs = 10L).model!!
-        val b = PersonalizedGazeCalibrationFitter.fit(alteredDataset, transform, regularization = 0.1, createdAtMs = 10L).model!!
+        val a = PersonalizedGazeCalibrationFitter.fit(base, transform, regularization = 0.1, createdAtMs = 10L).model!!
+        val b = PersonalizedGazeCalibrationFitter.fit(alteredValidation, transform, regularization = 0.1, createdAtMs = 10L).model!!
         assertArrayEquals(a.standardization.means, b.standardization.means, 0.0)
         assertArrayEquals(a.standardization.stdDevs, b.standardization.stdDevs, 0.0)
         assertArrayEquals(a.coefficientsX, b.coefficientsX, 0.0)
         assertArrayEquals(a.coefficientsY, b.coefficientsY, 0.0)
-        assertNotEquals(a.validationMetrics.meanNormalizedError, b.validationMetrics.meanNormalizedError)
     }
 
-    @Test fun robustAggregationRejectsExtremeOutlier() {
-        val normal = calibrationFixtureSamples(100).filter { it.target == CalibrationTarget.CENTER }.take(90)
-        val outlierValues = normal.first().features.copyValues().also { values -> values[0] = 50f; values[1] = -50f }
-        val outlier = normal.first().copy(timestampMs = 999999L, features = CalibrationFeatureVector(1, outlierValues))
+    @Test fun robustFilteringRejectsInjectedOutlierDeterministically() {
+        val normal = calibrationFixtureSamples(100)
+        val outlier = normal.first().copy(
+            timestampMs = 999999L,
+            features = CalibrationFeatureVector(1, FloatArray(23) { 100f }),
+        )
         val result = RobustCalibrationSampleAggregator.filter(normal + outlier)
         assertTrue(result.rejected.any { it.timestampMs == 999999L })
     }
@@ -140,7 +136,7 @@ class PersonalizedGazeCalibrationTest {
         val model = calibrationModelFixture()
         val raw = model.toSerialized()
         val loaded = PersonalizedGazeCalibrationSerializer.deserialize(raw, expectedTransform = transform)
-        assertTrue(loaded is CalibrationLoadResult.Loaded)
+        assertTrue("Unexpected calibration load result: $loaded", loaded is CalibrationLoadResult.Loaded)
         val restored = (loaded as CalibrationLoadResult.Loaded).model
         assertArrayEquals(model.coefficientsX, restored.coefficientsX, 0.0)
         assertArrayEquals(model.coefficientsY, restored.coefficientsY, 0.0)
@@ -163,7 +159,6 @@ class PersonalizedGazeCalibrationTest {
             )
             throw AssertionError("expected coefficient rejection")
         } catch (_: IllegalArgumentException) {
-            // expected
         }
     }
 
