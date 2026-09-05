@@ -28,9 +28,9 @@ object PersonalizedGazeCalibrationSerializer {
 
     fun deserialize(
         raw: String?,
+        expectedTransform: CoordinateTransform,
         expectedModelVersion: Int = PersonalizedGazeCalibrationModel.MODEL_VERSION,
         expectedFeatureSchemaVersion: Int = GazeCalibrationFeatureSchema.VERSION,
-        expectedTransformSignature: String,
     ): CalibrationLoadResult {
         if (raw.isNullOrBlank()) return CalibrationLoadResult.Invalid("serialized model is empty")
         return try {
@@ -42,21 +42,36 @@ object PersonalizedGazeCalibrationSerializer {
             if (modelVersion != expectedModelVersion) return CalibrationLoadResult.Invalid("incompatible model version")
             if (featureVersion != expectedFeatureSchemaVersion) return CalibrationLoadResult.Invalid("incompatible feature schema version")
             if (modelType != PersonalizedGazeCalibrationModel.MODEL_TYPE) return CalibrationLoadResult.Invalid("incompatible model type")
-            if (signature != expectedTransformSignature) return CalibrationLoadResult.Invalid("incompatible transform signature")
+            if (signature != expectedTransform.signature) return CalibrationLoadResult.Invalid("incompatible transform signature")
+
             val means = root.getJSONArray("means").toDoubleArrayStrict()
             val stds = root.getJSONArray("stdDevs").toDoubleArrayStrict()
             val cx = root.getJSONArray("coefficientsX").toDoubleArrayStrict()
             val cy = root.getJSONArray("coefficientsY").toDoubleArrayStrict()
-            if (means.size != GazeCalibrationFeatureSchema.DIMENSION || stds.size != means.size) return CalibrationLoadResult.Invalid("incompatible standardization dimensions")
-            if (cx.size != cy.size || cx.size != QuadraticPolynomialFeatures.size(means.size)) return CalibrationLoadResult.Invalid("incompatible coefficient dimensions")
+            if (means.size != GazeCalibrationFeatureSchema.DIMENSION || stds.size != means.size) {
+                return CalibrationLoadResult.Invalid("incompatible standardization dimensions")
+            }
+            if (cx.size != cy.size || cx.size != QuadraticPolynomialFeatures.size(means.size)) {
+                return CalibrationLoadResult.Invalid("incompatible coefficient dimensions")
+            }
             val width = root.optIntNullable("screenWidthPx")
             val height = root.optIntNullable("screenHeightPx")
+            if ((width == null) != (height == null)) return CalibrationLoadResult.Invalid("screen dimensions must be paired")
+
             val model = PersonalizedGazeCalibrationModel(
-                modelVersion, featureVersion, modelType, root.getDouble("regularization"), signature,
-                Standardization(means, stds), cx, cy,
-                metricsFromJson(root.getJSONObject("trainingMetrics")),
-                metricsFromJson(root.getJSONObject("validationMetrics")),
-                width, height, root.getLong("createdAtMs"),
+                modelVersion = modelVersion,
+                featureSchemaVersion = featureVersion,
+                modelType = modelType,
+                regularization = root.getDouble("regularization"),
+                transformSignature = signature,
+                standardization = Standardization(means, stds),
+                coefficientsX = cx,
+                coefficientsY = cy,
+                trainingMetrics = metricsFromJson(root.getJSONObject("trainingMetrics")),
+                validationMetrics = metricsFromJson(root.getJSONObject("validationMetrics")),
+                screenWidthPx = width,
+                screenHeightPx = height,
+                createdAtMs = root.getLong("createdAtMs"),
             )
             CalibrationLoadResult.Loaded(model)
         } catch (e: Exception) {
@@ -79,12 +94,21 @@ object PersonalizedGazeCalibrationSerializer {
         .put("maxPixelError", m.maxPixelError ?: JSONObject.NULL)
 
     private fun metricsFromJson(j: JSONObject): CalibrationMetrics = CalibrationMetrics(
-        j.getDouble("meanNormalizedError"), j.getDouble("medianNormalizedError"), j.getDouble("p95NormalizedError"), j.getDouble("maxNormalizedError"),
-        j.getDouble("horizontalMae"), j.getDouble("verticalMae"), j.getInt("sampleCount"), j.getInt("validationSampleCount"),
-        j.optDoubleNullable("meanPixelError"), j.optDoubleNullable("medianPixelError"), j.optDoubleNullable("p95PixelError"), j.optDoubleNullable("maxPixelError"),
+        j.getDouble("meanNormalizedError"),
+        j.getDouble("medianNormalizedError"),
+        j.getDouble("p95NormalizedError"),
+        j.getDouble("maxNormalizedError"),
+        j.getDouble("horizontalMae"),
+        j.getDouble("verticalMae"),
+        j.getInt("sampleCount"),
+        j.getInt("validationSampleCount"),
+        j.optDoubleNullable("meanPixelError"),
+        j.optDoubleNullable("medianPixelError"),
+        j.optDoubleNullable("p95PixelError"),
+        j.optDoubleNullable("maxPixelError"),
     )
 
     private fun JSONArray.toDoubleArrayStrict(): DoubleArray = DoubleArray(length()) { i -> getDouble(i).also { require(it.isFinite()) } }
-    private fun JSONObject.optDoubleNullable(key: String): Double? = if (isNull(key)) null else optDouble(key).takeIf { it.isFinite() }
+    private fun JSONObject.optDoubleNullable(key: String): Double? = if (isNull(key)) null else getDouble(key).takeIf { it.isFinite() }
     private fun JSONObject.optIntNullable(key: String): Int? = if (isNull(key)) null else getInt(key)
 }
