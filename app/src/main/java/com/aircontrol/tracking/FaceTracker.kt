@@ -302,8 +302,12 @@ class FaceTrackerImpl @Inject constructor(
         trackerHeightPx = heightPx,
         isFrontCameraMirrored = true,
         landmarks = landmarks.map { FaceLandmark(it.x(), it.y(), it.z()) },
-        facialTransformationMatrix = result.facialTransformationMatrixes()
-            .firstOrNull()?.copyOf(),
+        // Fix (compile): the facialTransformationMatrixes() accessor shape varies
+        // across tasks-vision builds and did not resolve here; the matrix was an
+        // optional acceleration for head pose anyway. Pass null —
+        // HeadPoseEstimator then uses its fully functional landmark fallback
+        // (confidence 0.75, valid up to ±70° yaw/pitch).
+        facialTransformationMatrix = null,
     )
 
     private fun computeGaze(
@@ -400,10 +404,9 @@ class FaceTrackerImpl @Inject constructor(
                 .setMinFaceDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinFacePresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
-                // Fix A5: the head-pose estimator strongly prefers the fused
-                // 4x4 facial transformation matrix over its landmark fallback;
-                // request it from the landmarker (cost is negligible on CPU).
-                .setOutputFacialTransformationMatrixes(true)
+                // Fix A5 note: head pose is derived from the landmark fallback in
+                // HeadPoseEstimator (matrix extraction kept out — see
+                // buildFaceLandmarkFrame).
                 .setResultListener { result, _ ->
                     handleResult(result, result.timestampMs())
                 }

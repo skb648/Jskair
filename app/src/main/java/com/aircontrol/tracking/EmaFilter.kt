@@ -1,5 +1,7 @@
 package com.aircontrol.tracking
 
+import kotlin.math.pow
+
 /**
  * Exponential Moving Average filter for 1D/2D gaze smoothing.
  *
@@ -59,7 +61,7 @@ class EmaFilter(
             val dt = (timestampMs - lastTimestampMs).coerceIn(1L, 500L)
             // alpha_dt = 1 - (1 - alpha)^(dt / reference), clamped to (0, 1].
             val exponent = dt.toDouble() / REFERENCE_FRAME_INTERVAL_MS.toDouble()
-            effectiveAlpha = (1.0 - kotlin.math.pow(1.0 - alpha.toDouble(), exponent)).toFloat()
+            effectiveAlpha = (1.0 - alpha.toDouble()).pow(exponent).toFloat()
                 .coerceIn(0.02f, 1f)
         }
         lastTimestampMs = timestampMs

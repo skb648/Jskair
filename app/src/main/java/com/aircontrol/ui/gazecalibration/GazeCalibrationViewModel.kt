@@ -227,10 +227,11 @@ class GazeCalibrationViewModel @Inject constructor(
         }
     }
 
-    private suspend fun fitAffineFallback(): Boolean = try {
-        var gaze = rawGazeAverages.toList()
-        var screen = screenPoints.toList()
-        if (gaze.size < 3) return false
+    private suspend fun fitAffineFallback(): Boolean {
+        return try {
+            var gaze = rawGazeAverages.toList()
+            var screen = screenPoints.toList()
+            if (gaze.size < 3) return false
 
         var calibration = GazeCalibration.fit(gaze, screen)
         var residuals = calibration.residuals(gaze, screen)
@@ -259,9 +260,10 @@ class GazeCalibrationViewModel @Inject constructor(
         settingsRepository.updateGazeCalibration(calibration.toFloatArray().joinToString(","))
         Timber.i("Affine gaze fallback saved (mean residual %.3f)", meanResidual)
         true
-    } catch (e: Exception) {
-        Timber.e(e, "Affine gaze fallback fit failed")
-        false
+        } catch (e: Exception) {
+            Timber.e(e, "Affine gaze fallback fit failed")
+            false
+        }
     }
 
     /** Clears the error and retries the current point (explicit user action). */

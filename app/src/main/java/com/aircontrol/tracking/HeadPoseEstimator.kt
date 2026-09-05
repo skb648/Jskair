@@ -218,7 +218,13 @@ object HeadPoseEstimator {
     }
 
     private fun distance2D(a: Point3, b: Point3): Float = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
-    private fun distance3(a: Point3, b: Point3): Float = norm3(a - b)
+
+    /**
+     * Fix (compile): Point3 is a plain container — it never had a finiteness
+     * check, so `left.isFinite()` below did not resolve and this whole
+     * (previously unwired) file failed to compile.
+     */
+    private fun Point3.isFinite(): Boolean = x.isFinite() && y.isFinite() && z.isFinite()    private fun distance3(a: Point3, b: Point3): Float = norm3(a - b)
     private fun norm3(a: Point3): Float = sqrt((a.x * a.x + a.y * a.y + a.z * a.z).toDouble()).toFloat()
     private fun dot3(a: Point3, b: Point3): Float = a.x * b.x + a.y * b.y + a.z * b.z
     private fun cross3(a: Point3, b: Point3): Point3 = Point3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)

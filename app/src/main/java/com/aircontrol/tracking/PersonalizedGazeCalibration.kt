@@ -83,7 +83,9 @@ object RobustCalibrationSampleAggregator {
             }
             val distances = ordered.map { sample -> robustDistance(sample.features.values, medians, scales) }
             val medianDistance = median(distances)
-            val mad = max(1e-4f, median(distances.map { abs(it - medianDistance) }) * 1.4826f)
+            // Fix (compile): Double * Float mixes operand types — keep the whole
+            // expression in Double so max(Double, Double) applies.
+            val mad = max(1e-4, median(distances.map { abs(it - medianDistance) }) * 1.4826)
             val limit = max(3.5, medianDistance + 3.5 * mad)
             ordered.forEachIndexed { index, sample ->
                 if (sample.quality >= 0.20f && distances[index] <= limit) retained += sample else rejected += sample
