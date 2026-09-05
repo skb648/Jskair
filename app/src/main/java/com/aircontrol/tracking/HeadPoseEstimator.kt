@@ -44,14 +44,14 @@ data class HeadPoseEstimate(
 ) {
     companion object {
         fun invalid(reason: String): HeadPoseEstimate = HeadPoseEstimate(
-            yawDeg = 0f,
-            pitchDeg = 0f,
-            rollDeg = 0f,
-            translationXPx = 0f,
-            translationYPx = 0f,
+            yawDeg = Float.NaN,
+            pitchDeg = Float.NaN,
+            rollDeg = Float.NaN,
+            translationXPx = Float.NaN,
+            translationYPx = Float.NaN,
             frameWidthPx = 0,
             frameHeightPx = 0,
-            faceScalePx = 0f,
+            faceScalePx = Float.NaN,
             confidence = 0f,
             source = HeadPoseSource.INVALID,
             isValid = false,
@@ -161,7 +161,13 @@ object HeadPoseEstimator {
     private fun FaceLandmarkFrame.landmark3(index: Int): Point3? {
         val landmark = landmark(index) ?: return null
         if (!landmark.isFinite()) return null
-        return Point3(landmark.x * trackerWidthPx, landmark.y * trackerHeightPx, landmark.z)
+        // MediaPipe z is face-relative and width-normalized; place it in the
+        // same scale basis as aspect-correct tracker x/y before 3D geometry use.
+        return Point3(
+            landmark.x * trackerWidthPx,
+            landmark.y * trackerHeightPx,
+            landmark.z * trackerWidthPx,
+        )
     }
 
     /** Validate and decompose a 4x4 column-major rotation block without trusting it blindly. */
