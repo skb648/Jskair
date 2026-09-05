@@ -7,9 +7,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Reference-counted producer/consumer lease for one immutable analysis input.
  * The payload may only be accessed while the lease is live.
  */
-class TaskInputLease<T : Any>(private val payload: T) : AutoCloseable {
+class TaskInputLease<T : Any>(
+    private val payload: T,
+    private val onZeroReferences: () -> Unit = {},
+) : AutoCloseable {
     private val references = AtomicInteger(1)
     private val released = AtomicBoolean(false)
+    private val cleanupStarted = AtomicBoolean(false)
 
     fun retain(): TaskInputLease<T> {
         while (true) {
@@ -30,7 +34,10 @@ class TaskInputLease<T : Any>(private val payload: T) : AutoCloseable {
             check(current > 0) { "double release" }
             val next = current - 1
             if (references.compareAndSet(current, next)) {
-                if (next == 0) released.set(true)
+                if (next == 0) {
+                    released.set(true)
+                    if (cleanupStarted.compareAndSet(false, true)) onZeroReferences()
+                }
                 return
             }
         }
