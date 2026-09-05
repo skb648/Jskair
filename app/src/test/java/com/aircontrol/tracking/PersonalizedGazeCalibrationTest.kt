@@ -105,7 +105,8 @@ class PersonalizedGazeCalibrationTest {
     @Test fun validationDoesNotAffectTrainingPreprocessingOrCoefficients() {
         val base = calibrationFixtureSamples(100)
         val alteredValidation = base.map { sample ->
-            if (sample.timestampMs % 20L == 0L) sample.copy(
+            val targetLocalIndex = (sample.timestampMs - 1L) % 100L
+            if (targetLocalIndex >= 80L) sample.copy(
                 features = CalibrationFeatureVector(1, sample.features.values.map { it + 0.7f }.toFloatArray())
             ) else sample
         }
