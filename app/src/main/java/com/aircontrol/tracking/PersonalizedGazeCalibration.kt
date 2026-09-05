@@ -38,8 +38,9 @@ data class CalibrationSample(
             data class Accepted(val sample: CalibrationSample) : Result()
             data class Rejected(val reason: RejectionReason) : Result()
         }
+
         enum class RejectionReason {
-            INVALID_FEATURES, INVALID_POSE, NON_FINITE, LOW_QUALITY, INVALID_TARGET, INVALID_TIMESTAMP,
+            INVALID_FEATURES, INVALID_POSE, NON_FINITE, LOW_QUALITY, INVALID_TIMESTAMP,
         }
 
         fun create(
@@ -52,9 +53,10 @@ data class CalibrationSample(
             if (featureVector == null) return Result.Rejected(RejectionReason.INVALID_FEATURES)
             if (!poseValid) return Result.Rejected(RejectionReason.INVALID_POSE)
             if (timestampMs < 0L) return Result.Rejected(RejectionReason.INVALID_TIMESTAMP)
-            if (!quality.isFinite()) return Result.Rejected(RejectionReason.NON_FINITE)
-            if (quality < 0.20f) return Result.Rejected(RejectionReason.LOW_QUALITY)
-            if (featureVector.values.any { !it.isFinite() }) return Result.Rejected(RejectionReason.NON_FINITE)
+            if (!quality.isFinite() || featureVector.values.any { !it.isFinite() }) {
+                return Result.Rejected(RejectionReason.NON_FINITE)
+            }
+            if (quality < MIN_SAMPLE_QUALITY) return Result.Rejected(RejectionReason.LOW_QUALITY)
             return Result.Accepted(CalibrationSample(target, target.x, target.y, featureVector, timestampMs, quality))
         }
     }
@@ -65,12 +67,12 @@ data class RobustCalibrationSamples(
     val rejected: List<CalibrationSample>,
 )
 
-/** Deterministic per-target robust filtering using median/MAD of complete feature vectors. */
+/** Robust filtering. Its statistics are only allowed to be learned from training observations. */
 object RobustCalibrationSampleAggregator {
-    fun filter(samples: List<CalibrationSample>): RobustCalibrationSamples {
+    fun filter(trainingSamples: List<CalibrationSample>): RobustCalibrationSamples {
         val retained = ArrayList<CalibrationSample>()
         val rejected = ArrayList<CalibrationSample>()
-        samples.groupBy { it.target }.toSortedMap(compareBy { it.ordinal }).forEach { (_, targetSamples) ->
+        trainingSamples.groupBy { it.target }.toSortedMap(compareBy { it.ordinal }).forEach { (_, targetSamples) ->
             val ordered = targetSamples.sortedWith(sampleComparator)
             if (ordered.size <= 2) {
                 retained += ordered
@@ -78,18 +80,22 @@ object RobustCalibrationSampleAggregator {
             }
             val medians = componentMedian(ordered.map { it.features.values })
             val scales = FloatArray(GazeCalibrationFeatureSchema.DIMENSION) { dimension ->
-                val absoluteDeviations = ordered.map { abs(it.features.values[dimension] - medians[dimension]) }
-                max(1e-4f, median(absoluteDeviations) * 1.4826f)
+                val deviations = ordered.map { abs(it.features.values[dimension] - medians[dimension]) }
+                max(1e-4f, median(deviations) * 1.4826f)
             }
-            val distances = ordered.map { sample -> robustDistance(sample.features.values, medians, scales) }
-            val medianDistance = median(distances)
-            val mad = max(1e-4f, median(distances.map { abs(it - medianDistance) }) * 1.4826f)
-            val limit = max(3.5, medianDistance + 3.5 * mad)
+            val distances = ordered.map { robustDistance(it.features.values, medians, scales) }
+            val distanceMedian = median(distances)
+            val distanceMad = max(1e-4, median(distances.map { abs(it - distanceMedian) }) * 1.4826)
+            val limit = distanceMedian + 3.5 * distanceMad
             ordered.forEachIndexed { index, sample ->
-                if (sample.quality >= 0.20f && distances[index] <= limit) retained += sample else rejected += sample
+                if (sample.quality >= MIN_SAMPLE_QUALITY && distances[index] <= limit) retained += sample
+                else rejected += sample
             }
         }
-        return RobustCalibrationSamples(retained.sortedWith(sampleComparator), rejected.sortedWith(sampleComparator))
+        return RobustCalibrationSamples(
+            retained = retained.sortedWith(sampleComparator),
+            rejected = rejected.sortedWith(sampleComparator),
+        )
     }
 
     private val sampleComparator = compareBy<CalibrationSample>({ it.target.ordinal }, { it.timestampMs }, { stableHash(it) })
@@ -124,6 +130,8 @@ object RobustCalibrationSampleAggregator {
         return if (sorted.size % 2 == 1) sorted[sorted.size / 2]
         else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) * 0.5
     }
+
+    private const val MIN_SAMPLE_QUALITY = 0.20f
 }
 
 /** Symmetric quadratic basis: 1, x_i, and x_i*x_j for i <= j. */
@@ -167,17 +175,20 @@ data class CalibrationDatasetSplit(val training: List<CalibrationSample>, val va
     val isValid: Boolean get() = training.isNotEmpty() && validation.isNotEmpty()
 }
 
+/** Deterministic target-balanced split performed before any learned filtering/statistics. */
 object TargetBalancedValidationSplit {
     fun split(samples: List<CalibrationSample>, validationFraction: Double = 0.20): CalibrationDatasetSplit {
         require(validationFraction in 0.05..0.50)
         val train = ArrayList<CalibrationSample>()
         val validation = ArrayList<CalibrationSample>()
         samples.groupBy { it.target }.toSortedMap(compareBy { it.ordinal }).forEach { (_, group) ->
-            val ordered = group.sortedWith(compareBy({ it.timestampMs }, { it.features.values.contentHashCode() }))
-            if (ordered.size < 2) train += ordered else {
+            val ordered = group.sortedWith(compareBy({ it.timestampMs }))
+            if (ordered.size < 2) {
+                train += ordered
+            } else {
                 val validationCount = min(ordered.size - 1, max(1, ceil(ordered.size * validationFraction).toInt()))
-                validation += ordered.takeLast(validationCount)
                 train += ordered.dropLast(validationCount)
+                validation += ordered.takeLast(validationCount)
             }
         }
         return CalibrationDatasetSplit(train, validation)
@@ -218,11 +229,13 @@ data class PersonalizedGazeCalibrationModel(
         require(featureSchemaVersion == GazeCalibrationFeatureSchema.VERSION)
         require(modelType == MODEL_TYPE)
         require(regularization.isFinite() && regularization > 0.0)
-        require(transformSignature.isNotBlank())
+        require(transformSignature.startsWith("ct-v$TRANSFORM_VERSION:"))
         require(coefficientsX.size == coefficientsY.size)
         require(coefficientsX.size == QuadraticPolynomialFeatures.size(standardization.means.size))
         require(coefficientsX.all { it.isFinite() } && coefficientsY.all { it.isFinite() })
         require(createdAtMs >= 0L)
+        require(screenWidthPx == null || screenWidthPx > 0)
+        require(screenHeightPx == null || screenHeightPx > 0)
     }
 
     fun predict(features: CalibrationFeatureVector): Pair<Float, Float> {
@@ -239,6 +252,8 @@ data class PersonalizedGazeCalibrationModel(
     companion object {
         const val MODEL_VERSION = 1
         const val MODEL_TYPE = "quadratic-ridge-v1"
+        private const val TRANSFORM_VERSION = CoordinateTransform.VERSION
+
         private fun dot(a: DoubleArray, b: DoubleArray): Double {
             if (a.size != b.size) throw CalibrationFitException("coefficient size mismatch")
             var sum = 0.0
@@ -255,35 +270,45 @@ data class CalibrationFitResult(val model: PersonalizedGazeCalibrationModel?, va
 object PersonalizedGazeCalibrationFitter {
     fun fit(
         rawSamples: List<CalibrationSample>,
+        transform: CoordinateTransform,
         regularization: Double = 1e-2,
-        transformSignature: String,
         screenWidthPx: Int? = null,
         screenHeightPx: Int? = null,
         validationFraction: Double = 0.20,
         createdAtMs: Long,
     ): CalibrationFitResult = try {
         if (!regularization.isFinite() || regularization <= 0.0) throw CalibrationFitException("regularization must be finite and > 0")
-        if (transformSignature.isBlank()) throw CalibrationFitException("transform signature is required")
-        val robust = RobustCalibrationSampleAggregator.filter(rawSamples)
-        val samples = robust.retained
-        if (samples.size < MIN_TOTAL_SAMPLES) throw CalibrationFitException("insufficient robust calibration samples")
-        if (samples.map { it.target }.toSet().size != CalibrationTarget.entries.size) throw CalibrationFitException("all 9 targets require retained samples")
-        val split = TargetBalancedValidationSplit.split(samples, validationFraction)
-        if (!split.isValid) throw CalibrationFitException("validation split is empty")
-        val standardization = computeStandardization(split.training)
-        val basis = split.training.map { QuadraticPolynomialFeatures.expand(standardization.transform(it.features.values)) }
-        val betaX = solveRidge(basis, split.training.map { it.targetX.toDouble() }, regularization)
-        val betaY = solveRidge(basis, split.training.map { it.targetY.toDouble() }, regularization)
-        val trainingMetrics = metrics(split.training, standardization, betaX, betaY, screenWidthPx, screenHeightPx, false)
-        val validationMetrics = metrics(split.validation, standardization, betaX, betaY, screenWidthPx, screenHeightPx, true)
-        require(validationMetrics.validationSampleCount > 0) { "validation metrics unavailable" }
+        if (screenWidthPx != null && screenWidthPx <= 0) throw CalibrationFitException("screen width must be positive")
+        if (screenHeightPx != null && screenHeightPx <= 0) throw CalibrationFitException("screen height must be positive")
+        if (createdAtMs < 0L) throw CalibrationFitException("creation timestamp must be non-negative")
+
+        val rawSplit = TargetBalancedValidationSplit.split(rawSamples, validationFraction)
+        if (!rawSplit.isValid) throw CalibrationFitException("validation split is empty")
+
+        // ONLY training observations may affect robust filtering and standardization.
+        val robustTraining = RobustCalibrationSampleAggregator.filter(rawSplit.training)
+        val training = robustTraining.retained
+        if (training.size < MIN_TOTAL_SAMPLES) throw CalibrationFitException("insufficient training observations after robust filtering")
+        val counts = training.groupingBy { it.target }.eachCount()
+        if (CalibrationTarget.entries.any { counts[it] ?: 0 < MIN_SAMPLES_PER_TARGET }) {
+            throw CalibrationFitException("every target requires at least $MIN_SAMPLES_PER_TARGET retained training observations")
+        }
+        if (rawSplit.validation.size < MIN_VALIDATION_SAMPLES) throw CalibrationFitException("insufficient held-out validation observations")
+
+        val standardization = computeStandardization(training)
+        val basis = training.map { QuadraticPolynomialFeatures.expand(standardization.transform(it.features.values)) }
+        val betaX = solveRidge(basis, training.map { it.targetX.toDouble() }, regularization)
+        val betaY = solveRidge(basis, training.map { it.targetY.toDouble() }, regularization)
+        val trainingMetrics = metrics(training, standardization, betaX, betaY, screenWidthPx, screenHeightPx)
+        val validationMetrics = metrics(rawSplit.validation, standardization, betaX, betaY, screenWidthPx, screenHeightPx)
+
         CalibrationFitResult(
             PersonalizedGazeCalibrationModel(
                 modelVersion = PersonalizedGazeCalibrationModel.MODEL_VERSION,
                 featureSchemaVersion = GazeCalibrationFeatureSchema.VERSION,
                 modelType = PersonalizedGazeCalibrationModel.MODEL_TYPE,
                 regularization = regularization,
-                transformSignature = transformSignature,
+                transformSignature = transform.signature,
                 standardization = standardization,
                 coefficientsX = betaX,
                 coefficientsY = betaY,
@@ -299,14 +324,14 @@ object PersonalizedGazeCalibrationFitter {
     }
 
     private fun computeStandardization(samples: List<CalibrationSample>): Standardization {
-        val d = GazeCalibrationFeatureSchema.DIMENSION
         if (samples.isEmpty()) throw CalibrationFitException("no training samples")
+        val d = GazeCalibrationFeatureSchema.DIMENSION
         val means = DoubleArray(d)
         for (sample in samples) for (i in 0 until d) means[i] += sample.features.values[i]
         for (i in 0 until d) means[i] /= samples.size
         val stds = DoubleArray(d)
         for (sample in samples) for (i in 0 until d) {
-            val delta = sample.features.values[i] - means[i].toFloat()
+            val delta = sample.features.values[i].toDouble() - means[i]
             stds[i] += delta * delta
         }
         for (i in 0 until d) {
@@ -316,11 +341,12 @@ object PersonalizedGazeCalibrationFitter {
         return Standardization(means, stds)
     }
 
-    /** Solves (X'X + lambda I) beta = X'y using pivoted elimination; no unregularized inverse is used. */
+    /** Solves (X'X + lambda I) beta = X'y using pivoted elimination. */
     private fun solveRidge(basis: List<DoubleArray>, target: List<Double>, lambda: Double): DoubleArray {
         if (basis.isEmpty() || basis.size != target.size) throw CalibrationFitException("invalid regression dataset")
         val p = basis.first().size
         if (basis.any { it.size != p || it.any { value -> !value.isFinite() } }) throw CalibrationFitException("invalid polynomial basis")
+        if (p != MODEL_TERM_COUNT) throw CalibrationFitException("unexpected model basis size")
         val a = Array(p) { DoubleArray(p) }
         val b = DoubleArray(p)
         for (r in basis.indices) {
@@ -341,30 +367,28 @@ object PersonalizedGazeCalibrationFitter {
 
     private fun gaussianSolve(matrix: Array<DoubleArray>, rhs: DoubleArray): DoubleArray {
         val n = rhs.size
-        val a = Array(n) { matrix[it].copyOf() }
-        val b = rhs.copyOf()
-        for (col in 0 until n) {
-            var pivot = col
-            for (row in col + 1 until n) if (abs(a[row][col]) > abs(a[pivot][col])) pivot = row
-            val pivotAbs = abs(a[pivot][col])
-            if (!pivotAbs.isFinite() || pivotAbs < 1e-12) throw CalibrationFitException("singular or ill-conditioned ridge system")
-            if (pivot != col) { val row = a[pivot]; a[pivot] = a[col]; a[col] = row; val rhsValue = b[pivot]; b[pivot] = b[col]; b[col] = rhsValue }
-            for (row in col + 1 until n) {
-                val factor = a[row][col] / a[col][col]
-                if (!factor.isFinite()) throw CalibrationFitException("numerical failure during ridge solve")
-                a[row][col] = 0.0
-                for (j in col + 1 until n) a[row][j] -= factor * a[col][j]
-                b[row] -= factor * b[col]
+        val augmented = Array(n) { i -> matrix[i].copyOf().also { row ->
+            require(row.all { it.isFinite() }) { "non-finite regression matrix" }
+        }.let { row -> row + rhs[i] } }
+        for (column in 0 until n) {
+            var pivot = column
+            var pivotAbs = abs(augmented[column][column])
+            for (row in column + 1 until n) {
+                val candidate = abs(augmented[row][column])
+                if (candidate > pivotAbs) { pivot = row; pivotAbs = candidate }
+            }
+            if (!pivotAbs.isFinite() || pivotAbs < 1e-12) throw CalibrationFitException("degenerate or ill-conditioned regression system")
+            if (pivot != column) { val tmp = augmented[column]; augmented[column] = augmented[pivot]; augmented[pivot] = tmp }
+            val diagonal = augmented[column][column]
+            for (j in column until n + 1) augmented[column][j] /= diagonal
+            for (row in 0 until n) if (row != column) {
+                val factor = augmented[row][column]
+                if (abs(factor) > 1e-15) for (j in column until n + 1) augmented[row][j] -= factor * augmented[column][j]
             }
         }
-        val solution = DoubleArray(n)
-        for (i in n - 1 downTo 0) {
-            var sum = b[i]
-            for (j in i + 1 until n) sum -= a[i][j] * solution[j]
-            solution[i] = sum / a[i][i]
-            if (!solution[i].isFinite()) throw CalibrationFitException("non-finite regression coefficient")
+        return DoubleArray(n) { i -> augmented[i][n] }.also { result ->
+            if (result.any { !it.isFinite() }) throw CalibrationFitException("non-finite regression coefficients")
         }
-        return solution
     }
 
     private fun metrics(
@@ -374,39 +398,58 @@ object PersonalizedGazeCalibrationFitter {
         betaY: DoubleArray,
         screenWidthPx: Int?,
         screenHeightPx: Int?,
-        validation: Boolean,
     ): CalibrationMetrics {
-        if (samples.isEmpty()) throw CalibrationFitException("cannot compute empty metrics")
-        val errors = samples.map { sample ->
+        if (samples.isEmpty()) throw CalibrationFitException("cannot compute metrics on empty dataset")
+        val errors = ArrayList<Double>(samples.size)
+        val horizontal = ArrayList<Double>(samples.size)
+        val vertical = ArrayList<Double>(samples.size)
+        val pixelErrors = if (screenWidthPx != null && screenHeightPx != null) ArrayList(samples.size) else null
+        for (sample in samples) {
             val basis = QuadraticPolynomialFeatures.expand(standardization.transform(sample.features.values))
-            val dx = dot(betaX, basis) - sample.targetX
-            val dy = dot(betaY, basis) - sample.targetY
-            MetricPoint(abs(dx), abs(dy), sqrt(dx * dx + dy * dy))
+            val px = dot(betaX, basis)
+            val py = dot(betaY, basis)
+            if (!px.isFinite() || !py.isFinite()) throw CalibrationFitException("non-finite metric prediction")
+            val dx = px - sample.targetX
+            val dy = py - sample.targetY
+            horizontal += abs(dx)
+            vertical += abs(dy)
+            errors += sqrt(dx * dx + dy * dy)
+            if (pixelErrors != null) pixelErrors += sqrt((dx * screenWidthPx!!).let { it * it } + (dy * screenHeightPx!!).let { it * it })
         }
-        val scalarErrors = errors.map { it.distance }
-        fun quantile(q: Double): Double {
-            val sorted = scalarErrors.sorted()
-            val index = q * (sorted.size - 1)
-            val low = index.toInt()
-            val high = min(sorted.lastIndex, low + 1)
-            val weight = index - low
-            return sorted[low] * (1 - weight) + sorted[high] * weight
-        }
-        val pixelErrors = if (screenWidthPx != null && screenHeightPx != null && screenWidthPx > 0 && screenHeightPx > 0) {
-            scalarErrors.map { it * sqrt(screenWidthPx.toDouble() * screenWidthPx + screenHeightPx.toDouble() * screenHeightPx) }
-        } else null
+        val sorted = errors.sorted()
+        val pixels = pixelErrors?.sorted()
         return CalibrationMetrics(
-            meanNormalizedError = scalarErrors.average(), medianNormalizedError = quantile(0.50),
-            p95NormalizedError = quantile(0.95), maxNormalizedError = scalarErrors.maxOrNull() ?: 0.0,
-            horizontalMae = errors.map { it.dx }.average(), verticalMae = errors.map { it.dy }.average(),
-            sampleCount = samples.size, validationSampleCount = if (validation) samples.size else 0,
-            meanPixelError = pixelErrors?.average(), medianPixelError = pixelErrors?.let { quantileFrom(it, 0.50) },
-            p95PixelError = pixelErrors?.let { quantileFrom(it, 0.95) }, maxPixelError = pixelErrors?.maxOrNull(),
+            meanNormalizedError = errors.average(),
+            medianNormalizedError = quantile(sorted, 0.50),
+            p95NormalizedError = quantile(sorted, 0.95),
+            maxNormalizedError = sorted.last(),
+            horizontalMae = horizontal.average(),
+            verticalMae = vertical.average(),
+            sampleCount = samples.size,
+            validationSampleCount = if (samples === samples) 0 else 0,
+            meanPixelError = pixels?.average(),
+            medianPixelError = pixels?.let { quantile(it, 0.50) },
+            p95PixelError = pixels?.let { quantile(it, 0.95) },
+            maxPixelError = pixels?.lastOrNull(),
         )
     }
 
-    private data class MetricPoint(val dx: Double, val dy: Double, val distance: Double)
-    private fun dot(a: DoubleArray, b: DoubleArray): Double { if (a.size != b.size) throw CalibrationFitException("coefficient size mismatch"); var sum = 0.0; for (i in a.indices) sum += a[i] * b[i]; return sum }
-    private fun quantileFrom(values: List<Double>, q: Double): Double { val sorted = values.sorted(); val index = q * (sorted.size - 1); val low = index.toInt(); val high = min(sorted.lastIndex, low + 1); val weight = index - low; return sorted[low] * (1 - weight) + sorted[high] * weight }
-    private const val MIN_TOTAL_SAMPLES = 90
+    private fun dot(a: DoubleArray, b: DoubleArray): Double {
+        var sum = 0.0
+        for (i in a.indices) sum += a[i] * b[i]
+        return sum
+    }
+
+    private fun quantile(sorted: List<Double>, q: Double): Double {
+        val index = q * (sorted.size - 1)
+        val low = index.toInt()
+        val high = min(sorted.lastIndex, low + 1)
+        val weight = index - low
+        return sorted[low] * (1 - weight) + sorted[high] * weight
+    }
+
+    const val MODEL_TERM_COUNT = 300
+    const val MIN_SAMPLES_PER_TARGET = 80
+    const val MIN_TOTAL_SAMPLES = MIN_SAMPLES_PER_TARGET * 9 - 0
+    const val MIN_VALIDATION_SAMPLES = 81
 }
