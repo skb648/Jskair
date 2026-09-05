@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
-import kotlin.math.abs
 
 class CoordinateTransformTest {
     private val crop = CropRect(100, 50, 640, 480)
@@ -13,8 +12,8 @@ class CoordinateTransformTest {
         val t = CoordinateTransform(1280, 720, crop, Rotation.DEG_0, false)
         assertEquals(640, t.transformedWidthPx)
         assertEquals(480, t.transformedHeightPx)
-        assertEquals(TransformPoint(100f, 50f), t.toTracker(TransformPoint(100f, 50f)))
-        assertEquals(TransformPoint(740f, 530f), t.toTracker(TransformPoint(740f, 530f)))
+        assertEquals(TransformPoint(0f, 0f), t.toTracker(TransformPoint(100f, 50f)))
+        assertEquals(TransformPoint(640f, 480f), t.toTracker(TransformPoint(740f, 530f)))
     }
 
     @Test fun mirror() {
@@ -38,10 +37,11 @@ class CoordinateTransformTest {
         val t = CoordinateTransform(1280, 720, crop, Rotation.DEG_90, true)
         val source = TransformPoint(260f, 170f)
         val tracker = t.toTracker(source)
-        assertEquals(310f, tracker.x, 1e-6f)
+        assertEquals(120f, tracker.x, 1e-6f)
         assertEquals(160f, tracker.y, 1e-6f)
-        assertEquals(source.x, t.fromTracker(tracker).x, 1e-5f)
-        assertEquals(source.y, t.fromTracker(tracker).y, 1e-5f)
+        val roundTrip = t.fromTracker(tracker)
+        assertEquals(source.x, roundTrip.x, 1e-5f)
+        assertEquals(source.y, roundTrip.y, 1e-5f)
     }
 
     @Test fun inverseRoundTrip() {
