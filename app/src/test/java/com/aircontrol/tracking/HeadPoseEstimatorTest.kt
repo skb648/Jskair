@@ -110,7 +110,7 @@ class HeadPoseEstimatorTest {
         assertNotNull(bFeatures.left)
         assertNotNull(aFeatures.right)
         assertNotNull(bFeatures.right)
-        assertTrue(bFeatures.left!!.eyeCenterX > bFeatures.right!!.eyeCenterX)
+        assertTrue(bFeatures.left!!.eyeCenterX < bFeatures.right!!.eyeCenterX)
         assertEquals(HeadPoseSource.MATRIX, bPose.source)
         assertEquals(aPose.yawDeg, bPose.yawDeg, 1e-4f)
         assertEquals(aPose.pitchDeg, bPose.pitchDeg, 1e-4f)
