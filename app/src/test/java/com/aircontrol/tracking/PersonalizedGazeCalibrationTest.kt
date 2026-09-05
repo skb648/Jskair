@@ -27,13 +27,13 @@ class PersonalizedGazeCalibrationTest {
     @Test fun validSampleCreation() {
         val vector = GazeCalibrationFeatureVectorBuilder.from(normalizedFixture())
         val result = CalibrationSample.create(CalibrationTarget.CENTER, vector, 100L, 0.9f, poseValid = true)
-        assertTrue(result is CalibrationSample.Result.Accepted)
+        assertTrue(result is CalibrationSample.Companion.Result.Accepted)
     }
 
     @Test fun invalidSampleRejectedWithoutFabrication() {
         val result = CalibrationSample.create(CalibrationTarget.CENTER, null, 100L, 0.9f, poseValid = true)
-        assertTrue(result is CalibrationSample.Result.Rejected)
-        assertEquals(CalibrationSample.Companion.RejectionReason.INVALID_FEATURES, (result as CalibrationSample.Result.Rejected).reason)
+        assertTrue(result is CalibrationSample.Companion.Result.Rejected)
+        assertEquals(CalibrationSample.Companion.RejectionReason.INVALID_FEATURES, (result as CalibrationSample.Companion.Result.Rejected).reason)
     }
 
     @Test fun nonFiniteFeatureRejected() {
