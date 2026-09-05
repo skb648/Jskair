@@ -28,13 +28,14 @@ data class CalibrationFeatureVector(val schemaVersion: Int, val values: FloatArr
     fun copyValues(): FloatArray = values.copyOf()
 }
 
+/** Builds the stable calibration vector from the exact Stage 3 normalized feature API. */
 object GazeCalibrationFeatureVectorBuilder {
-    fun from(features: BinocularEyeFeatures, pose: HeadPoseEstimate): CalibrationFeatureVector? {
-        if (!pose.isValid || pose.frameWidthPx <= 0 || pose.frameHeightPx <= 0) return null
-        val left = features.left ?: return null
-        val right = features.right ?: return null
-        val faceGeometry = features.faceGeometry ?: return null
-        if (!faceGeometry.interEyeDistancePx.isFinite() || faceGeometry.interEyeDistancePx <= 0f) return null
+    fun from(normalized: NormalizedBinocularEyeFeatures): CalibrationFeatureVector? {
+        if (!normalized.pose.isValid) return null
+        val left = normalized.left ?: return null
+        val right = normalized.right ?: return null
+        val pose = normalized.pose
+        if (pose.frameWidthPx <= 0 || pose.frameHeightPx <= 0 || pose.faceScalePx <= 0f || !pose.faceScalePx.isFinite()) return null
         val values = floatArrayOf(
             left.irisAlongAxis, left.irisPerpendicular, left.irisDiameterOverEyeWidth,
             left.eyelidOpening, left.ear, left.eyeCenterFromFaceCenterX, left.eyeCenterFromFaceCenterY,
