@@ -103,7 +103,29 @@ alternating single bad frames never enter low-confidence mode; 4 fresh
 post-reappearance frames are a valid NEW swipe — tests were corrected to probe
 the actual invariants (anti-stitching, exit hysteresis).
 
+## Round 11 (final stress audit) — independent re-audit findings
+
+Baseline 18e1139 treated as a candidate release. Two NEW bug classes found
+(both §11/§12 numeric/lifecycle safety, both fail-safe fixed):
+
+| # | Bug | Root cause | Fix + regression test |
+|---|---|---|---|
+| 9 | **Degenerate landmarks could CLICK:** collapsed tracker output (all 21 landmarks identical, hand size ≤ ε, or NaN) made `thumbIndexDistance = 0`, and 0 < every pinch threshold → HOVER → PINCH_START → CLICK committed from garbage geometry | the FSM converted a division guard failure into a "perfect pinch" (`else 0f`) instead of refusing | Degenerate hand reads as maximally-open (no entry; existing HOVER-exit branch demotes to IDLE); a collapse during HOLD now also cleanly ENDS the press — test: `INV7 degenerate collapsed landmarks never click` |
+| 10 | **Unconfirmed pinch candidate survived tracking loss:** PINCH_START/HOVER were only reset on loss when a HOLD was active — a hand lost mid-candidate and reappearing with fingers together resumed the stale candidate (80ms debounce satisfied across the gap → START without fresh validation) | the `!isDetected` branch only handled the `wasPinching` case | Loss now cancels HOVER/PINCH_START back to IDLE; the returning hand re-validates from scratch — test: `INV2 pinch candidate abandoned by tracking loss never clicks` (timestamp-gated: START must be ≥120ms after reappearance; a count-only assertion would pass both pre- and post-fix, §13) |
+
+New suites: `GestureInvariantsTest` (INV1–INV10 incl. §4 confidence sequences
+GGBGBG / BBBGGG / BGBGBG / gradual / sudden) and `SwipeStressTest` (§5
+trajectories: L-shape, circular, high-velocity 2-step, low-velocity long,
+growing wiggle, single-commit; §6 frame-rate matrix 30/20/15/12/11/10 fps ×
+valid+too-slow, irregular intervals; §7 cooldown→re-arm timing, mid-motion
+frame gap). Test-quality self-audit (§13) caught and fixed one flawed premise
+in my own first draft (an L-shape leg at 1.25 u/s is a legitimately valid
+swipe — the fixture was slowed so both legs are individually sub-gate).
+
+No thresholds were changed in this round (§14).
+
 ## Verified non-issues (searched, not changed)
+
 - Config/sensitivity swap mid-gesture preserves state (H-06 design).
 - Engine serialized per frame from a single collector; no concurrent processFrame.
 - `reset()` clears every transient field (verified line-by-line both classes).

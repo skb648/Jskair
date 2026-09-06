@@ -328,6 +328,15 @@ class GestureEngine(
             if (wasPinching) {
                 _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE
+            } else if (pinchState != PinchState.IDLE) {
+                // Stress-audit bug #10 (§12): an UNCONFIRMED candidate (HOVER /
+                // PINCH_START) used to survive hand loss — when the hand
+                // reappeared with fingers still together, the stale candidate
+                // satisfied its 80ms debounce across the gap and committed
+                // without fresh validation. Tracking loss cancels incomplete
+                // candidates; the returning hand starts from IDLE.
+                pinchState = PinchState.IDLE
+                pinchStateEntryTimeMs = timestampMs
             }
             return
         }
@@ -336,7 +345,19 @@ class GestureEngine(
         val wrist = input.landmarks[LandmarkIndex.WRIST]
         val middleMcp = input.landmarks[LandmarkIndex.MIDDLE_MCP]
         val handSize = distance2D(wrist, middleMcp)
-        val thumbIndexDistance = if (handSize > EPSILON) distance2D(thumbTip, indexTip) / handSize else 0f
+        // Stress-audit bug #9 (§11 numeric robustness): degenerate landmarks
+        // (hand size ≤ EPSILON, or NaN — collapsed tracker output at frame
+        // edges) used to yield thumbIndexDistance = 0, and 0 < EVERY
+        // threshold, so a glitch could commit a real CLICK. Fail safe: a
+        // degenerate hand reads as "fingers maximally apart" — no entry from
+        // IDLE, and an existing HOVER demotes back to IDLE via the normal
+        // hover-exit branch above.
+        val handDegenerate = !handSize.isFinite() || handSize <= EPSILON
+        val thumbIndexDistance = if (handDegenerate) {
+            Float.MAX_VALUE
+        } else {
+            distance2D(thumbTip, indexTip) / handSize
+        }
         val enterThreshold = config.scaledPinchDistanceRatio()
         val exitThreshold = config.scaledPinchReleaseRatio()
         val hoverThreshold = config.scaledPinchHoverRatio()
