@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aircontrol.R
 import com.aircontrol.nativeinput.HidHostInfo
 import com.aircontrol.nativeinput.NativeHidMouseState
 import com.aircontrol.ui.Dimens

@@ -311,7 +311,7 @@ class NativeHidMouseController @Inject constructor(
     private fun qosSettings(): BluetoothHidDeviceAppQosSettings? =
         try {
             BluetoothHidDeviceAppQosSettings(
-                BluetoothHidDeviceAppQosSettings.SERVICE_TYPE_BEST_EFFORT,
+                0x01, // SERVICE_TYPE_BEST_EFFORT
                 0, 0, 0, 0, 0,
             )
         } catch (t: Throwable) {
@@ -344,7 +344,7 @@ class NativeHidMouseController @Inject constructor(
 
     companion object {
         /** HID subclass code for a mouse (AOSP HID subclass constants). */
-        private const val SUBCLASS_MOUSE: Byte = 0x80
+        private const val SUBCLASS_MOUSE: Byte = 0x80.toByte()
     }
 }
 
