@@ -168,7 +168,7 @@ continuation; END = release.
 | Intent model OPEN→CANDIDATE→VALIDATION→COMMIT→RELEASE_REQUIRED→RECOVERY→NEUTRAL | ✓ IDLE→HOVER→PINCH_START(80ms)→HOLD(START=click)→PINCH_RELEASE(80ms)+80ms cooldown→IDLE |
 | Entry needs valid geometry | ✓ degenerate/NaN guard (bug #9) |
 | Entry needs good tracking | ✓ low-confidence entry gate (round 9) |
-| Enter/exit hysteresis | ✓ enter 0.2552 / exit 0.3700 / hover 0.4849 (s=70); enter≠exit everywhere |
+| Enter/exit hysteresis | ✓ enter 0.2332 / exit 0.3381 / hover 0.4430 (s=70); enter≠exit everywhere |
 | Temporal validation | ✓ 80ms candidate debounce; NO one-frame commits |
 | One pinch = one click | ✓ START once per HOLD; re-click requires release + fresh pinch (R5) |
 | Tracking loss cancels candidates | ✓ bug #10 fix; HOLD loss emits END (drag release, no dangling press) |

@@ -22,9 +22,9 @@ import org.junit.Test
  * The pinch→click production path is the existing hardened FSM:
  * IDLE → HOVER (<enter×1.9) → PINCH_START (<enter, 80ms confirm) →
  * HOLD (START event = the click) → PINCH_RELEASE (>enter×1.45, 80ms) → IDLE,
- * plus an 80ms post-END cooldown. Default config (s=70):
- * enter ≈ 0.2552, exit ≈ 0.3700, hover ≈ 0.4849 (thumb-index distance
- * normalized by wrist→middle-MCP hand size).
+ * plus an 80ms post-END cooldown. Default config (s=70, pinch ease 0.85–1.15
+ * band → ease 1.06): enter ≈ 0.2332, exit ≈ 0.3381, hover ≈ 0.4430
+ * (thumb-index distance normalized by wrist→middle-MCP hand size).
  *
  * Already pinned elsewhere (not duplicated here): tracking-loss candidate
  * cancel (INV2), low-confidence entry + flicker (R2/adversarial #7), degenerate
@@ -95,31 +95,31 @@ class PinchClickTest {
     private fun starts(events: List<GestureEvent>) = events.count { it is GestureEvent.Pinch && it.phase == PinchPhase.START }
     private fun ends(events: List<GestureEvent>) = events.count { it is GestureEvent.Pinch && it.phase == PinchPhase.END }
 
-    // §12 case 2/3 + 25: barely-valid vs barely-invalid entry (enter ≈ 0.2552).
+    // §12 case 2/3 + 25: barely-valid vs barely-invalid entry (enter ≈ 0.2332).
     @Test
     fun `barely valid pinch clicks and barely invalid does not`() = runTest {
-        // Barely VALID: 0.25 < 0.2552.
+        // Barely VALID: 0.23 < 0.2332.
         run {
             val events = mutableListOf<GestureEvent>()
             val engine = GestureEngine(GestureEngineConfig())
             val job = launch { engine.gestureEvents.toList(events) }
             runCurrent()
             var ts = arm(engine)
-            repeat(8) { engine.processFrame(hand(ts, pinchGap = 0.25f)); ts += 40L }
+            repeat(8) { engine.processFrame(hand(ts, pinchGap = 0.23f)); ts += 40L }
             runCurrent()
-            assertEquals("gap 0.25 must click", 1, starts(events))
+            assertEquals("gap 0.23 must click", 1, starts(events))
             job.cancel()
         }
-        // Barely INVALID: 0.26 > 0.2552 (and < hover → HOVER, never START).
+        // Barely INVALID: 0.24 > 0.2332 (and < hover → HOVER, never START).
         run {
             val events = mutableListOf<GestureEvent>()
             val engine = GestureEngine(GestureEngineConfig())
             val job = launch { engine.gestureEvents.toList(events) }
             runCurrent()
             var ts = arm(engine)
-            repeat(8) { engine.processFrame(hand(ts, pinchGap = 0.26f)); ts += 40L }
+            repeat(8) { engine.processFrame(hand(ts, pinchGap = 0.24f)); ts += 40L }
             runCurrent()
-            assertEquals("gap 0.26 must not click", 0, starts(events))
+            assertEquals("gap 0.24 must not click", 0, starts(events))
             job.cancel()
         }
     }
@@ -135,7 +135,7 @@ class PinchClickTest {
         runCurrent()
         var ts = arm(engine)
         repeat(30) { i ->
-            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.25f else 0.36f))
+            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.23f else 0.33f))
             ts += 40L
         }
         runCurrent()
@@ -154,7 +154,7 @@ class PinchClickTest {
         runCurrent()
         var ts = arm(engine)
         repeat(30) { i ->
-            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.30f else 0.45f))
+            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.30f else 0.42f))
             ts += 40L
         }
         runCurrent()
@@ -170,8 +170,18 @@ class PinchClickTest {
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
         var ts = arm(engine)
-        repeat(60) { engine.processFrame(hand(ts, pinchGap = 0.08f)); ts += 40L }
-        repeat(6) { engine.processFrame(hand(ts, pinchGap = 0.6f)); ts += 40L }
+        repeat(60) { i ->
+            engine.processFrame(hand(ts, pinchGap = 0.08f)); ts += 40L
+            // Drain the SharedFlow periodically: ~2 events/frame (CursorMoved +
+            // Pinch MOVE) overflow the 64-slot test buffer within ~32 frames
+            // and would evict the START event before collection (harness
+            // artifact, not production behavior).
+            if (i % 5 == 0) runCurrent()
+        }
+        repeat(6) { i ->
+            engine.processFrame(hand(ts, pinchGap = 0.6f)); ts += 40L
+            if (i % 3 == 0) runCurrent()
+        }
         runCurrent()
         assertEquals(1, starts(events))
         assertEquals(1, ends(events))
@@ -197,7 +207,7 @@ class PinchClickTest {
         job.cancel()
     }
 
-    // §12 case 24/26: release needs to pass EXIT (enter×1.45 ≈ 0.3700);
+    // §12 case 24/26: release needs to pass EXIT (enter×1.45 ≈ 0.3381);
     // hovering just under it keeps the press held.
     @Test
     fun `release requires passing the exit threshold`() = runTest {
@@ -207,11 +217,14 @@ class PinchClickTest {
         runCurrent()
         var ts = arm(engine)
         repeat(8) { engine.processFrame(hand(ts, pinchGap = 0.08f)); ts += 40L } // click
-        repeat(20) { engine.processFrame(hand(ts, pinchGap = 0.36f)); ts += 40L } // above enter, BELOW exit
+        repeat(20) { i ->
+            engine.processFrame(hand(ts, pinchGap = 0.30f)); ts += 40L // above enter, BELOW exit
+            if (i % 5 == 0) runCurrent()
+        }
         runCurrent()
         assertEquals("press must stay held below exit", 1, starts(events))
         assertEquals("no release below exit", 0, ends(events))
-        repeat(6) { engine.processFrame(hand(ts, pinchGap = 0.38f)); ts += 40L } // above exit
+        repeat(6) { engine.processFrame(hand(ts, pinchGap = 0.36f)); ts += 40L } // above exit 0.3381
         runCurrent()
         assertEquals("release fires once past exit", 1, ends(events))
         job.cancel()
