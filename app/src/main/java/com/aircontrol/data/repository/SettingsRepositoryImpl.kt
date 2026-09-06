@@ -64,6 +64,7 @@ private object PreferencesKeys {
     val GAZE_INVERT_X = booleanPreferencesKey("gaze_invert_x")
     val BLINK_CLICK_ENABLED = booleanPreferencesKey("blink_click_enabled")
     val BLINK_WINDOW_MS = intPreferencesKey("blink_window_ms")
+    val NATIVE_HID_MOUSE_ENABLED = booleanPreferencesKey("native_hid_mouse_enabled")
     val GAZE_CALIBRATION = stringPreferencesKey("gaze_calibration")
     val PERSONALIZED_GAZE_CALIBRATION = stringPreferencesKey("personalized_gaze_calibration")
 }
@@ -294,6 +295,13 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Updated blinkWindowMs: %d", clamped)
     }
 
+    override suspend fun updateNativeHidMouseEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.NATIVE_HID_MOUSE_ENABLED] = enabled
+        }
+        Timber.d("Updated nativeHidMouseEnabled: %b", enabled)
+    }
+
     override suspend fun updateGazeCalibration(coeffs: String) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.GAZE_CALIBRATION] = coeffs
@@ -453,6 +461,7 @@ class SettingsRepositoryImpl @Inject constructor(
         gazeInvertX = preferences[PreferencesKeys.GAZE_INVERT_X] ?: true,
         blinkClickEnabled = preferences[PreferencesKeys.BLINK_CLICK_ENABLED] ?: false,
         blinkWindowMs = preferences[PreferencesKeys.BLINK_WINDOW_MS] ?: 250,
+        nativeHidMouseEnabled = preferences[PreferencesKeys.NATIVE_HID_MOUSE_ENABLED] ?: false,
         gazeCalibration = preferences[PreferencesKeys.GAZE_CALIBRATION] ?: "",
         personalizedGazeCalibration = preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] ?: "",
     )

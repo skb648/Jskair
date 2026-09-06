@@ -25,6 +25,8 @@ class SettingsViewModel @Inject constructor(
     private val permissionsManager: PermissionsManager,
     // M-01 Fix: Use centralized CameraServiceManager instead of duplicated start/stop logic
     private val serviceManager: com.aircontrol.service.CameraServiceManager,
+    // HID POC: isolated experimental Native HID Mouse path.
+    private val nativeHidMouseController: com.aircontrol.nativeinput.NativeHidMouseController,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -56,6 +58,26 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.updateSensitivity(sensitivity)
         }
     }
+
+    // ---------- HID POC: Native HID Mouse (experimental, isolated) ----------
+
+    /** Live HID controller status for the experimental card. */
+    val nativeHidStatus: kotlinx.coroutines.flow.StateFlow<com.aircontrol.nativeinput.NativeHidMouseStatus> =
+        nativeHidMouseController.status
+
+    fun updateNativeHidMouseEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateNativeHidMouseEnabled(enabled)
+            if (enabled) nativeHidMouseController.start() else nativeHidMouseController.stop()
+        }
+    }
+
+    fun bondedHidHosts(): List<com.aircontrol.nativeinput.HidHostInfo> =
+        nativeHidMouseController.bondedHosts()
+
+    fun connectHidHost(address: String) = nativeHidMouseController.connectHost(address)
+
+    fun disconnectHidHost() = nativeHidMouseController.disconnectHost()
 
     fun updateHandPreference(preference: HandPreference) {
         viewModelScope.launch {

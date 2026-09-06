@@ -493,6 +493,12 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(Dimens.spacing32))
 
+            // ===== HID POC: Native HID Mouse (experimental, isolated) =====
+            SectionHeader(title = stringResource(R.string.settings_section_native_hid))
+            NativeHidMouseCard(viewModel = viewModel, enabled = preferences.nativeHidMouseEnabled)
+
+            Spacer(modifier = Modifier.height(Dimens.spacing32))
+
             // ===== About =====
             SectionHeader(title = stringResource(R.string.settings_section_about))
 

@@ -270,6 +270,16 @@
     <string name="custom_gestures_recorded">✓ Shape recorded — tap to record again</string>
     <string name="custom_gestures_record_failed">Could not see a stable hand — try again with better lighting.</string>
     <string name="custom_gestures_record_will_use">This gesture will use the recorded shape (the pose options above are ignored).</string>
+    <!-- HID POC: Native HID Mouse (experimental). -->
+    <string name="settings_section_native_hid">Experimental</string>
+    <string name="settings_native_hid_title">Native HID Mouse (Bluetooth)</string>
+    <string name="settings_native_hid_subtitle">Experimental: act as a real Bluetooth mouse. The receiver device shows its own native cursor — AirControl draws nothing. Off by default.</string>
+    <string name="settings_native_hid_state_prefix">HID status:</string>
+    <string name="settings_native_hid_howto">1) Pair this device with the receiver phone/tablet in Android Bluetooth settings. 2) Tap Refresh paired devices. 3) Tap Connect next to the receiver. 4) Move your open hand — the receiver\'s native cursor moves.</string>
+    <string name="settings_native_hid_open_bt">Bluetooth settings</string>
+    <string name="settings_native_hid_refresh_hosts">Refresh paired devices</string>
+    <string name="settings_native_hid_connect">Connect</string>
+    <string name="settings_native_hid_disconnect">Disconnect</string>
     <string name="settings_dwell_to_click">Dwell-to-click</string>
     <string name="settings_dwell_to_click_subtitle">Hold the cursor still to auto-click</string>
     <string name="settings_dwell_duration">Dwell Duration</string>

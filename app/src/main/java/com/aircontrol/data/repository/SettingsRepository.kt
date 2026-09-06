@@ -64,6 +64,9 @@ interface SettingsRepository {
     /** Fix A10: user-tunable minimum blink duration (150–500ms). */
     suspend fun updateBlinkWindowMs(durationMs: Int)
 
+    /** HID POC: experimental opt-in Native HID Mouse (Bluetooth) toggle. */
+    suspend fun updateNativeHidMouseEnabled(enabled: Boolean)
+
     suspend fun updateGazeCalibration(coeffs: String)
 
     /** Fix A5: persists/clears the serialized personalized gaze calibration model. */

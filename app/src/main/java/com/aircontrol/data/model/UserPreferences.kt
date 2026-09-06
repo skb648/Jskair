@@ -16,6 +16,9 @@ data class UserPreferences(
     val holdDuration: Int = 600,
     val batterySaver: Boolean = false,
     val startOnBoot: Boolean = false,
+    // HID POC: experimental Native HID Mouse (Bluetooth). OFF by default; the
+    // whole path is isolated from the accessibility control pipeline.
+    val nativeHidMouseEnabled: Boolean = false,
     // Fix #32: status pill is OFF by default so no system-wide overlay appears
     // on first run without the user asking for it.
     val statusPillEnabled: Boolean = false,

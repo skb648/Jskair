@@ -167,6 +167,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var lastHandDetectedMs: Long = 0L
     @Volatile private var lastHintShownMs: Long = 0L
 
+    // HID POC (experimental, isolated): Bluetooth HID mouse path. Disabled by
+    // default; the adapter no-ops unless the pref is on AND a host is connected.
+    private var nativeHidMouseController: com.aircontrol.nativeinput.NativeHidMouseController? = null
+    private var nativeHidAdapter: com.aircontrol.nativeinput.NativeHidInputAdapter? = null
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -221,6 +226,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
             settingsRepository = entryPoint.settingsRepository()
             cursorController = entryPoint.cursorController()
             cameraServiceManager = entryPoint.cameraServiceManager()
+            nativeHidMouseController = entryPoint.nativeHidMouseController()
         } catch (e: Throwable) {
             Timber.e(e, "Failed to inject dependencies into accessibility service")
             // Fix C-1 (crash on enabling accessibility): never call disableSelf()
@@ -566,6 +572,25 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating custom gesture templates")
                 }
+            }
+        })
+
+        // HID POC (Phase 1, isolated): experimental Native HID Mouse. When the
+        // pref is OFF this block does nothing at all (hand frames are ignored,
+        // controller stays down) — the existing accessibility path is untouched.
+        pipelineJobs.add(serviceScope.launchGuarded("native hid mouse", restart = true) {
+            val controller = nativeHidMouseController ?: return@launchGuarded
+            nativeHidAdapter = com.aircontrol.nativeinput.NativeHidInputAdapter(
+                controller,
+                debug = { Timber.d("NativeHidAdapter: %s", it) },
+            )
+            launch {
+                settingsRepository?.userPreferences?.collectGuarded("native hid prefs") { prefs ->
+                    if (prefs.nativeHidMouseEnabled) controller.start() else controller.stop()
+                }
+            }
+            handTracker?.handFrames?.collectGuarded("native hid hand") { frame ->
+                if (currentPreferences.nativeHidMouseEnabled) nativeHidAdapter?.onHandFrame(frame)
             }
         })
 

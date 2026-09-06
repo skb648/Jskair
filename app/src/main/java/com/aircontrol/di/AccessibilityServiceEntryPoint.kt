@@ -29,6 +29,9 @@ interface AccessibilityServiceEntryPoint {
     fun cursorController(): CursorController
     fun cameraServiceManager(): CameraServiceManager
 
+    /** HID POC: isolated Native HID Mouse path (never used by existing controls). */
+    fun nativeHidMouseController(): com.aircontrol.nativeinput.NativeHidMouseController
+
     companion object {
         fun getFromApplication(application: android.app.Application): AccessibilityServiceEntryPoint {
             return EntryPointAccessors.fromApplication(
