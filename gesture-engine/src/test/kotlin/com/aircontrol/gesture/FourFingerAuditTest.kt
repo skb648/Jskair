@@ -140,9 +140,9 @@ class FourFingerAuditTest {
         var ts = 1000L
         // Only OPEN_PALM can move DISARMED → ARMING; the four-finger hand
         // drives the whole arming sequence by itself.
-        repeat(15) {
+        var guard = 0
+        while (engine.engineState.value != GestureEngineState.ARMED && guard++ < 15) {
             engine.processFrame(fourFinger(ts)); ts += 40L
-            if (engine.engineState.value == GestureEngineState.ARMED) break
         }
         runCurrent()
         assertEquals("the four-finger hand must ARM the engine (it reads OPEN_PALM)", GestureEngineState.ARMED, engine.engineState.value)
@@ -164,9 +164,9 @@ class FourFingerAuditTest {
         var ts = 1000L
         // Arm with a plain open palm (5 digits) first, then hold the
         // four-finger shape (which also reads OPEN_PALM).
-        repeat(15) {
+        var guard = 0
+        while (engine.engineState.value != GestureEngineState.ARMED && guard++ < 15) {
             engine.processFrame(hand(ts, thumbOut = true)); ts += 40L
-            if (engine.engineState.value == GestureEngineState.ARMED) break
         }
         assertEquals(GestureEngineState.ARMED, engine.engineState.value)
         repeat(30) { i ->
