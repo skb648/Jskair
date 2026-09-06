@@ -163,7 +163,7 @@ class GestureAdversarialTest {
         repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x -= 0.0625f; ts += 40L }
         ts = still(engine, ts, 10, x)
         runCurrent()
-        assertEquals("out-and-back must not fire", 0, events.count { it is GestureEvent.Swipe })
+        assertEquals("out-and-back must not fire — events=${events.filterIsInstance<GestureEvent.Swipe>()}", 0, events.count { it is GestureEvent.Swipe })
         job.cancel()
     }
 
