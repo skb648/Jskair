@@ -238,5 +238,24 @@ extended-finger tip/PIP-to-wrist worst ratio 1.387 > max threshold 1.12;
 curled worst ratio 0.747 < min threshold 0.90; tucked-thumb IP angle ≈27° <
 118° min; straight-thumb 180° > 158° max — valid at every sensitivity.
 
+**Bug #11 found by this battery (fixed + pinned).** Spec §6 (tracking
+loss → reappearance = fresh validation): the frame-interval EMA that drives
+`effectiveDebounceFrames` was fed the post-dropout GAP as if it were a frame
+interval (updateMeasuredFrameInterval only ran on detected frames, but the
+first detected delta after a gap IS the gap). A 240ms dropout inflated the
+estimate 40→90ms and dropped the pose debounce to `ceil(120/90)` = 2 frames —
+the returning pose committed at 40ms. A multi-second dropout (still inside the
+10s auto-disarm window) collapsed it to ONE frame: a single misread
+reacquisition frame could fire a pose action. Fix: an undetected frame zeroes
+`prevFrameTimestampMs`, so the meaningless post-gap delta is skipped and the
+estimator keeps its pre-dropout value. Pinned by the tracking-loss test
+(timestamp ≥ firstReturn+80) and a new long-dropout (3s) test. Thresholds
+untouched; the debounce formula is unchanged — only the estimator input was
+wrong. OBSERVATION (not changed, out of Task-14 scope): the swipe detector's
+own interval EMA has the same post-gap pattern, but its neutral-re-arm latch,
+displacement+velocity+dominance+consistency gates, and the green
+"interrupted motion does not resume after reappearance" pin cover the
+reappearance path; flagged for a future swipe-focused audit if ever needed.
+
 **Hardware validation NOT performed** — code-level proof only (CI-green unit
 tests). Real-camera three-finger → volume behavior must be verified on device.

@@ -181,6 +181,19 @@ class GestureEngine(
                 if (currentVelocity > config.thumbGestureMaxVelocity) handStillSinceMs = 0L
                 else if (handStillSinceMs == 0L) handStillSinceMs = timestampMs
             }
+        } else {
+            // Stress-audit bug #11 (Task 14, spec §6 — tracking loss → fresh
+            // validation): an undetected gap must not feed the frame-interval
+            // estimator. The first delta computed after a dropout is the GAP
+            // itself (e.g. 240ms), which inflated the EMA and dropped the
+            // effective pose debounce to ceil(120/90) = 2 frames — or to 1
+            // frame after a multi-second dropout (still inside the 10s
+            // auto-disarm window). A returning hand could then commit a pose
+            // on 1–2 frames instead of the spec'd ~120ms of fresh validation.
+            // Zeroing the previous-frame timestamp makes updateMeasuredFrame
+            // Interval() skip the meaningless post-gap delta; the estimator
+            // keeps its pre-dropout value and the debounce stays honest.
+            prevFrameTimestampMs = 0L
         }
 
         val pose = poseClassifier.classify(input, currentVelocity)

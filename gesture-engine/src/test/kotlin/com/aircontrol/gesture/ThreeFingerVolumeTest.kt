@@ -258,10 +258,41 @@ class ThreeFingerVolumeTest {
         val fired = events.filterIsInstance<GestureEvent.PoseTriggered>()
             .firstOrNull { it.pose == Pose.THREE_FINGERS }
         assertTrue("the returning pose must fire after fresh validation", fired != null)
-        assertEquals(1, poseEvents(events, Pose.THREE_FINGERS))
+        assertEquals("exactly one action for the returned pose", 1, poseEvents(events, Pose.THREE_FINGERS))
         // A stale candidate would fire on the FIRST return frame; fresh
         // validation needs 3 consecutive frames (fires on the third).
+        // Bug #11 pin: before the fix, the 240ms gap poisoned the frame-
+        // interval EMA (40→90ms), dropped the debounce to 2 frames, and the
+        // pose committed at firstReturn+40 — half the spec'd validation.
         assertTrue("event must come from fresh post-return frames", fired!!.timestampMs >= firstReturnTs + 80L)
+        job.cancel()
+    }
+
+    // Bug #11 (spec §6): a LONG dropout (seconds, still inside the 10s
+    // auto-disarm window) used to inflate the interval EMA so much that the
+    // effective pose debounce collapsed to ONE frame — a single misread
+    // reacquisition frame could fire the volume action. The estimator must
+    // ignore post-gap deltas; validation depth stays at 3 frames.
+    @Test
+    fun `long tracking dropout does not collapse the pose debounce to one frame`() = runTest {
+        val events = mutableListOf<GestureEvent>()
+        val engine = GestureEngine(GestureEngineConfig())
+        val job = launch { engine.gestureEvents.toList(events) }
+        runCurrent()
+        var ts = arm(engine)
+        // ~3s of tracking loss in 500ms hops.
+        repeat(6) { engine.processFrame(empty(ts)); ts += 500L }
+        val firstReturnTs = ts
+        repeat(8) { engine.processFrame(threeFinger(ts)); ts += 40L }
+        runCurrent()
+        val fired = events.filterIsInstance<GestureEvent.PoseTriggered>()
+            .firstOrNull { it.pose == Pose.THREE_FINGERS }
+        assertTrue("pose must still fire after fresh validation", fired != null)
+        assertEquals(1, poseEvents(events, Pose.THREE_FINGERS))
+        assertTrue(
+            "debounce must survive the dropout (no 1-frame commit)",
+            fired!!.timestampMs >= firstReturnTs + 80L,
+        )
         job.cancel()
     }
 
