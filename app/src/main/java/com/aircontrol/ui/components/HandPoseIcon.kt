@@ -41,6 +41,7 @@ fun HandPoseIcon(
             "pose_pinch_hold" -> drawPinchHold(s, cx, cy, color)
             "pose_pointing" -> drawPointing(s, cx, cy, color)
             "pose_victory" -> drawVictory(s, cx, cy, color)
+            "pose_three_fingers" -> drawThreeFingers(s, cx, cy, color)
             "pose_thumb_up" -> drawThumbUp(s, cx, cy, color)
             "pose_thumb_down" -> drawThumbDown(s, cx, cy, color)
             else -> drawOpenPalm(s, cx, cy, color)
@@ -418,6 +419,48 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVictory(
         sweepAngle = 180f,
         useCenter = false,
         topLeft = Offset(cx + s * 0.04f, cy + s * 0.01f),
+        size = androidx.compose.ui.geometry.Size(s * 0.1f, s * 0.06f),
+        style = Stroke(width = strokeW * 0.7f, cap = StrokeCap.Round),
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawThreeFingers(
+    s: Float, cx: Float, cy: Float, color: Color,
+) {
+    val strokeW = s * 0.05f
+    val palmH = s * 0.22f
+    val palmW = s * 0.26f
+
+    // Palm
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(cx - palmW / 2, cy + s * 0.05f),
+        size = androidx.compose.ui.geometry.Size(palmW, palmH),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.03f),
+        style = Stroke(width = strokeW),
+    )
+
+    // Three extended fingers: index, middle, ring spread
+    val fingerLen = s * 0.28f
+    val baseY = cy + s * 0.05f
+    val xs = listOf(-s * 0.09f, 0f, s * 0.09f)
+    xs.forEach { dx ->
+        drawLine(
+            color = color,
+            start = Offset(cx + dx * 0.4f, baseY),
+            end = Offset(cx + dx, baseY - fingerLen),
+            strokeWidth = strokeW * 1.3f,
+            cap = StrokeCap.Round,
+        )
+    }
+
+    // Curled pinky
+    drawArc(
+        color = color.copy(alpha = 0.5f),
+        startAngle = 0f,
+        sweepAngle = 180f,
+        useCenter = false,
+        topLeft = Offset(cx + s * 0.1f, cy + s * 0.01f),
         size = androidx.compose.ui.geometry.Size(s * 0.1f, s * 0.06f),
         style = Stroke(width = strokeW * 0.7f, cap = StrokeCap.Round),
     )

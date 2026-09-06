@@ -185,3 +185,58 @@ enter, long-hold release, rapid repeated pinch across the 80ms cooldown
 boundary, release-threshold hold/release, extreme hand scales 0.02/3.0,
 swipe-then-pinch sequencing, cursor-only movement, reset-with-stale-HOLD).
 No thresholds changed (§16); no production code changed in Phase 2.
+
+---
+
+## Phase 2 — Task 14: THREE-FINGERS → VOLUME_UP (audit 2026-09-06)
+
+**§1 Action layer trace.** `GestureAction.VOLUME_UP` is a real public-API
+action: `ActionDispatcher.pressVolume(true)` → `AudioManager.adjustStreamVolume(
+STREAM_USE_DEFAULT_STREAM_TYPE, ADJUST_RAISE, FLAG_SHOW_UI)`. Recognition
+already exists and is hardened: `StaticPoseClassifier` priority 6 —
+index+middle+ring extended, pinky curled (THUMB state irrelevant at this
+priority; thumb-out + 3 fingers = 4 extended digits → OPEN_PALM by priority 3,
+the intended conservative arbitration). Behind it: 120ms wall-clock pose
+debounce (3 frames @40ms), ARMED gate, EXECUTING→COOLDOWN(100ms), one-shot
+`lastExecutedPose` latch cleared only by neutral (NONE/POINTING/OPEN_PALM),
+low-confidence execution suppression + raised debounce (round 10), tracking
+loss clears classifier history (fresh validation on return). The dispatcher
+resolves the key generically (`poseKey()` else-branch → `pose_three_fingers`);
+missing key fails safe to `GestureAction.NONE`. VICTORY dispatches through the
+identical path today.
+
+**Gap found (the only production change needed).**
+`GestureMapConfig.defaultEntries()` had no `pose_three_fingers` entry → the
+pose was invisible/unmappable in the gesture map UI and `migrate()` (which
+rebuilds from defaults) would strip it from any config that carried it.
+Fixed: entry `("pose_three_fingers", "Three Fingers", VOLUME_UP)` +
+`CURRENT_SCHEMA_VERSION` 4→5 (migrate adds the entry to existing installs,
+preserving user customizations — pinned by a v4→v5 migration test). Same
+divergence existed in `ActionDispatcher.buildDefaultMap()` (the fallback map
+used before the first settings emission and the base for the collector
+overlay): added `KEY_POSE_THREE_FINGERS → VOLUME_UP` — data-only, dispatch
+logic untouched. `HandPoseIcon`: added the `pose_three_fingers` branch
+(palm + three spread fingers + curled pinky). `strings.xml`
+`pose_three_fingers` ("Three Fingers") and `CustomGesturePose.THREE_FINGERS`
+display name already existed.
+
+**No changes** to: GestureEngine, GestureStateMachine, StaticPoseClassifier,
+thresholds, ActionDispatcher dispatch semantics, VICTORY/PINCH/swipe behavior.
+
+**Adversarial battery:** `ThreeFingerVolumeTest` (12 tests) — clean pose =
+exactly 1 event, 30-frame hold never repeats; one-frame pose between palms =
+0; three→neutral→three = 2 (OPEN_PALM clears the one-shot latch);
+victory↔three_fingers transitions = each pose fires once; open→three = 1;
+thumb-out+3-fingers reads OPEN_PALM (never fires — priority pin); pinky
+oscillation three↔four = 0; low-confidence 0.5 muted then recovery fires once
+(enter 3 bad / exit 3 good / debounce 7 verified); tracking loss mid-candidate
+→ fresh validation on return (event timestamp ≥ 3rd return frame); NaN +
+collapsed landmarks = 0 (fail safe); extreme scales 0.02/3.0 fire through
+normalization; pose during cursor drift fires exactly once (velocity gate is
+thumb-only — documented existing semantics). Fixture math self-audited:
+extended-finger tip/PIP-to-wrist worst ratio 1.387 > max threshold 1.12;
+curled worst ratio 0.747 < min threshold 0.90; tucked-thumb IP angle ≈27° <
+118° min; straight-thumb 180° > 158° max — valid at every sensitivity.
+
+**Hardware validation NOT performed** — code-level proof only (CI-green unit
+tests). Real-camera three-finger → volume behavior must be verified on device.

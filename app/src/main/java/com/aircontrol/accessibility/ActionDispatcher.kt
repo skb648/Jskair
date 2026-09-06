@@ -146,8 +146,9 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_PINCH = "pose_pinch"
         const val KEY_POSE_POINTING = "pose_pointing"
         const val KEY_POSE_VICTORY = "pose_victory"
-        const val KEY_POSE_THUMB_UP = "pose_thumb_up"
-        const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
+    const val KEY_POSE_THUMB_UP = "pose_thumb_up"
+    const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
+    const val KEY_POSE_THREE_FINGERS = "pose_three_fingers"
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
         const val KEY_PALM_HOME = "palm_home"
 
@@ -226,6 +227,11 @@ class ActionDispatcher @Inject constructor(
             defaultMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
             defaultMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
             defaultMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
+            // Phase 2 (three-fingers → VOLUME_UP): keep this fallback map in
+            // lock-step with GestureMapConfig.defaultEntries() so the gesture
+            // works even before the first settings emission reaches the
+            // collector overlay. Data-only change; dispatch logic untouched.
+            defaultMap[KEY_POSE_THREE_FINGERS] = GestureAction.VOLUME_UP
             defaultMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
             defaultMap[KEY_PALM_HOME] = GestureAction.HOME
             return defaultMap

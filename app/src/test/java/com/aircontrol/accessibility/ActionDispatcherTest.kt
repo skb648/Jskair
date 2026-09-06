@@ -324,6 +324,9 @@ class ActionDispatcherTest {
         assertEquals(GestureMapConfig.defaultEntries().size, map.size)
         assertEquals(GestureAction.SCROLL_RIGHT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
         assertEquals(GestureAction.TAP, map[ActionDispatcher.KEY_POSE_PINCH])
+        // Phase 2: fallback map stays in lock-step with GestureMapConfig
+        // defaults (three fingers → VOLUME_UP).
+        assertEquals(GestureAction.VOLUME_UP, map[ActionDispatcher.KEY_POSE_THREE_FINGERS])
     }
 
     @Test

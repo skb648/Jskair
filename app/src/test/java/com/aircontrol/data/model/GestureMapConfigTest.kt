@@ -11,9 +11,9 @@ class GestureMapConfigTest {
     // ========== defaultEntries() ==========
 
     @Test
-    fun `defaultEntries returns all 11 expected gesture entries`() {
+    fun `defaultEntries returns all 12 expected gesture entries`() {
         val entries = GestureMapConfig.defaultEntries()
-        assertEquals(11, entries.size)
+        assertEquals(12, entries.size)
     }
 
     @Test
@@ -30,6 +30,7 @@ class GestureMapConfigTest {
             "pose_victory",
             "pose_thumb_up",
             "pose_thumb_down",
+            "pose_three_fingers",
             "pose_pinch_hold",
             "palm_home",
         )
@@ -58,13 +59,37 @@ class GestureMapConfigTest {
         assertEquals(GestureAction.MEDIA_PLAY_PAUSE, byKey["pose_victory"]?.action)
         assertEquals(GestureAction.VOLUME_UP, byKey["pose_thumb_up"]?.action)
         assertEquals(GestureAction.VOLUME_DOWN, byKey["pose_thumb_down"]?.action)
+        // Phase 2 gesture: three-finger pose → VOLUME_UP by default.
+        assertEquals(GestureAction.VOLUME_UP, byKey["pose_three_fingers"]?.action)
     }
 
     // ========== CURRENT_SCHEMA_VERSION ==========
 
     @Test
-    fun `current schema version is 4`() {
-        assertEquals(4, GestureMapConfig.CURRENT_SCHEMA_VERSION)
+    fun `current schema version is 5`() {
+        assertEquals(5, GestureMapConfig.CURRENT_SCHEMA_VERSION)
+    }
+
+    // ========== Phase 2: pose_three_fingers migration ==========
+
+    @Test
+    fun `migrate v4 to v5 adds three fingers entry with volume up and preserves customizations`() {
+        // A v4 config (pre-three-fingers) with a user-customized entry.
+        val v4Entries = GestureMapConfig.defaultEntries()
+            .filter { it.key != "pose_three_fingers" }
+            .map {
+                if (it.key == "pose_victory") it.copy(action = GestureAction.BACK) else it
+            }
+        val oldConfig = GestureMapConfig(schemaVersion = 4, entries = v4Entries)
+
+        val migrated = GestureMapConfig.migrate(oldConfig)
+
+        assertEquals(GestureMapConfig.CURRENT_SCHEMA_VERSION, migrated.schemaVersion)
+        val byKey = migrated.entries.associateBy { it.key }
+        // New entry arrives with the spec'd default...
+        assertEquals(GestureAction.VOLUME_UP, byKey["pose_three_fingers"]?.action)
+        // ...and the user's existing customization survives.
+        assertEquals(GestureAction.BACK, byKey["pose_victory"]?.action)
     }
 
     // ========== Default constructor ==========

@@ -52,7 +52,7 @@ class DataStoreMigrationTest {
     @Test
     fun defaultGestureMapHasExpectedEntryCount() = runTest {
         val config = settingsRepository.gestureMapConfig.first()
-        assertEquals(11, config.entries.size)
+        assertEquals(12, config.entries.size)
     }
 
     @Test
@@ -62,7 +62,8 @@ class DataStoreMigrationTest {
         val expectedKeys = setOf(
             "swipe_left", "swipe_right", "swipe_up", "swipe_down",
             "pose_pinch", "pose_pointing", "pose_victory",
-            "pose_thumb_up", "pose_thumb_down", "pose_pinch_hold",
+            "pose_thumb_up", "pose_thumb_down", "pose_three_fingers",
+            "pose_pinch_hold",
             "palm_home",
         )
         assertEquals(expectedKeys, keys)

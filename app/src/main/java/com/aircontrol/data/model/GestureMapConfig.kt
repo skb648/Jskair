@@ -20,7 +20,7 @@ data class GestureMapConfig(
     val entries: List<GestureMapEntry> = defaultEntries(),
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 5
 
         fun defaultEntries(): List<GestureMapEntry> = listOf(
             GestureMapEntry("swipe_left", "Swipe Left", GestureAction.SCROLL_LEFT),
@@ -32,6 +32,13 @@ data class GestureMapConfig(
             GestureMapEntry("pose_victory", "Victory", GestureAction.MEDIA_PLAY_PAUSE),
             GestureMapEntry("pose_thumb_up", "Thumb Up", GestureAction.VOLUME_UP),
             GestureMapEntry("pose_thumb_down", "Thumb Down", GestureAction.VOLUME_DOWN),
+            // Phase 2 gesture: three-finger pose -> VOLUME_UP. The pose and the
+            // action both already existed (the dispatcher resolves the key
+            // generically as "pose_three_fingers"); this entry makes the
+            // gesture visible/mappable in the gesture map and gives it the
+            // spec'd default. Schema bump so migrate() adds it to existing
+            // installs while preserving user customizations.
+            GestureMapEntry("pose_three_fingers", "Three Fingers", GestureAction.VOLUME_UP),
             GestureMapEntry("pose_pinch_hold", "Pinch Hold (Drag)", GestureAction.DRAG),
             GestureMapEntry("palm_home", "Palm (Hold)", GestureAction.HOME),
         )
