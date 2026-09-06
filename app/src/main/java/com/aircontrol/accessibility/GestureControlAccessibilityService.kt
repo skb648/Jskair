@@ -19,6 +19,10 @@ import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gestures.GestureDetector
+import com.aircontrol.accessibility.cursor.CursorHitTester
+import com.aircontrol.accessibility.cursor.CursorHoverMonitor
+import com.aircontrol.accessibility.cursor.CursorIcon
+import com.aircontrol.accessibility.cursor.HoverResolvePolicy
 import com.aircontrol.tracking.CursorSmoother
 import com.aircontrol.util.CrashGuard
 import com.aircontrol.util.collectGuarded
@@ -68,6 +72,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // Overlays (must only be touched on the main thread).
     private var cursorOverlay: CursorOverlay? = null
     private var statusOverlay: StatusOverlay? = null
+
+    // Native-like cursor hover resolver (main-thread entry, background scan).
+    private var hoverMonitor: CursorHoverMonitor? = null
 
     // Screen metrics (raw display, no inset subtraction — fix #1).
     @Volatile private var screenWidth: Int = 0
@@ -501,7 +508,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
                                 this@GestureControlAccessibilityService,
                                 screenWidth, screenHeight,
                             )
+                            attachHoverMonitor()
                         } else if (!prefs.cursorEnabled && cursorOverlay != null) {
+                            detachHoverMonitor()
                             cursorOverlay?.remove()
                             cursorOverlay = null
                             cursorController?.hide()
@@ -1125,6 +1134,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         val prefs = currentPreferences
         if (prefs.cursorEnabled) {
             cursorOverlay = CursorOverlay(this, screenWidth, screenHeight)
+            attachHoverMonitor()
         }
         // Status pill defaults to OFF (fix #32). The overlay is only created when
         // the user enables it in settings.
@@ -1132,10 +1142,47 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     private fun removeOverlays() {
+        detachHoverMonitor()
         cursorOverlay?.remove()
         cursorOverlay = null
         statusOverlay?.remove()
         statusOverlay = null
+    }
+
+    /**
+     * Native-like cursor (spec: CursorHoverMonitor wiring): every APPLIED
+     * overlay position (≤60 Hz, main thread) feeds the rate-limited policy;
+     * actual accessibility hit-tests run off-main, single-flight, and only
+     * while the cursor is moving. Icon changes hop back to main and switch
+     * the glyph without moving the hotspot. Must be called on the main thread
+     * right after the overlay exists; paired with [detachHoverMonitor].
+     */
+    private fun attachHoverMonitor() {
+        if (hoverMonitor != null || cursorOverlay == null) return
+        val density = resources.displayMetrics.density
+        hoverMonitor = CursorHoverMonitor(
+            scope = serviceScope,
+            policy = HoverResolvePolicy(
+                moveThresholdPx = 8f * density,
+                resolveIntervalMs = 120L,
+            ),
+            snapshotProvider = { x, y ->
+                // Runs on Dispatchers.Default (binder calls are safe off-main).
+                CursorHitTester.hitTest(windows ?: emptyList(), x, y, packageName)
+            },
+            onIcon = { icon: CursorIcon ->
+                cursorOverlay?.setCursorIcon(icon)
+            },
+        )
+        cursorOverlay?.onPositionApplied = { x, y ->
+            hoverMonitor?.onCursorPosition(x, y, android.os.SystemClock.elapsedRealtime())
+        }
+    }
+
+    private fun detachHoverMonitor() {
+        cursorOverlay?.onPositionApplied = null
+        hoverMonitor?.cancel()
+        hoverMonitor = null
     }
 
     /**
