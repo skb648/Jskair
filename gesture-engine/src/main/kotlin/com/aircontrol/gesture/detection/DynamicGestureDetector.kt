@@ -459,15 +459,18 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // Fix A-11: a swipe must be built from several *moving* steps, not one
         // big jump. A single-frame teleport (tracking glitch, or the pose
         // debounce lagging behind a hand that just started moving) produced
-        // phantom scrolls while the user was only moving the cursor. At full
-        // frame rate this needs 3 moving steps; in scan mode (where a whole
-        // swipe is only 2-3 frames) the requirement relaxes automatically.
+        // phantom scrolls while the user was only moving the cursor.
+        //
+        // Round 10 (bug found by the adversarial suite): the old
+        // `window.size >= 8 → 3 steps, else 2` relaxation let a TWO-step
+        // motion commit whenever the 350ms window happened to hold fewer
+        // than 8 samples at full frame rate (right after arming, or while the
+        // window slides past still frames) — an out-and-half-back wiggle could
+        // fire a phantom swipe. Scan mode is already handled by the interval
+        // branch below, so the size heuristic is removed: normal frame rate
+        // always requires MIN_MOVING_STEPS.
         val movingSteps = countMovingSteps(window, direction)
-        val requiredSteps = when {
-            measuredFrameIntervalMs >= 120L -> 1
-            window.size >= 8 -> MIN_MOVING_STEPS
-            else -> MIN_MOVING_STEPS - 1
-        }
+        val requiredSteps = if (measuredFrameIntervalMs >= 120L) 1 else MIN_MOVING_STEPS
         if (movingSteps < requiredSteps) {
             return SwipeResult(
                 detected = false,

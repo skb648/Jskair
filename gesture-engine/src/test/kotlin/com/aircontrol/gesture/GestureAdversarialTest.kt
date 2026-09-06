@@ -163,13 +163,15 @@ class GestureAdversarialTest {
         repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x -= 0.0625f; ts += 40L }
         ts = still(engine, ts, 10, x)
         runCurrent()
-        // Diagnostic split: which direction fired?
+        // Regression (round 10 bug #8): neither half of an out-and-back wiggle
+        // may fire — the old <8-sample window relaxation committed 2-step motion.
         assertEquals("rightward half must not fire", 0, events.count { it is GestureEvent.Swipe && it.direction == SwipeDirection.RIGHT })
         assertEquals("leftward return must not fire", 0, events.count { it is GestureEvent.Swipe && it.direction == SwipeDirection.LEFT })
         job.cancel()
     }
 
-    // 4b. Diagnostic variant: outward half WITHOUT the return.
+    // 4b. Regression (round 10 bug #8): a 2-moving-step half-swipe immediately
+    // after arming (small window) must NOT commit.
     @Test
     fun `outward half alone does not fire`() = runTest {
         val events = mutableListOf<GestureEvent>()
