@@ -83,6 +83,25 @@ consistency → cooldown. Already trajectory-based (not just `finalX-initialX`).
 | 3 | Swipe could fire mid-pinch when the open-palm gate is user-disabled | Explicit arbitration: swipe emission suppressed while a pinch is active (`wasPinching || currentPinchPhase != null`) |
 | 4 | No rejection telemetry / confidence score (spec §14/§18) | `SwipeResult` gains normalized `confidence` + `reason` codes; engine exposes an optional (null-by-default) `onSwipeDecision` debug hook — committed AND rejected-with-evidence, no production log spam |
 
+## Round 10 (this pass) — adversarial loop findings
+
+| # | Bug | Root cause | Fix + regression test |
+|---|---|---|---|
+| 5 | Low-confidence mode had ENTRY hysteresis (3 bad frames) but NO EXIT hysteresis — a single good frame reopened pinch/pose entry, so confidence flickering around 0.7 could click | counter reset on any good frame | Symmetric exit: 3 consecutive good frames to exit; undetected frames hold state (`GestureEngine`) — test: `confidence flicker around the threshold never clicks` |
+| 6 | `PoseTriggered` was never gated on low confidence — 7 stable but blurry frames could misclassify a pose and fire a destructive action (volume) | emission gate covered swipes/templates only, not poses | Pose emission gated `!lowConfidence` AND pose EXECUTION suppressed in the SM (via the existing `suppressPoseExecution` path, now applied to all poses) so the one-shot `lastExecutedPose` latch is not silently consumed while muted — tests: `low confidence victory pose is muted until tracking recovers` + `low confidence tracking never starts a pinch click` (recovery part) |
+| 7 | SM applied `suppressPoseExecution` to thumb poses only (design predated the low-confidence use of the flag) | `thumbPoseSuppressed` wrapper | SM suppression now applies to every actionable pose; thumb semantics unchanged (the engine already folds thumb-specific conditions into the flag) |
+
+Adversarial suite added (`GestureAdversarialTest`, 10 deterministic scenarios:
+seeded jitter, slow drift, single-frame teleport, out-and-back reversal, 3
+identical swipes → exactly 3 events, displacement boundary pair (binary-exact
+0.0625/0.25 anchors per spec §18), confidence flicker, interrupted-before-
+commit motion (no stitching across dropout), pinch hover-boundary flutter,
+low-confidence pose mute + recovery). Three first-draft test premises were
+themselves wrong (documented): a 4-frame half-swipe IS a legitimate commit;
+alternating single bad frames never enter low-confidence mode; 4 fresh
+post-reappearance frames are a valid NEW swipe — tests were corrected to probe
+the actual invariants (anti-stitching, exit hysteresis).
+
 ## Verified non-issues (searched, not changed)
 - Config/sensitivity swap mid-gesture preserves state (H-06 design).
 - Engine serialized per frame from a single collector; no concurrent processFrame.

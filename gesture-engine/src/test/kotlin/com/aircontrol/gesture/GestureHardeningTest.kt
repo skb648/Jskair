@@ -198,7 +198,9 @@ class GestureHardeningTest {
         )
 
         // Tracking recovers → the same physical pinch now clicks.
-        repeat(4) {
+        // (Round 10: exiting low-confidence mode itself needs 3 good frames,
+        // then HOVER → PINCH_START → 80ms confirm → click.)
+        repeat(10) {
             engine.processFrame(hand(ts, pinchGap = 0.08f, confidence = 0.95f))
             ts += 40L
         }

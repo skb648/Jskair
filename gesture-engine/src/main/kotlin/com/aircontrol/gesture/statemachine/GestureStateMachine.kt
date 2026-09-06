@@ -238,10 +238,13 @@ class GestureStateMachine(config: GestureEngineConfig) {
         // the user is closing it to disarm) must not change the volume. The
         // disarm hold above keeps running, so the closing hand still powers the
         // feature off — which is what the user meant to do.
-        val thumbPoseSuppressed =
-            (pose == Pose.THUMB_UP || pose == Pose.THUMB_DOWN) && currentSuppressExecution
-
-        if (!thumbPoseSuppressed &&
+        //
+        // Round 10 (hardening): suppression now applies to EVERY actionable
+        // pose, not just thumbs. The engine sets it while tracking is in
+        // low-confidence mode — a muted gesture must not silently consume the
+        // one-shot lastExecutedPose latch (it would then never fire after
+        // tracking recovered).
+        if (!currentSuppressExecution &&
             pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST &&
             pose != Pose.PINCH && pose != Pose.POINTING &&
             pose != lastExecutedPose

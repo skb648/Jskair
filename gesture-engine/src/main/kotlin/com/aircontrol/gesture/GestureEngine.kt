@@ -81,7 +81,9 @@ class GestureEngine(
     @Volatile private var measuredFrameIntervalMs = 0L
     @Volatile private var prevFrameTimestampMs = 0L
     @Volatile private var armedSinceMs = 0L
-    @Volatile private var lowConfidenceFrameCount = 0
+    @Volatile private var lowConfBadFrames = 0
+    @Volatile private var lowConfGoodFrames = 0
+    @Volatile private var lowConfidenceMode = false
 
     @Volatile private var lastPalmX = 0.5f
     @Volatile private var lastPalmY = 0.5f
@@ -130,8 +132,27 @@ class GestureEngine(
     fun processFrame(input: HandInput) {
         val timestampMs = input.timestampMs
         val isLowConfidence = input.isDetected && input.confidence < CONFIDENCE_THRESHOLD
-        if (isLowConfidence) lowConfidenceFrameCount++ else lowConfidenceFrameCount = 0
-        val lowConfidence = lowConfidenceFrameCount >= LOW_CONFIDENCE_MIN_FRAMES
+        // Hardening round 10 (spec §5/§17 — threshold oscillation): entering
+        // low-confidence mode needs 3 consecutive bad frames, but a SINGLE good
+        // frame used to exit it. With confidence flickering around 0.7 (bad
+        // lighting) the mode flapped open/closed, and pinch entry was allowed
+        // inside the brief "good" windows — an oscillating-confidence pinch
+        // could click. Exit is now symmetric: 3 consecutive good frames.
+        // Undetected frames hold the state (a dropout neither proves nor
+        // clears unreliability).
+        if (isLowConfidence) {
+            lowConfBadFrames++
+            lowConfGoodFrames = 0
+        } else if (input.isDetected) {
+            lowConfGoodFrames++
+            lowConfBadFrames = 0
+        }
+        if (!lowConfidenceMode && lowConfBadFrames >= LOW_CONFIDENCE_MIN_FRAMES) {
+            lowConfidenceMode = true
+        } else if (lowConfidenceMode && lowConfGoodFrames >= LOW_CONFIDENCE_EXIT_FRAMES) {
+            lowConfidenceMode = false
+        }
+        val lowConfidence = lowConfidenceMode
         poseClassifier.effectiveDebounceFrames = if (lowConfidence) LOW_CONFIDENCE_DEBOUNCE_FRAMES else config.poseDebounceFrames
 
         if (input.isDetected) {
@@ -173,7 +194,11 @@ class GestureEngine(
         } else thumbPoseSinceMs = 0L
         val still = handStillSinceMs > 0L
         val thumbHeldLongEnough = still && isThumbPose && timestampMs - thumbPoseSinceMs >= config.thumbGestureHoldMs
-        val suppressExecution = isThumbPose && !thumbHeldLongEnough
+        // Round 10: low-confidence tracking suppresses pose EXECUTION (not just
+        // emission) — otherwise the state machine silently consumed the
+        // one-shot lastExecutedPose latch while muted, and the pose could never
+        // fire after tracking recovered.
+        val suppressExecution = (isThumbPose && !thumbHeldLongEnough) || lowConfidence
 
         val transition = stateMachine.process(
             pose = pose,
@@ -249,7 +274,12 @@ class GestureEngine(
                     swipeResult.displacementX, swipeResult.displacementY, timestampMs,
                 )
             }
-            if (transition.shouldExecute) {
+            if (transition.shouldExecute && !lowConfidence) {
+                // Round 10 (spec §11): poses were the last event type that
+                // could still commit from unreliable tracking — 7 stable but
+                // blurry frames could misclassify as VICTORY and change the
+                // volume. Pose actions are discrete and can be destructive,
+                // so low-confidence tracking mutes them like swipes/templates.
                 val actionablePose = pose.takeIf { it != Pose.NONE && it != Pose.OPEN_PALM && it != Pose.FIST }
                 if (actionablePose != null) _gestureEvents.tryEmit(GestureEvent.PoseTriggered(actionablePose, timestampMs))
             }
@@ -372,7 +402,7 @@ class GestureEngine(
         poseClassifier.reset(); poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames; dynamicDetector.reset(); stateMachine.reset()
         pinchState = PinchState.IDLE; pinchStateEntryTimeMs = 0L; wasPinching = false; currentPinchPhase = null
         pinchStartX = 0f; pinchStartY = 0f; pinchAnchoredX = 0f; pinchAnchoredY = 0f; lastPinchEndMs = 0L; lastCustomGestureId = null
-        lowConfidenceFrameCount = 0; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
+        lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
         resetPalmTracking(); handStillSinceMs = 0L; thumbPoseSinceMs = 0L; measuredFrameIntervalMs = 0L; prevFrameTimestampMs = 0L; armedSinceMs = 0L
         lastPalmX = 0.5f; lastPalmY = 0.5f; hasPalmPosition = false
         _engineState.value = GestureEngineState.DISARMED; _currentPose.value = Pose.NONE; _armingProgress.value = 0f
@@ -383,6 +413,7 @@ class GestureEngine(
         private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 60L
         private const val CONFIDENCE_THRESHOLD = 0.7f
         private const val LOW_CONFIDENCE_MIN_FRAMES = 3
+        private const val LOW_CONFIDENCE_EXIT_FRAMES = 3
         private const val LOW_CONFIDENCE_DEBOUNCE_FRAMES = 7
         private const val LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF = 2.0f
         private const val PALM_HOME_MIN_ARMED_MS = 1200L
