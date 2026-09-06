@@ -45,6 +45,14 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
 
     /**
      * Result of swipe analysis.
+     *
+     * Hardening round 9: carries a normalized [confidence] (gesture-specific
+     * weighting: displacement, velocity, direction consistency, step count —
+     * a swipe exactly at every gate minimum scores 0.35, a clean fast swipe
+     * approaches 1.0), a machine-readable [reason] for every rejection, and
+     * [hadEvidence] (true once displacement passed the minimum, i.e. the
+     * candidate was worth judging) so debug consumers can distinguish "nothing
+     * happened" from "rejected, and why" (spec §14/§18).
      */
     data class SwipeResult(
         val detected: Boolean,
@@ -52,7 +60,22 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         val displacementX: Float = 0f,
         val displacementY: Float = 0f,
         val peakVelocity: Float = 0f,
+        val confidence: Float = 0f,
+        val reason: SwipeRejectReason? = null,
+        val hadEvidence: Boolean = false,
     )
+
+    /** Why a swipe candidate with real motion was rejected (spec §18 telemetry). */
+    enum class SwipeRejectReason {
+        BELOW_DISPLACEMENT,
+        DIAGONAL_AMBIGUOUS,
+        TOO_SLOW,
+        VERTICAL_TOO_DIAGONAL,
+        VERTICAL_NON_MONOTONIC,
+        TOO_FEW_MOVING_STEPS,
+        INCONSISTENT_DIRECTION,
+        COOLDOWN,
+    }
 
     // Track both wrist and index fingertip for more reliable swipe detection
     private val wristWindow = ArrayDeque<PositionSample>()
@@ -101,7 +124,14 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         if (!input.isDetected) {
             wristWindow.clear()
             indexTipWindow.clear()
-            resetNeutralRearm()
+            // Hardening round 9 (repeated-trigger bug): hand loss used to CLEAR
+            // the neutral re-arm latch, so a 1-frame tracking dropout right
+            // after a fired swipe let the returning hand's sweep fire a
+            // PHANTOM second swipe once the 220ms cooldown passed. Spec §12:
+            // tracking lost must require FRESH evidence, not cancel recovery —
+            // the latch now survives hand loss (only reset() clears it), and
+            // stillness re-accumulates from the frames after the hand
+            // reappears.
             return SwipeResult(detected = false)
         }
 
@@ -302,7 +332,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
 
         // Check cooldown
         if (currentTimeMs - lastSwipeTimestampMs < swipeCooldownMs) {
-            return SwipeResult(detected = false)
+            return SwipeResult(detected = false, reason = SwipeRejectReason.COOLDOWN)
         }
 
         val first = window.first()
@@ -323,6 +353,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 detected = false,
                 displacementX = displacementX,
                 displacementY = displacementY,
+                reason = SwipeRejectReason.BELOW_DISPLACEMENT,
             )
         }
 
@@ -337,6 +368,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 detected = false,
                 displacementX = displacementX,
                 displacementY = displacementY,
+                reason = SwipeRejectReason.DIAGONAL_AMBIGUOUS,
+                hadEvidence = true,
             )
         }
 
@@ -376,6 +409,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                     detected = false,
                     displacementX = displacementX,
                     displacementY = displacementY,
+                    reason = SwipeRejectReason.VERTICAL_TOO_DIAGONAL,
+                    hadEvidence = true,
                 )
             }
         }
@@ -390,6 +425,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 displacementX = displacementX,
                 displacementY = displacementY,
                 peakVelocity = peakVelocity,
+                reason = SwipeRejectReason.TOO_SLOW,
+                hadEvidence = true,
             )
         }
 
@@ -413,6 +450,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                     displacementX = displacementX,
                     displacementY = displacementY,
                     peakVelocity = peakVelocity,
+                    reason = SwipeRejectReason.VERTICAL_NON_MONOTONIC,
+                    hadEvidence = true,
                 )
             }
         }
@@ -435,6 +474,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 displacementX = displacementX,
                 displacementY = displacementY,
                 peakVelocity = peakVelocity,
+                reason = SwipeRejectReason.TOO_FEW_MOVING_STEPS,
+                hadEvidence = true,
             )
         }
 
@@ -449,8 +490,23 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 displacementX = displacementX,
                 displacementY = displacementY,
                 peakVelocity = peakVelocity,
+                reason = SwipeRejectReason.INCONSISTENT_DIRECTION,
+                hadEvidence = true,
             )
         }
+
+        // Hardening round 9 (spec §14): composite, gesture-specific confidence.
+        // Each factor is normalized so 0.5 = "exactly at the gate minimum"
+        // (except consistency, which is 0 at its gate and 1 at perfect
+        // agreement). A swipe that passes every gate with the bare minimum
+        // scores 0.35; a fast, long, dead-straight swipe approaches 1.0.
+        val dispFactor = (dominantDisp / (dispThreshold * 2f)).coerceIn(0f, 1f)
+        val velFactor = (peakVelocity / (velocityThreshold * 2f)).coerceIn(0f, 1f)
+        val consistencyFactor = ((consistency - DIRECTIONAL_CONSISTENCY_THRESHOLD) /
+            (1f - DIRECTIONAL_CONSISTENCY_THRESHOLD)).coerceIn(0f, 1f)
+        val stepsFactor = (movingSteps / (requiredSteps * 2f)).coerceIn(0f, 1f)
+        val confidence = 0.25f * dispFactor + 0.25f * velFactor +
+            0.30f * consistencyFactor + 0.20f * stepsFactor
 
         return SwipeResult(
             detected = true,
@@ -458,6 +514,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             displacementX = displacementX,
             displacementY = displacementY,
             peakVelocity = peakVelocity,
+            confidence = confidence,
+            hadEvidence = true,
         )
     }
 

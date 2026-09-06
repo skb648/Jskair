@@ -10,6 +10,7 @@ import com.aircontrol.gesture.model.LandmarkIndex
 import com.aircontrol.gesture.model.LandmarkTemplate
 import com.aircontrol.gesture.model.PinchPhase
 import com.aircontrol.gesture.model.Pose
+import com.aircontrol.gesture.model.SwipeDirection
 import com.aircontrol.gesture.statemachine.GestureStateMachine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,15 @@ class GestureEngine(
     @Volatile private var hasPalmPosition = false
 
     fun stop() { scopeJob.cancel() }
+
+    /**
+     * Optional debug hook (spec §18) — null in production, so there is NO log
+     * spam by default. When set, it fires once per swipe DECISION that had real
+     * evidence (committed, suppressed, or rejected past the displacement gate):
+     * (detected, direction, confidence, reason, dispX, dispY, timestampMs).
+     * Frames with no meaningful motion never fire it.
+     */
+    @Volatile var onSwipeDecision: ((detected: Boolean, direction: SwipeDirection?, confidence: Float, reason: String?, displacementX: Float, displacementY: Float, timestampMs: Long) -> Unit)? = null
 
     fun updateSensitivity(sensitivity: Int) {
         val newConfig = config.copy(sensitivity = sensitivity)
@@ -175,7 +185,7 @@ class GestureEngine(
         _engineState.value = transition.newState
         _armingProgress.value = stateMachine.armingProgress
 
-        processPinch(input, timestampMs)
+        processPinch(input, timestampMs, allowEntry = !lowConfidence)
 
         if (transition.newState == GestureEngineState.ARMED && input.isDetected) {
             if (pose == Pose.OPEN_PALM) {
@@ -213,9 +223,31 @@ class GestureEngine(
         }
 
         if (transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN) {
-            val swipeSuppressed = lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < SWIPE_SUPPRESSION_AFTER_PINCH_MS
+            // Arbitration (hardening round 9, spec §13/§15): the swipe loses
+            // against an ACTIVE pinch/drag unconditionally — the same physical
+            // motion belongs to the drag. This holds even when the user has
+            // disabled the open-palm pose gate, closing the last path where a
+            // drag could double-fire as a scroll.
+            val pinchActive = wasPinching || currentPinchPhase != null
+            val swipeSuppressed = pinchActive ||
+                (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < SWIPE_SUPPRESSION_AFTER_PINCH_MS)
             if (swipeResult.detected && swipeResult.direction != null && !swipeSuppressed && !lowConfidence) {
                 _gestureEvents.tryEmit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
+                onSwipeDecision?.invoke(
+                    true, swipeResult.direction, swipeResult.confidence, null,
+                    swipeResult.displacementX, swipeResult.displacementY, timestampMs,
+                )
+            } else if (swipeResult.detected) {
+                onSwipeDecision?.invoke(
+                    false, swipeResult.direction, swipeResult.confidence,
+                    if (lowConfidence) "LOW_CONFIDENCE" else "PINCH_ACTIVE",
+                    swipeResult.displacementX, swipeResult.displacementY, timestampMs,
+                )
+            } else if (swipeResult.hadEvidence) {
+                onSwipeDecision?.invoke(
+                    false, null, swipeResult.confidence, swipeResult.reason?.name,
+                    swipeResult.displacementX, swipeResult.displacementY, timestampMs,
+                )
             }
             if (transition.shouldExecute) {
                 val actionablePose = pose.takeIf { it != Pose.NONE && it != Pose.OPEN_PALM && it != Pose.FIST }
@@ -245,7 +277,18 @@ class GestureEngine(
         }
     }
 
-    private fun processPinch(input: HandInput, timestampMs: Long) {
+    /**
+     * Pinch click/drag FSM.
+     *
+     * Hardening round 9 (spec §11 — prefer CANCEL over GUESS): [allowEntry] is
+     * false while tracking is in low-confidence mode. No NEW pinch may START
+     * (IDLE→HOVER, HOVER→PINCH_START, and the 80ms START→HOLD confirmation are
+     * gated), so blurry frames can never commit a click/drag. An ONGOING pinch
+     * is deliberately not interrupted mid-hold (killing a drag because one
+     * stretch of frames went soft would strand the press); it keeps flowing
+     * MOVE updates and always terminates with END.
+     */
+    private fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
         val currentState = _engineState.value
         if (currentState != GestureEngineState.ARMED && currentState != GestureEngineState.EXECUTING && currentState != GestureEngineState.COOLDOWN) {
             if (wasPinching) { wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE }
@@ -270,14 +313,14 @@ class GestureEngine(
         val timeInState = timestampMs - pinchStateEntryTimeMs
 
         when (pinchState) {
-            PinchState.IDLE -> if (thumbIndexDistance < hoverThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
+            PinchState.IDLE -> if (allowEntry && thumbIndexDistance < hoverThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
             PinchState.HOVER -> {
                 val inCooldown = lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS
-                if (thumbIndexDistance < enterThreshold && !inCooldown) { pinchState = PinchState.PINCH_START; pinchStateEntryTimeMs = timestampMs }
+                if (allowEntry && thumbIndexDistance < enterThreshold && !inCooldown) { pinchState = PinchState.PINCH_START; pinchStateEntryTimeMs = timestampMs }
                 else if (thumbIndexDistance > hoverThreshold * 1.5f) { pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs }
             }
             PinchState.PINCH_START -> {
-                if (timeInState >= TIME_DEBOUNCE_MS) {
+                if (timeInState >= TIME_DEBOUNCE_MS && allowEntry) {
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     val palm = if (hasPalmPosition) lastPalmX to lastPalmY else 0.5f to 0.5f
                     pinchStartX = palm.first; pinchStartY = palm.second; pinchAnchoredX = pinchStartX; pinchAnchoredY = pinchStartY

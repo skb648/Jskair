@@ -348,4 +348,129 @@ class DynamicGestureDetectorTest {
         val result = detector.process(handAtWristPosition(0.5f, 0.5f, 5000L))
         assertFalse(result.detected)
     }
+
+    // ========== Hardening round 9 ==========
+
+    /**
+     * Spec §12 (hand loss): an in-flight swipe candidate must be CANCELLED —
+     * motion before and after a tracking gap may never be stitched into one
+     * swipe. Each half alone is below the required sample count, while the
+     * combined motion would comfortably fire.
+     */
+    @Test
+    fun `tracking loss mid swipe cancels the candidate`() {
+        // First half: 3 fast rightward samples (would fire when combined).
+        var result = detector.process(handAtWristPosition(0.50f, 0.5f, 1000L))
+        assertFalse(result.detected)
+        result = detector.process(handAtWristPosition(0.56f, 0.5f, 1040L))
+        assertFalse(result.detected)
+        result = detector.process(handAtWristPosition(0.62f, 0.5f, 1080L))
+        assertFalse(result.detected)
+
+        // Tracking gap.
+        result = detector.process(
+            HandInput(landmarks = emptyList(), handedness = Handedness.UNKNOWN, timestampMs = 1120L, confidence = 0f),
+        )
+        assertFalse(result.detected)
+
+        // Second half: another 3 fast rightward samples.
+        result = detector.process(handAtWristPosition(0.68f, 0.5f, 1160L))
+        assertFalse(result.detected)
+        result = detector.process(handAtWristPosition(0.74f, 0.5f, 1200L))
+        assertFalse(result.detected)
+        result = detector.process(handAtWristPosition(0.80f, 0.5f, 1240L))
+        assertFalse(
+            "motion spanning a tracking gap must never be stitched into a swipe",
+            result.detected,
+        )
+    }
+
+    /**
+     * Spec §14/§18: a committed swipe carries a normalized confidence and no
+     * rejection reason; rejected real motion carries a machine-readable reason.
+     */
+    @Test
+    fun `rejection reasons and confidence are exposed`() {
+        // Valid fast swipe → confidence set, no reason.
+        val frames = generateSwipeFrames(0.3f, 0.5f, 0.7f, 0.5f)
+        var committed: DynamicGestureDetector.SwipeResult? = null
+        for (frame in frames) {
+            val r = detector.process(frame)
+            if (r.detected) { committed = r; break }
+        }
+        assertTrue("fixture must produce a swipe", committed != null)
+        assertTrue("confidence in (0,1]", committed!!.confidence in 0.35f..1.0f)
+        assertEquals(null, committed!!.reason)
+        assertTrue(committed!!.hadEvidence)
+
+        // Slow motion → rejected as TOO_SLOW with evidence. 0.4 travel over
+        // 700ms: inside the 350ms window displacement ≈0.2 (well above the
+        // gate) but peak velocity ≈0.57 u/s (well below 1.2).
+        val slowDetector = DynamicGestureDetector(config)
+        var slowRejected: DynamicGestureDetector.SwipeResult? = null
+        generateSwipeFrames(0.3f, 0.5f, 0.7f, 0.5f, durationMs = 700L, frameCount = 20).forEach { f ->
+            val r = slowDetector.process(f)
+            if (r.hadEvidence && slowRejected == null) slowRejected = r
+        }
+        assertTrue("slow sweep must reach the velocity gate", slowRejected != null)
+        assertEquals(DynamicGestureDetector.SwipeRejectReason.TOO_SLOW, slowRejected!!.reason)
+        assertFalse(slowRejected!!.detected)
+
+        // Diagonal motion → rejected as DIAGONAL_AMBIGUOUS.
+        val diagDetector = DynamicGestureDetector(config)
+        var diagRejected: DynamicGestureDetector.SwipeResult? = null
+        generateSwipeFrames(0.3f, 0.4f, 0.6f, 0.7f).forEach { f ->
+            val r = diagDetector.process(f)
+            if (r.hadEvidence && diagRejected == null) diagRejected = r
+        }
+        assertTrue("diagonal sweep must reach the dominance gate", diagRejected != null)
+        assertEquals(DynamicGestureDetector.SwipeRejectReason.DIAGONAL_AMBIGUOUS, diagRejected!!.reason)
+    }
+
+    /**
+     * Spec §12/§8 regression (round 9 bug): a 1-frame dropout after a fired
+     * swipe must NOT clear the neutral re-arm latch — the detector must keep
+     * swallowing motion until the hand has been still for 250ms.
+     */
+    @Test
+    fun `neutral rearm survives a tracking dropout after a swipe`() {
+        // Fire a swipe…
+        var ts = 1000L
+        var x = 0.30f
+        var fired = false
+        repeat(12) {
+            val r = detector.process(handAtWristPosition(x, 0.5f, ts))
+            x += 0.06f
+            ts += 40L
+            if (r.detected) fired = true
+        }
+        assertTrue("fixture must fire a swipe", fired)
+
+        // …lose the hand for one frame…
+        detector.process(
+            HandInput(landmarks = emptyList(), handedness = Handedness.UNKNOWN, timestampMs = ts, confidence = 0f),
+        )
+        ts += 40L
+
+        // …then sweep back left, past the cooldown. The latch must hold.
+        var secondFire = false
+        repeat(10) {
+            val r = detector.process(handAtWristPosition(x, 0.5f, ts))
+            x -= 0.06f
+            ts += 40L
+            if (r.detected) secondFire = true
+        }
+        assertFalse("return sweep after a dropout must not re-fire (latch survives)", secondFire)
+
+        // Stillness re-arms; a fresh deliberate swipe fires again.
+        repeat(10) { detector.process(handAtWristPosition(x, 0.5f, ts)); ts += 40L }
+        var refired = false
+        repeat(10) {
+            val r = detector.process(handAtWristPosition(x, 0.5f, ts))
+            x += 0.06f
+            ts += 40L
+            if (r.detected) refired = true
+        }
+        assertTrue("after stillness the detector must accept a new swipe", refired)
+    }
 }
