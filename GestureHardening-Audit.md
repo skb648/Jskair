@@ -1,5 +1,11 @@
 # Gesture Pipeline Hardening — Audit & Round 9 Record
 
+> **Phase 2 audit (PINCH → LEFT CLICK):** see the "Phase 2" section at the
+> bottom — the pinch→click path already existed as the hardened production
+> path; Phase 2 verified it against every spec requirement and added the
+> missing click-specific adversarial/invariant battery (no production changes
+> required).
+
 Audit-first document per the production-hardening spec. No proprietary system
 was reverse-engineered; principles used are the publicly observable ones
 (explicit intent, arming, temporal validation, hysteresis, arbitration,
@@ -145,3 +151,37 @@ explicitly as `INV3 degradation after formation does not cancel a real pinch`.
 - Double-fire within one window impossible (windows cleared on commit).
 - Dormant IntentEngine not wired — documented as future work (its rollout must
   not change existing action semantics).
+
+## Phase 2 — PINCH → LEFT CLICK audit & hardening
+
+**Existing path (audited, reused — NOT rewritten):**
+`Pinch FSM (GestureEngine.processPinch)` → `Pinch(START/MOVE/END)` event →
+GCAService (pins the click at the smoothed cursor dot / gaze position) →
+`ActionDispatcher.dispatch` → `GestureAction.TAP` → `dispatchTap` (accessibility
+tap at the cursor pixel). One START per pinch = one left click; MOVE = drag
+continuation; END = release.
+
+**Spec-vs-code verification (all already in place from rounds 9–11):**
+
+| Requirement | Status |
+|---|---|
+| Intent model OPEN→CANDIDATE→VALIDATION→COMMIT→RELEASE_REQUIRED→RECOVERY→NEUTRAL | ✓ IDLE→HOVER→PINCH_START(80ms)→HOLD(START=click)→PINCH_RELEASE(80ms)+80ms cooldown→IDLE |
+| Entry needs valid geometry | ✓ degenerate/NaN guard (bug #9) |
+| Entry needs good tracking | ✓ low-confidence entry gate (round 9) |
+| Enter/exit hysteresis | ✓ enter 0.2552 / exit 0.3700 / hover 0.4849 (s=70); enter≠exit everywhere |
+| Temporal validation | ✓ 80ms candidate debounce; NO one-frame commits |
+| One pinch = one click | ✓ START once per HOLD; re-click requires release + fresh pinch (R5) |
+| Tracking loss cancels candidates | ✓ bug #10 fix; HOLD loss emits END (drag release, no dangling press) |
+| Low-confidence = entry gating, not completion cancellation | ✓ documented boundary (INV3 boundary test) |
+| handSize 0 / NaN / ∞ / collapsed | ✓ INV7 suite |
+| Swipe/drag arbitration | ✓ swipe suppressed while pinch active (round 9) |
+| Click uses existing cursor coordinates | ✓ pinned smoothed dot / gaze (service-side, untouched) |
+| Duplicate-event prevention | ✓ FSM + engine event dedupe semantics |
+
+**Phase 2 additions:** `PinchClickTest` — the click-specific adversarial cases
+not previously pinned (barely-valid/barely-invalid entry, enter/exit threshold
+oscillation → exactly one click and no repeats, never-stabilizing jitter above
+enter, long-hold release, rapid repeated pinch across the 80ms cooldown
+boundary, release-threshold hold/release, extreme hand scales 0.02/3.0,
+swipe-then-pinch sequencing, cursor-only movement, reset-with-stale-HOLD).
+No thresholds changed (§16); no production code changed in Phase 2.
