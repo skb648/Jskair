@@ -163,7 +163,25 @@ class GestureAdversarialTest {
         repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x -= 0.0625f; ts += 40L }
         ts = still(engine, ts, 10, x)
         runCurrent()
-        assertEquals("out-and-back must not fire — events=${events.filterIsInstance<GestureEvent.Swipe>()}", 0, events.count { it is GestureEvent.Swipe })
+        // Diagnostic split: which direction fired?
+        assertEquals("rightward half must not fire", 0, events.count { it is GestureEvent.Swipe && it.direction == SwipeDirection.RIGHT })
+        assertEquals("leftward return must not fire", 0, events.count { it is GestureEvent.Swipe && it.direction == SwipeDirection.LEFT })
+        job.cancel()
+    }
+
+    // 4b. Diagnostic variant: outward half WITHOUT the return.
+    @Test
+    fun `outward half alone does not fire`() = runTest {
+        val events = mutableListOf<GestureEvent>()
+        val engine = GestureEngine(GestureEngineConfig())
+        val job = launch { engine.gestureEvents.toList(events) }
+        runCurrent()
+        var ts = arm(engine)
+        var x = 0f
+        repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L }
+        ts = still(engine, ts, 10, x)
+        runCurrent()
+        assertEquals("two moving steps alone must not fire", 0, events.count { it is GestureEvent.Swipe })
         job.cancel()
     }
 
