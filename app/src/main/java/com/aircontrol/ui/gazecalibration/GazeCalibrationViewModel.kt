@@ -149,7 +149,8 @@ class GazeCalibrationViewModel @Inject constructor(
             // confident frames may feed the fallback calibration.
             var qualifiedFrames = 0
 
-            val collectJob = launch {
+            var collectJob: kotlinx.coroutines.Job? = null
+            collectJob = launch {
                 faceTracker.gazeObservations.collect { obs ->
                     if (!obs.faceDetected) return@collect
                     faceFrames++
@@ -174,13 +175,13 @@ class GazeCalibrationViewModel @Inject constructor(
                         // fatigues accessibility users and inflates dropout.
                         // Once a target has plenty of clean samples, end it
                         // early instead of running the whole window out.
-                        if (samples.size >= TARGET_SAMPLE_GOAL) collectJob.cancel()
+                        if (samples.size >= TARGET_SAMPLE_GOAL) collectJob?.cancel()
                     }
                 }
             }
 
             delay(COLLECT_WINDOW_MS)
-            collectJob.cancel()
+            collectJob?.cancel()
 
             if (faceFrames < MIN_FACE_FRAMES_PER_TARGET) {
                 _uiState.value = _uiState.value.copy(isCollecting = false, error = GazeCalibrationError.FACE_NOT_VISIBLE)

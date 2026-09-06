@@ -194,7 +194,7 @@ object EyeFeatureExtractor {
         // "high quality" even though the iris is a handful of pixels. Derate
         // quality when the eye is small in frame (< 6% of the tracker width):
         // full quality at >= 6%, down to 0.6x at ~2.4%.
-        val resolutionFactor = (eyeWidthPx / (frame.trackerWidthPx * 0.06f))
+        val resolutionFactor = (eyeWidth / (frame.trackerWidthPx * 0.06f))
             .coerceIn(0.6f, 1f)
         val quality = ((geometryConsistency + irisConsistency) * 0.5f * resolutionFactor).coerceIn(0f, 1f)
 
