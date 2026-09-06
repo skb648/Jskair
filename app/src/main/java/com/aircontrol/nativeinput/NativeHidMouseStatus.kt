@@ -11,7 +11,7 @@ package com.aircontrol.nativeinput
  *  - and if anything failed — why.
  */
 enum class NativeHidMouseState {
-    /** BluetoothHidDevice API not available (Android < 10, or no BT adapter). */
+    /** BluetoothHidDevice API not available (Android < 9 / API 28, or no BT adapter). */
     UNSUPPORTED,
 
     /** Feature off (default). Existing AirControl behavior untouched. */

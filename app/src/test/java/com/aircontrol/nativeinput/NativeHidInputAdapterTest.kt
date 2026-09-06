@@ -99,4 +99,24 @@ class NativeHidInputAdapterTest {
         assertEquals(127, input.lastDx)
         assertEquals(127, input.lastDy)
     }
+
+    @Test
+    fun `nan or infinite landmarks never poison the adapter`() {
+        val input = RecordingInput()
+        val adapter = NativeHidInputAdapter(input)
+        adapter.onHandFrame(syntheticHandFrame(0.5f, 0.5f, timestampMs = 1_000L))
+        // Tracker glitch: NaN/∞ landmarks must not reach the HID report and
+        // must not corrupt the carry state…
+        adapter.onHandFrame(syntheticHandFrame(Float.NaN, Float.POSITIVE_INFINITY, timestampMs = 1_050L))
+        assertEquals(0, input.sent)
+        // …so the very next clean movement still works: the NaN frame re-primed
+        // the anchor, this frame primes again —
+        adapter.onHandFrame(syntheticHandFrame(0.5625f, 0.5f, timestampMs = 1_100L))
+        assertEquals(0, input.sent)
+        // — and this real movement delivers exact counts.
+        adapter.onHandFrame(syntheticHandFrame(0.625f, 0.5f, timestampMs = 1_150L))
+        assertEquals(1, input.sent)
+        assertEquals(100, input.lastDx) // 1/16 exact step × GAIN 1600
+        assertEquals(0, input.lastDy)
+    }
 }

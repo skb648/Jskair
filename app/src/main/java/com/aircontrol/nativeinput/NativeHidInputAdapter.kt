@@ -44,6 +44,15 @@ class NativeHidInputAdapter(
         val palmX = (lm[5].x + lm[9].x + lm[13].x + lm[17].x + lm[0].x) / 5f
         val palmY = (lm[5].y + lm[9].y + lm[13].y + lm[17].y + lm[0].y) / 5f
 
+        // Bad tracker output (NaN/∞ under bad lighting) must never poison the
+        // residuals: NaN passes float comparisons (abs(NaN) < x is false) and
+        // would silently kill all later movement until the hand is lost.
+        // Re-prime and wait for a clean frame instead.
+        if (!palmX.isFinite() || !palmY.isFinite()) {
+            reset()
+            return
+        }
+
         if (!hasPrev) {
             prevX = palmX
             prevY = palmY

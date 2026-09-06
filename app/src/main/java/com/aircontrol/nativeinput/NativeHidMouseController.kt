@@ -26,7 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Experimental: turns this device into a Bluetooth HID mouse using the public
- * android.bluetooth.BluetoothHidDevice API (Android 10 / API 29+).
+ * android.bluetooth.BluetoothHidDevice API (Android 9 / API 28+).
  *
  * IMPORTANT (see NativeHidMouse-POC.md):
  *  - This whole path is opt-in and ISOLATED. It never touches the existing
@@ -64,7 +64,7 @@ class NativeHidMouseController @Inject constructor(
             /* name = */ "AirControl Mouse",
             /* description = */ "AirControl hand-tracking mouse (experimental)",
             /* provider = */ "AirControl",
-            /* subclass = */ SUBCLASS_MOUSE,
+            /* subclass = */ BluetoothHidDevice.SUBCLASS1_MOUSE,
             /* descriptors = */ HidMouseDescriptor.DESCRIPTOR,
         )
     }
@@ -140,9 +140,9 @@ class NativeHidMouseController @Inject constructor(
         }
     }
 
-    /** True when the platform exposes the public BluetoothHidDevice API. */
+    /** True when the platform exposes the public BluetoothHidDevice API (API 28+). */
     val isHidApiAvailable: Boolean
-        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
     /** Feature toggle ON: detect capabilities and try to register. Safe to call repeatedly. */
     @Synchronized
@@ -150,7 +150,7 @@ class NativeHidMouseController @Inject constructor(
         if (wantActive) return // already started; stop() resets the latch
         wantActive = true
         if (!isHidApiAvailable) {
-            setState(NativeHidMouseState.UNSUPPORTED, "BluetoothHidDevice requires Android 10+ (API 29); device runs API ${Build.VERSION.SDK_INT}")
+            setState(NativeHidMouseState.UNSUPPORTED, "BluetoothHidDevice requires Android 9+ (API 28); device runs API ${Build.VERSION.SDK_INT}")
             return
         }
         val manager = context.getSystemService(BluetoothManager::class.java)
@@ -311,7 +311,7 @@ class NativeHidMouseController @Inject constructor(
     private fun qosSettings(): BluetoothHidDeviceAppQosSettings? =
         try {
             BluetoothHidDeviceAppQosSettings(
-                0x01, // SERVICE_TYPE_BEST_EFFORT
+                BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
                 0, 0, 0, 0, 0,
             )
         } catch (t: Throwable) {
@@ -342,10 +342,6 @@ class NativeHidMouseController @Inject constructor(
         else -> "UNKNOWN($state)"
     }
 
-    companion object {
-        /** HID subclass code for a mouse (AOSP HID subclass constants). */
-        private const val SUBCLASS_MOUSE: Byte = 0x80.toByte()
-    }
 }
 
 /** A system-paired device selectable as the HID host (receiver). */

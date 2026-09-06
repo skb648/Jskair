@@ -92,6 +92,23 @@ internal fun NativeHidMouseCard(viewModel: SettingsViewModel, enabled: Boolean) 
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Environment line: what THIS device reports (requirement: expose
+            // API level + HID API availability for field testing).
+            Text(
+                text = stringResource(
+                    R.string.settings_native_hid_env,
+                    Build.VERSION.SDK_INT,
+                    stringResource(
+                        if (viewModel.nativeHidApiAvailable) {
+                            R.string.settings_native_hid_api_available
+                        } else {
+                            R.string.settings_native_hid_api_unavailable
+                        },
+                    ),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(modifier = Modifier.height(Dimens.spacing8))
             Text(
                 text = stringResource(R.string.settings_native_hid_state_prefix) + " " +
@@ -135,11 +152,18 @@ internal fun NativeHidMouseCard(viewModel: SettingsViewModel, enabled: Boolean) 
                         }
                     }
                 }
-                if (status.state == NativeHidMouseState.CONNECTED) {
-                    OutlinedButton(onClick = { viewModel.disconnectHidHost() }) {
-                        Text(stringResource(R.string.settings_native_hid_disconnect))
-                    }
+            if (status.state == NativeHidMouseState.CONNECTED) {
+                // Honest wording per the POC doc: CONNECTED only means the HID
+                // channel is up — the native cursor itself is hardware-unverified.
+                Text(
+                    text = stringResource(R.string.settings_native_hid_connected_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                OutlinedButton(onClick = { viewModel.disconnectHidHost() }) {
+                    Text(stringResource(R.string.settings_native_hid_disconnect))
                 }
+            }
             }
         }
     }

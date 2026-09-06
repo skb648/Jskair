@@ -65,6 +65,10 @@ class SettingsViewModel @Inject constructor(
     val nativeHidStatus: kotlinx.coroutines.flow.StateFlow<com.aircontrol.nativeinput.NativeHidMouseStatus> =
         nativeHidMouseController.status
 
+    /** Whether this device exposes the public BluetoothHidDevice API (API 28+). */
+    val nativeHidApiAvailable: Boolean
+        get() = nativeHidMouseController.isHidApiAvailable
+
     fun updateNativeHidMouseEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.updateNativeHidMouseEnabled(enabled)

@@ -275,6 +275,10 @@
     <string name="settings_native_hid_title">Native HID Mouse (Bluetooth)</string>
     <string name="settings_native_hid_subtitle">Experimental: act as a real Bluetooth mouse. The receiver device shows its own native cursor — AirControl draws nothing. Off by default.</string>
     <string name="settings_native_hid_state_prefix">HID status:</string>
+    <string name="settings_native_hid_env">Android API %1$d · HID API %2$s</string>
+    <string name="settings_native_hid_api_available">available</string>
+    <string name="settings_native_hid_api_unavailable">unavailable</string>
+    <string name="settings_native_hid_connected_hint">Connected — hardware cursor test required: watch the receiver\'s own screen (Jskair draws nothing).</string>
     <string name="settings_native_hid_howto">1) Pair this device with the receiver phone/tablet in Android Bluetooth settings. 2) Tap Refresh paired devices. 3) Tap Connect next to the receiver. 4) Move your open hand — the receiver\'s native cursor moves.</string>
     <string name="settings_native_hid_open_bt">Bluetooth settings</string>
     <string name="settings_native_hid_refresh_hosts">Refresh paired devices</string>
