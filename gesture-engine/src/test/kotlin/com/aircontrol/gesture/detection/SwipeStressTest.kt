@@ -45,12 +45,14 @@ class SwipeStressTest {
     // ---------- §5 new adversarial trajectories ----------
 
     /** L-shaped: right 0.18 then down 0.18, each leg individually too slow
-     *  (0.75 u/s < gate) — and the corner window is diagonal. No guess. */
+     *  (0.75 u/s < gate) — and the corner window is diagonal. No guess.
+     *  (§13 note: the corner point MUST be explicit — skipping it creates a
+     *  0.0424 diagonal step = 1.06 u/s, legitimately above the gate.) */
     @Test
     fun `L shaped movement is rejected`() {
         val d = fresh()
         val right = (0..6).map { Pair(0.2f + it * 0.03f, 0.5f) }
-        val down = (1..6).map { Pair(0.41f, 0.5f + it * 0.03f) }
+        val down = listOf(Pair(0.41f, 0.5f)) + (1..6).map { Pair(0.41f, 0.5f + it * 0.03f) }
         var fired = false
         var ts = 1000L
         (right + down).forEach { (x, y) -> if (d.process(at(x, y, ts)).detected) fired = true; ts += 40L }

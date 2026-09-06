@@ -124,6 +124,19 @@ swipe — the fixture was slowed so both legs are individually sub-gate).
 
 No thresholds were changed in this round (§14).
 
+Test-quality audit (§13) — four of this round's own first-draft premises were
+wrong and FIXED AS TESTS (production untouched): (1) L-shape fixture skipped
+the corner point, creating a 0.0424/step diagonal (1.06 u/s) — legitimately
+above the velocity gate (verified by a faithful Python port of the detector);
+(2) INV9 fed 18 open-palm frames after reset(), which legitimately RE-ARMS
+the engine — redesigned to re-arm deliberately and swipe the opposite
+direction (catches both stale-block and phantom-commit); (3) INV10 combined
+teleport + same-direction steps into what is a legitimate 3-step trajectory —
+scenarios split; (4) the "sudden degradation" sequence degraded AFTER pinch
+formation — an already-formed candidate completing its 80ms confirm on
+frame-4 is by-design (entry gating, not completion cancelling); pinned
+explicitly as `INV3 degradation after formation does not cancel a real pinch`.
+
 ## Verified non-issues (searched, not changed)
 
 - Config/sensitivity swap mid-gesture preserves state (H-06 design).

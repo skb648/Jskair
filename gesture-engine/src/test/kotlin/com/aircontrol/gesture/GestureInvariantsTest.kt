@@ -166,13 +166,13 @@ class GestureInvariantsTest {
         }
     }
 
-    // INVARIANT 3 (spec §4 sequences): sustained degradation blocks entry, and
-    // recovery is required before a click can happen.
+    // INVARIANT 3 (spec §4 sequences): sustained degradation DURING FORMATION
+    // blocks the click; recovery reopens it.
     @Test
     fun `INV3 sustained degradation blocks clicking until recovery`() = runTest {
         for (conf in listOf(
             floatArrayOf(0.6f, 0.5f, 0.4f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f), // gradual, stays bad
-            floatArrayOf(0.95f, 0.95f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f), // sudden, stays bad
+            floatArrayOf(0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f), // sudden, bad from formation
             floatArrayOf(0.6f, 0.5f, 0.4f, 0.95f, 0.95f, 0.95f, 0.95f, 0.95f), // bad then recovers
         )) {
             val events = mutableListOf<GestureEvent>()
@@ -200,6 +200,26 @@ class GestureInvariantsTest {
             }
             job.cancel()
         }
+    }
+
+    // INVARIANT 3 boundary (documented behavior): a pinch FORMED under good
+    // tracking may complete its 80ms confirm even if confidence degrades
+    // mid-confirm — the evidence was gathered while tracking was good, and
+    // cancelling a real pinch because light changed 40ms in would be a false
+    // negative. Low-confidence gating protects ENTRY, not completion.
+    @Test
+    fun `INV3 degradation after formation does not cancel a real pinch`() = runTest {
+        val events = mutableListOf<GestureEvent>()
+        val engine = GestureEngine(GestureEngineConfig())
+        val job = launch { engine.gestureEvents.toList(events) }
+        runCurrent()
+        var ts = arm(engine)
+        engine.processFrame(hand(ts, pinchGap = 0.08f, confidence = 0.95f)); ts += 40L // HOVER
+        engine.processFrame(hand(ts, pinchGap = 0.08f, confidence = 0.95f)); ts += 40L // PINCH_START
+        repeat(6) { engine.processFrame(hand(ts, pinchGap = 0.08f, confidence = 0.2f)); ts += 40L }
+        runCurrent()
+        assertEquals(1, events.count { it is GestureEvent.Pinch && it.phase == PinchPhase.START })
+        job.cancel()
     }
 
     // INVARIANT 4: a cancelled candidate cannot later commit using stale data.
@@ -320,7 +340,11 @@ class GestureInvariantsTest {
         job.cancel()
     }
 
-    // INVARIANT 9: after reset(), no stale state can cause an action.
+    // INVARIANT 9: after reset(), no stale state can cause an action — and
+    // the session still works. (§13 note: feeding a long open-palm stream
+    // after reset legitimately RE-ARMS the engine, so the probe must re-arm
+    // deliberately, then swipe the OTHER way: stale rightward window/latch
+    // data would either block the fresh swipe or fire a phantom RIGHT.)
     @Test
     fun `INV9 reset clears all transient state`() = runTest {
         val events = mutableListOf<GestureEvent>()
@@ -329,20 +353,30 @@ class GestureInvariantsTest {
         runCurrent()
         var ts = arm(engine)
         var x = 0f
-        repeat(3) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L } // mid-swipe
+        repeat(3) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L } // mid-swipe RIGHT
         engine.reset()
         events.clear()
-        // Identical continued motion after reset must not carry the old window.
-        repeat(10) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L }
-        repeat(8) { engine.processFrame(hand(ts, offsetX = x)); ts += 40L }
+
+        // Re-arm from stillness at the CURRENT position (fresh open palm).
+        ts = arm(engine, startTs = ts)
+        repeat(6) { engine.processFrame(hand(ts, offsetX = x)); ts += 40L } // extra stillness
+
+        // Fresh deliberate LEFT swipe.
+        repeat(6) { engine.processFrame(hand(ts, offsetX = x)); x -= 0.0625f; ts += 40L }
+        repeat(10) { engine.processFrame(hand(ts, offsetX = x)); ts += 40L }
         runCurrent()
-        // The engine is DISARMED after reset, so nothing may fire until a fresh
-        // open-palm arming — the mid-swipe motion certainly cannot.
-        assertEquals(0, events.count { it is GestureEvent.Swipe })
+        val swipes = events.filterIsInstance<GestureEvent.Swipe>()
+        assertEquals("fresh LEFT swipe fires exactly once", 1, swipes.size)
+        assertTrue(
+            "no phantom RIGHT commit from pre-reset motion",
+            swipes.all { it.direction == com.aircontrol.gesture.model.SwipeDirection.LEFT },
+        )
         job.cancel()
     }
 
     // INVARIANT 10: minimum temporal/trajectory evidence before commit.
+    // (§13 note: a teleport FOLLOWED BY further same-direction steps is a
+    // legitimate 3-step trajectory — the scenarios must stay separate.)
     @Test
     fun `INV10 single-frame teleport and two-step wiggle never commit`() = runTest {
         val events = mutableListOf<GestureEvent>()
@@ -350,13 +384,18 @@ class GestureInvariantsTest {
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
         var ts = arm(engine)
-        engine.processFrame(hand(ts, offsetX = 0.4f)); ts += 40L // teleport
-        repeat(2) { engine.processFrame(hand(ts, offsetX = 0.4f)); ts += 40L }
-        engine.processFrame(hand(ts, offsetX = 0.46f)); ts += 40L // 2-step wiggle
-        engine.processFrame(hand(ts, offsetX = 0.52f)); ts += 40L
-        repeat(10) { engine.processFrame(hand(ts, offsetX = 0.52f)); ts += 40L }
+        // Teleport, then ONLY stillness — no continuation steps.
+        engine.processFrame(hand(ts, offsetX = 0.4f)); ts += 40L
+        repeat(12) { engine.processFrame(hand(ts, offsetX = 0.4f)); ts += 40L }
+        assertEquals("teleport + stillness must not fire", 0, events.count { it is GestureEvent.Swipe })
+
+        // Fresh out-and-back wiggle (2 steps out, 2 back) after stillness.
+        var x = 0.4f
+        repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L }
+        repeat(2) { engine.processFrame(hand(ts, offsetX = x)); x -= 0.0625f; ts += 40L }
+        repeat(10) { engine.processFrame(hand(ts, offsetX = x)); ts += 40L }
         runCurrent()
-        assertEquals(0, events.count { it is GestureEvent.Swipe })
+        assertEquals("out-and-back wiggle must not fire", 0, events.count { it is GestureEvent.Swipe })
         job.cancel()
     }
 }
