@@ -96,8 +96,8 @@ data class GestureEngineConfig(
     // samples for every consistency check, and a 220ms cooldown still blocks
     // double-fires while feeling immediate.
     val swipeWindowMs: Long = 350L,
-    val swipeDisplacementRatio: Float = 0.06f,
-    val swipeVelocityThreshold: Float = 1.2f,
+    val swipeDisplacementRatio: Float = 0.08f,
+    val swipeVelocityThreshold: Float = 1.45f,
     val swipeAxisDominanceRatio: Float = 2.0f,
     val swipeRequiresOpenHand: Boolean = true,
     val armingDurationMs: Long = 100L,
@@ -235,9 +235,9 @@ data class GestureEngineConfig(
         const val SWIPE_EASE_MIN = 0.60f
         const val SWIPE_EASE_MAX = 1.40f
 
-        const val MIN_SWIPE_DISPLACEMENT = 0.04f
+        const val MIN_SWIPE_DISPLACEMENT = 0.06f
         const val MAX_SWIPE_DISPLACEMENT = 0.09f
-        const val MIN_SWIPE_VELOCITY = 0.6f
+        const val MIN_SWIPE_VELOCITY = 0.9f
         const val MAX_SWIPE_VELOCITY = 1.8f
 
         const val PINCH_RELEASE_HYSTERESIS = 1.45f

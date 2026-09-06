@@ -114,7 +114,12 @@ class ActionDispatcher @Inject constructor(
         private const val MIN_MOVING_PINCH_VELOCITY = 0.35f
         private const val MAX_MOVING_PINCH_VELOCITY = 0.95f
         private const val TAP_PATH_DISPLACEMENT_PX = 3f
-        private const val DRAG_STEP_DURATION_MS = 80L
+        // Fix (user test: "paint line trails behind the cursor"): each drag step
+        // is an 80ms interpolated stroke segment, so the injected touch point
+        // was always ~1-2 segments behind the (60fps) cursor — visible as the
+        // paint line lagging. 48ms ≈ one camera frame at ~20fps: the stroke now
+        // lands nearly as fast as the cursor moves.
+        private const val DRAG_STEP_DURATION_MS = 48L
         private const val DRAG_END_DURATION_MS = 120L
         private const val HAPTIC_TICK_MS = 15L
 
@@ -639,9 +644,14 @@ class ActionDispatcher @Inject constructor(
         val startX = x.coerceIn(0f, screenWidth.toFloat())
         val startY = y.coerceIn(0f, screenHeight.toFloat())
         path.moveTo(startX, startY)
+        // Fix (audit #17): the scroll distance was 22% of each axis separately,
+        // so the same gesture scrolled hugely on tablets (wide) and little on
+        // phones. One unit — 22% of the SHORTER dimension — makes the physical
+        // scroll distance similar across devices.
+        val scrollUnit = minOf(screenWidth, screenHeight).toFloat() * 0.22f
         path.lineTo(
-            (startX + dx * screenWidth * 0.22f).coerceIn(0f, screenWidth.toFloat()),
-            (startY + dy * screenHeight * 0.22f).coerceIn(0f, screenHeight.toFloat())
+            (startX + dx * scrollUnit).coerceIn(0f, screenWidth.toFloat()),
+            (startY + dy * scrollUnit).coerceIn(0f, screenHeight.toFloat()),
         )
         return submitGesture(
             service,

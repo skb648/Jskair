@@ -76,11 +76,17 @@ class CursorOverlay(
     private val hideDelayMs = 200L
 
     /**
-     * Sets the armed state on the cursor view (m-12).
+     * Sets the armed state on the cursor view (m-12). Armed no longer draws a
+     * ring (user test: visual noise) — the state stays for feedback consumers.
      */
     fun setArmed(armed: Boolean) {
         isArmed = armed
         (cursorView as? CursorDotView)?.isArmed = armed
+    }
+
+    /** Fix (user test): tint the pointer while a pinch-drag is in progress. */
+    fun setDragging(dragging: Boolean) {
+        (cursorView as? CursorDotView)?.isDragging = dragging
     }
 
     /**

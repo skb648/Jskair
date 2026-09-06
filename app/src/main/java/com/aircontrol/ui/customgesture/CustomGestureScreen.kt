@@ -96,6 +96,7 @@ fun CustomGestureScreen(
                 onPoseChange = viewModel::updatePose,
                 onDirectionChange = viewModel::updateDirection,
                 onActionChange = viewModel::updateAction,
+                onRecordShape = viewModel::captureTemplate,
                 onSave = {
                     viewModel.saveGesture()
                     showCreator = false
@@ -217,6 +218,7 @@ private fun CustomGestureCreatorPanel(
     onPoseChange: (CustomGesturePose) -> Unit,
     onDirectionChange: (CustomGestureDirection) -> Unit,
     onActionChange: (GestureAction) -> Unit,
+    onRecordShape: () -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
@@ -261,6 +263,44 @@ private fun CustomGestureCreatorPanel(
                 )
                 Text(stringResource(pose.displayNameRes()), modifier = Modifier.padding(start = 8.dp))
             }
+        }
+
+        // Fix (user test): record a custom hand SHAPE from the live camera —
+        // the only way to create a landmark-template trigger (previously these
+        // could only come from legacy saved JSON, i.e. the feature was dead).
+        Text(stringResource(R.string.custom_gestures_record_section), style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = stringResource(R.string.custom_gestures_record_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(
+            onClick = onRecordShape,
+            enabled = !state.isCapturingTemplate,
+        ) {
+            Text(
+                text = stringResource(
+                    when {
+                        state.isCapturingTemplate -> R.string.custom_gestures_recording
+                        state.capturedTemplate != null -> R.string.custom_gestures_recorded
+                        else -> R.string.custom_gestures_record_button
+                    },
+                ),
+            )
+        }
+        if (state.templateCaptureFailed) {
+            Text(
+                text = stringResource(R.string.custom_gestures_record_failed),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (state.capturedTemplate != null) {
+            Text(
+                text = stringResource(R.string.custom_gestures_record_will_use),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
 
         Text(stringResource(R.string.custom_direction_optional), style = MaterialTheme.typography.titleSmall)

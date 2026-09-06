@@ -62,6 +62,19 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
     private var lastSwipeTimestampMs: Long = 0L
 
     /**
+     * Fix (user test: "ek gesture ke baad hand normal pe laate waqt doosra
+     * gesture fire ho jata tha"): after a swipe fires, the returning/settling
+     * hand motion must be swallowed until the hand is STILL for a moment.
+     * While [neutralRearmElapsedMs] < [NEUTRAL_REARM_MS] all samples are
+     * dropped — the transition frames cannot be read as a new swipe.
+     */
+    private var awaitingNeutralRearm: Boolean = false
+    private var neutralStillSinceMs: Long = 0L
+    private var neutralLastWristX: Float = 0f
+    private var neutralLastWristY: Float = 0f
+    private var neutralRearmElapsedMs: Long = 0L
+
+    /**
      * Fix S1: consecutive frames for which the pose gate has disallowed
      * swipes. The window is only wiped once this exceeds the grace period.
      */
@@ -88,6 +101,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         if (!input.isDetected) {
             wristWindow.clear()
             indexTipWindow.clear()
+            resetNeutralRearm()
             return SwipeResult(detected = false)
         }
 
@@ -96,6 +110,39 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // samples there, so swipes silently stopped working whenever the phone
         // throttled down.
         val now = input.timestampMs
+
+        // Neutral re-arm gate (see awaitingNeutralRearm): swallow all motion
+        // until the hand has been still for NEUTRAL_REARM_MS. The hand coming
+        // out of a gesture (opening, settling, drifting back) otherwise lands
+        // straight into a fresh window and fires a phantom second gesture.
+        if (awaitingNeutralRearm) {
+            val wrist = input.landmarks[LandmarkIndex.WRIST]
+            val moved = kotlin.math.hypot(
+                wrist.x - neutralLastWristX,
+                wrist.y - neutralLastWristY,
+            )
+            neutralLastWristX = wrist.x
+            neutralLastWristY = wrist.y
+            if (moved < NEUTRAL_STILL_PER_FRAME) {
+                if (neutralStillSinceMs == 0L) neutralStillSinceMs = now
+                if (now > neutralStillSinceMs) {
+                    neutralRearmElapsedMs += (now - neutralStillSinceMs).coerceAtMost(200L)
+                    neutralStillSinceMs = now
+                }
+            } else {
+                neutralStillSinceMs = 0L
+                neutralRearmElapsedMs = 0L
+            }
+            wristWindow.clear()
+            indexTipWindow.clear()
+            if (neutralRearmElapsedMs < NEUTRAL_REARM_MS) {
+                return SwipeResult(detected = false)
+            }
+            awaitingNeutralRearm = false
+            neutralRearmElapsedMs = 0L
+            neutralStillSinceMs = 0L
+        }
+
         if (lastSampleTimestampMs > 0L) {
             val interval = (now - lastSampleTimestampMs).coerceIn(1L, 1000L)
             measuredFrameIntervalMs =
@@ -166,9 +213,23 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             lastSwipeTimestampMs = input.timestampMs
             wristWindow.clear()
             indexTipWindow.clear()
+            // Enter the neutral re-arm latch: nothing further may fire until the
+            // hand is still (see process() top).
+            awaitingNeutralRearm = true
+            neutralStillSinceMs = 0L
+            neutralRearmElapsedMs = 0L
+            val wrist = input.landmarks[LandmarkIndex.WRIST]
+            neutralLastWristX = wrist.x
+            neutralLastWristY = wrist.y
         }
 
         return result
+    }
+
+    private fun resetNeutralRearm() {
+        awaitingNeutralRearm = false
+        neutralStillSinceMs = 0L
+        neutralRearmElapsedMs = 0L
     }
 
     /**
@@ -569,6 +630,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         lastSampleTimestampMs = 0L
         measuredFrameIntervalMs = 0L
         disallowedFrames = 0
+        resetNeutralRearm()
     }
 
     companion object {
@@ -613,6 +675,13 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // classifier flicker during fast palm swipes without letting a
         // pointing-hand sweep complete later.
         private const val POSE_GATE_GRACE_FRAMES = 2
+
+        // Neutral re-arm tuning: the hand must be essentially still for this
+        // long (ms) after a fired swipe before any new swipe can accumulate.
+        private const val NEUTRAL_REARM_MS = 250L
+
+        /** Per-frame wrist movement (normalized) that still counts as "still". */
+        private const val NEUTRAL_STILL_PER_FRAME = 0.006f
     }
 
     /**

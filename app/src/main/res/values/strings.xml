@@ -262,6 +262,14 @@
     <!-- Fix (audit #21/#22/#12): input ownership + calibration staleness hints. -->
     <string name="settings_gaze_hybrid_note">Hybrid mode: your eyes move the cursor, and any enabled click (pinch, dwell or blink) performs the tap.</string>
     <string name="settings_gaze_recalibrate_hint">If gaze accuracy drops after changing your position, lighting or glasses, run the calibration again.</string>
+    <!-- Fix (user test): custom hand-shape recording. -->
+    <string name="custom_gestures_record_section">Or record your own hand shape</string>
+    <string name="custom_gestures_record_hint">Hold your hand in the desired shape in front of the front camera and keep it still — the shape is averaged over ~2 seconds.</string>
+    <string name="custom_gestures_record_button">Record hand shape</string>
+    <string name="custom_gestures_recording">Recording… hold the shape steady</string>
+    <string name="custom_gestures_recorded">✓ Shape recorded — tap to record again</string>
+    <string name="custom_gestures_record_failed">Could not see a stable hand — try again with better lighting.</string>
+    <string name="custom_gestures_record_will_use">This gesture will use the recorded shape (the pose options above are ignored).</string>
     <string name="settings_dwell_to_click">Dwell-to-click</string>
     <string name="settings_dwell_to_click_subtitle">Hold the cursor still to auto-click</string>
     <string name="settings_dwell_duration">Dwell Duration</string>

@@ -9,16 +9,23 @@ import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
 import com.aircontrol.data.model.CustomGestureTrigger
 import com.aircontrol.data.repository.SettingsRepository
+import com.aircontrol.gesture.model.LandmarkTemplate
+import com.aircontrol.tracking.HandTracker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.util.UUID
 import javax.inject.Inject
+import kotlin.math.hypot
 
 /** State for the custom gesture creation/edit screen. */
 data class CustomGestureCreatorState(
@@ -31,6 +38,10 @@ data class CustomGestureCreatorState(
     val editingGestureId: String? = null,
     val isEditingFingerCount: Boolean = false,
     val isEditingLandmarkTemplate: Boolean = false,
+    // Fix (user test: custom gestures "bilkul dead"): live template recording.
+    val capturedTemplate: CustomGestureTrigger.LandmarkTemplateTrigger? = null,
+    val isCapturingTemplate: Boolean = false,
+    val templateCaptureFailed: Boolean = false,
     val isValid: Boolean = false,
     val isSaved: Boolean = false,
 )
@@ -38,6 +49,7 @@ data class CustomGestureCreatorState(
 @HiltViewModel
 class CustomGestureViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
+    private val handTracker: HandTracker,
 ) : ViewModel() {
 
     init {
@@ -141,6 +153,62 @@ class CustomGestureViewModel @Inject constructor(
         _creatorState.value = CustomGestureCreatorState()
     }
 
+    /**
+     * Fix (user test + audit #11/#12: custom gestures were effectively dead — a
+     * template trigger could only ever come from legacy persisted JSON; NOTHING
+     * in the app could record one). Samples the live hand tracker for a couple
+     * of seconds and averages the SAME normalization the engine matcher uses
+     * (pair distances / wrist→middle-MCP span), so the recorded template and
+     * live matching live in exactly one coordinate space.
+     */
+    fun captureTemplate() {
+        if (_creatorState.value.isCapturingTemplate) return
+        _creatorState.value = _creatorState.value.copy(
+            isCapturingTemplate = true,
+            templateCaptureFailed = false,
+            capturedTemplate = null,
+        )
+        viewModelScope.launch {
+            val frames = withTimeoutOrNull(TEMPLATE_CAPTURE_TIMEOUT_MS) {
+                handTracker.handFrames
+                    .filter { it.isDetected && it.landmarks.size >= 21 }
+                    .take(TEMPLATE_CAPTURE_FRAMES)
+                    .toList()
+            }
+            if (frames == null || frames.size < TEMPLATE_CAPTURE_FRAMES) {
+                _creatorState.value = _creatorState.value.copy(
+                    isCapturingTemplate = false,
+                    templateCaptureFailed = true,
+                )
+                Timber.w("Template capture failed: only %d usable frames", frames?.size ?: 0)
+                return@launch
+            }
+            val acc = FloatArray(LandmarkTemplate.EXPECTED_DISTANCE_COUNT)
+            for (frame in frames) {
+                val lm = frame.landmarks
+                // Same hand-size normalization as StaticPoseClassifier.
+                val handSize = hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y)
+                if (handSize < 1e-3f) continue
+                for (i in LandmarkTemplate.TEMPLATE_LANDMARK_PAIRS.indices) {
+                    val (a, b) = LandmarkTemplate.TEMPLATE_LANDMARK_PAIRS[i]
+                    acc[i] += hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y) / handSize
+                }
+            }
+            val averaged = acc.map { it / TEMPLATE_CAPTURE_FRAMES }
+            val template = LandmarkTemplate(
+                gestureId = UUID.randomUUID().toString(),
+                name = _creatorState.value.name.trim().ifBlank { "Shape" },
+                normalizedDistances = averaged,
+            )
+            _creatorState.value = _creatorState.value.copy(
+                isCapturingTemplate = false,
+                capturedTemplate = CustomGestureTrigger.LandmarkTemplateTrigger(template),
+                isValid = _creatorState.value.name.isNotBlank(),
+            )
+            Timber.i("Hand-shape template recorded (%d frames)", TEMPLATE_CAPTURE_FRAMES)
+        }
+    }
+
     fun saveGesture() {
         val state = _creatorState.value
         if (!state.isValid) return
@@ -156,6 +224,7 @@ class CustomGestureViewModel @Inject constructor(
         // LandmarkTemplate gestures (neither is editable via this screen's
         // pose/direction pickers, so rebuilding one would destroy it).
         val triggerPose = when {
+            state.capturedTemplate != null -> state.capturedTemplate!!
             state.isEditingFingerCount && originalGesture?.triggerPose is CustomGestureTrigger.FingerCount ->
                 originalGesture.triggerPose
             state.isEditingLandmarkTemplate && originalGesture?.triggerPose is CustomGestureTrigger.LandmarkTemplateTrigger ->
@@ -196,5 +265,11 @@ class CustomGestureViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.enableCustomGesture(gestureId, enabled)
         }
+    }
+
+    companion object {
+        /** ~2s of usable frames at ~15fps of clean hand detections. */
+        private const val TEMPLATE_CAPTURE_FRAMES = 30
+        private const val TEMPLATE_CAPTURE_TIMEOUT_MS = 4_000L
     }
 }

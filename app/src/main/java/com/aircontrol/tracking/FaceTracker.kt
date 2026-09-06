@@ -102,6 +102,12 @@ class FaceTrackerImpl @Inject constructor(
     // Fix A5: the active personalized model (null = legacy ratio mode).
     @Volatile private var personalizedModel: PersonalizedGazeCalibrationModel? = null
 
+    // Fix (user test: random gaze wander): continuity bookkeeping for the
+    // personalized-prediction jump suppressor (see handleResult).
+    @Volatile private var lastPersonalizedFeatures: FloatArray? = null
+    @Volatile private var lastPersonalizedX: Float = 0.5f
+    @Volatile private var lastPersonalizedY: Float = 0.5f
+
     // Dimensions of the last submitted image (the mirrored/rotated analysis
     // bitmap), needed to build aspect-correct FaceLandmarkFrames.
     @Volatile private var lastImageWidthPx: Int = 0
@@ -144,6 +150,10 @@ class FaceTrackerImpl @Inject constructor(
     }
 
     override fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?) {
+        // New model → reset the jump-suppressor history.
+        lastPersonalizedFeatures = null
+        lastPersonalizedX = 0.5f
+        lastPersonalizedY = 0.5f
         personalizedModel = model
         Timber.i(
             if (model != null) "Personalized gaze model activated (trained %d, val p95 %.4f)"
@@ -261,6 +271,33 @@ class FaceTrackerImpl @Inject constructor(
             prediction.getOrNull()?.let { (px, py) ->
                 val x = px.coerceIn(0f, 1f)
                 val y = py.coerceIn(0f, 1f)
+
+                // Fix (user test: "eye cursor kahin bhi hilta rehta hai"):
+                // an ill-conditioned model can swing its OUTPUT wildly on a
+                // tiny feature change — the eye barely moved but the cursor
+                // jumped. If the feature vector is essentially unchanged since
+                // the last accepted prediction, yet the prediction leapt, this
+                // frame is model noise, not a gaze change: skip it entirely
+                // (the consumer's miss-hysteresis tolerates single skips, so
+                // the cursor simply holds still instead of wandering).
+                if (lastPersonalizedFeatures != null) {
+                    var featureDelta = 0f
+                    val prev = lastPersonalizedFeatures!!
+                    val curr = featureVector!!.values
+                    for (i in curr.indices) featureDelta += kotlin.math.abs(curr[i] - prev[i])
+                    val outputJump = kotlin.math.hypot(
+                        (x - lastPersonalizedX).toDouble(),
+                        (y - lastPersonalizedY).toDouble(),
+                    ).toFloat()
+                    if (featureDelta < STABLE_FEATURE_DELTA && outputJump > PREDICTION_JUMP) {
+                        Timber.d("Personalized gaze jump suppressed (dFeat=%.3f jump=%.3f)", featureDelta, outputJump)
+                        return
+                    }
+                }
+                lastPersonalizedFeatures = featureVector!!.values.copyOf()
+                lastPersonalizedX = x
+                lastPersonalizedY = y
+
                 _gazePoints.tryEmit(
                     GazePoint(
                         x = x,
@@ -475,6 +512,12 @@ class FaceTrackerImpl @Inject constructor(
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
         private const val EPSILON = 1e-6f
+
+        // Jump-suppressor tuning: total |Δfeature| across all 23 dims below this
+        // means "the eyes/head essentially did not move"; a prediction leap
+        // larger than PREDICTION_JUMP then is model noise, not gaze.
+        private const val STABLE_FEATURE_DELTA = 0.8f
+        private const val PREDICTION_JUMP = 0.12f
 
         // Fix (audit #5): legacy-path head-pose stability envelope (degrees).
         private const val HEAD_POSE_GRACE_DEG = 15f

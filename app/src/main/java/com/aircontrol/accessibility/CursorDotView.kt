@@ -41,6 +41,19 @@ class CursorDotView(
         style = Paint.Style.STROKE
         strokeWidth = maxOf(1.5f * density, 2f)
     }
+
+    /** Thin, unobtrusive dwell-progress arc (replaces the old ring reuse). */
+    private val dwellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = maxOf(2f * density, 3f)
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val dwellRadius: Float
+        get() = ringSizePx * 0.85f
+
+    /** Pointer tint while dragging (Windows-style drag feedback). */
+    private val dragTint = Color.parseColor("#4DA3FF")
     private val pointerPath = Path()
     private val dwellRect = RectF()
     private var isHovering = false
@@ -54,6 +67,10 @@ class CursorDotView(
     private var rippleAlpha = 0
 
     var isArmed: Boolean = false
+        set(value) { field = value; invalidate() }
+
+    /** Fix (user test): tint the arrow while a pinch-drag is in progress. */
+    var isDragging: Boolean = false
         set(value) { field = value; invalidate() }
 
     private val moveResetRunnable = Runnable {
@@ -166,14 +183,17 @@ class CursorDotView(
         super.onDraw(canvas)
         val cx = width * 0.43f
         val cy = height * 0.50f
-        // Fix (audit #12): every "where the pointer is" affordance — armed ring,
-        // dwell arc, ripple, scale pivot — must centre on the visible arrow TIP,
-        // because the tip is the point clicks actually land on (the overlay
-        // window is now positioned so the tip covers the dispatch point).
+        // Fix (audit #12): every "where the pointer is" affordance — dwell arc,
+        // ripple, scale pivot — must centre on the visible arrow TIP, because
+        // the tip is the point clicks actually land on (the overlay window is
+        // positioned so the tip covers the dispatch point).
         val tipX = cx - pointerWidth * 0.42f
         val tipY = cy - pointerHeight * 0.50f
         canvas.save()
         canvas.scale(currentScale, currentScale, tipX, tipY)
+        // Fix (user test: "aadha chand"/ring noise): tint the pointer while a
+        // drag is in progress so the drag state is obvious without any ring.
+        fillPaint.color = if (isDragging) dragTint else Color.WHITE
         val path = buildPointerPath(cx, cy)
         canvas.save()
         canvas.translate(1.5f * density, 1.5f * density)
@@ -182,11 +202,13 @@ class CursorDotView(
         canvas.drawPath(path, fillPaint)
         canvas.drawPath(path, outlinePaint)
 
-        if (isArmed) canvas.drawCircle(tipX, tipY, ringSizePx * 0.72f, ringPaint)
+        // Fix (user test): the always-on "armed" ring around the tip was visual
+        // noise (the half-moon) — removed. Armed state is already conveyed by
+        // the status pill; the dwell arc below only appears while a dwell is
+        // actually progressing, and the ripple only on click.
         if (dwellProgress > 0f) {
-            val r = ringSizePx * 0.82f
-            dwellRect.set(tipX - r, tipY - r, tipX + r, tipY + r)
-            canvas.drawArc(dwellRect, -90f, 360f * dwellProgress, false, ringPaint)
+            dwellRect.set(tipX - dwellRadius, tipY - dwellRadius, tipX + dwellRadius, tipY + dwellRadius)
+            canvas.drawArc(dwellRect, -90f, 360f * dwellProgress, false, dwellPaint)
         }
         if (rippleAlpha > 0) {
             ripplePaint.alpha = rippleAlpha

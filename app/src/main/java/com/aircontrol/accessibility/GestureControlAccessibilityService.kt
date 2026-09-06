@@ -879,13 +879,18 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 }
 
                 when (event.phase) {
-                    com.aircontrol.gesture.model.PinchPhase.START ->
+                    com.aircontrol.gesture.model.PinchPhase.START -> {
                         freezeCursorBriefly(CURSOR_FREEZE_MS_PINCH)
-                    com.aircontrol.gesture.model.PinchPhase.MOVE ->
+                        serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDragging(true) }
+                    }
+                    com.aircontrol.gesture.model.PinchPhase.MOVE -> {
                         unfreezeCursor()
+                        serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDragging(true) }
+                    }
                     com.aircontrol.gesture.model.PinchPhase.END -> {
                         (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
                         (cursorController as? com.aircontrol.control.CursorControllerImpl)?.clearPinClick()
+                        serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDragging(false) }
                     }
                 }
             }
