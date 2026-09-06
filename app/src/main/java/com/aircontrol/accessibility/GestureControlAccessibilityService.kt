@@ -140,6 +140,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
     /** Fix (audit #10): last main-thread dwell-ring paint (real ~30fps gate). */
     @Volatile private var lastDwellUiUpdateMs: Long = 0L
 
+    // Fix (audit #5): re-acquisition priming frames (overlay hidden while the
+    // smoother re-converges, so the cursor reappears IN PLACE, not mid-jump).
+    @Volatile private var gazeReacquireFrames: Int = 0
+
+    // Fix (audit #6): last time the smoothed gaze moved meaningfully — the
+    // blink-intent gate reads this (natural blinks happen mid-movement).
+    @Volatile private var lastGazeMoveMs: Long = 0L
+    @Volatile private var prevGazeX: Float = 0.5f
+    @Volatile private var prevGazeY: Float = 0.5f
+
     // Gaze ("eye is mouse") cursor state (Fixes A1/A3/A6/A8).
     /** Latest smoothed gaze cursor position in screen-normalized coordinates. */
     @Volatile private var gazeCursorX: Float = 0.5f
@@ -350,6 +360,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         Timber.i("GestureControlAccessibilityService destroyed")
         CrashGuard.onFatalLoop = null
         publishConnectionState(false)
+        setGazeTracking(false)
         unregisterScreenStateReceiver()
         stopTrackingPipeline()
         removeOverlays()
@@ -616,7 +627,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // on cursorEnabled.
                     if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
                         (!currentPreferences.cursorEnabled && !currentPreferences.blinkClickEnabled)
-                    ) return@gaze
+                    ) {
+                        setGazeTracking(false)
+                        return@gaze
+                    }
                     if (!gaze.isDetected) {
                         // Fix A6: hysteresis. A single borderline frame (face
                         // slightly small, one eye occluded) used to hide the dot
@@ -628,15 +642,22 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         if (gazeMissCount >= GAZE_HIDE_MISS_FRAMES) {
                             gazeMissCount = 0
                             faceStableSinceMs = 0L
+                            setGazeTracking(false)
                             withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                             cursorController?.hide()
                             gazeCursorSmoother.reset()
                             blinkDetector.reset()
+                            // Fix (audit #5): on re-acquisition the cursor must
+                            // REAPPEAR where the face is now — not teleport there.
+                            // Prime the (reset) smoother for a couple of frames
+                            // while the overlay stays hidden, then show in place.
+                            gazeReacquireFrames = GAZE_REACQUIRE_PRIME_FRAMES
                         }
                         return@gaze
                     }
                     gazeMissCount = 0
                     lastFaceDetectedMs = SystemClock.elapsedRealtime()
+                    setGazeTracking(true)
 
                     if (currentPreferences.blinkClickEnabled) {
                         // Fix A7: the blink window must be measured on the
@@ -645,6 +666,18 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // changed system time or NTP synced.
                         val blinkResult = blinkDetector.update(gaze.ear, SystemClock.elapsedRealtime())
                         if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
+                            // Fix (audit #6/#7): a NATURAL blink fires mid-saccade
+                            // all the time — that is how eyes work — and clicking
+                            // then both fires unintentionally AND lands on the
+                            // previous location. An intentional blink happens
+                            // after the user has settled their gaze ON the target:
+                            // require a brief still window before the closure
+                            // counts as a click. Moving-eyes blinks are dropped.
+                            if (SystemClock.elapsedRealtime() - lastGazeMoveMs < BLINK_INTENT_STILLNESS_MS) {
+                                Timber.d("Blink during eye movement ignored (not intentional)")
+                                resetDwellState()
+                                return@gaze
+                            }
                             // Fix A1: click where the eye cursor actually is.
                             // The old code read cursorState, which was never
                             // updated by the gaze path (its synthetic hand frame
@@ -674,12 +707,31 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     gazeCursorX = smoothX
                     gazeCursorY = smoothY
 
-                    withContext(Dispatchers.Main) {
-                        if (currentPreferences.cursorEnabled) {
-                            cursorOverlay?.show()
-                            // Fix A2: direct mapping — gaze coords are screen-space
-                            // and must not pass through the hand dead-zone mapping.
-                            cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
+                    // Fix (audit #6): track when the gaze was last seen MOVING —
+                    // the blink-click intent gate above reads this.
+                    val gazeMoveDist = kotlin.math.sqrt(
+                        (smoothX - prevGazeX) * (smoothX - prevGazeX) +
+                            (smoothY - prevGazeY) * (smoothY - prevGazeY),
+                    )
+                    if (gazeMoveDist > GAZE_MOVE_EPSILON) {
+                        lastGazeMoveMs = SystemClock.elapsedRealtime()
+                    }
+                    prevGazeX = smoothX
+                    prevGazeY = smoothY
+
+                    // Fix (audit #5): first frames after re-acquisition update the
+                    // position quietly (overlay hidden) — the cursor then appears
+                    // already at the face, no visible teleport.
+                    if (gazeReacquireFrames > 0) {
+                        gazeReacquireFrames--
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            if (currentPreferences.cursorEnabled) {
+                                cursorOverlay?.show()
+                                // Fix A2: direct mapping — gaze coords are screen-space
+                                // and must not pass through the hand dead-zone mapping.
+                                cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
+                            }
                         }
                     }
                     // Fix A1: keep the shared cursor state truthful for this path.
@@ -1228,6 +1280,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private val _isConnected = MutableStateFlow(false)
         val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+        // Fix (audit #23): "Enabled" vs "Ready". The Home screen can now show
+        // whether the gaze pipeline is actually seeing a face right now,
+        // instead of the user guessing from a still cursor.
+        private val _gazeTracking = MutableStateFlow(false)
+        val gazeTracking: StateFlow<Boolean> = _gazeTracking.asStateFlow()
+
+        fun setGazeTracking(detected: Boolean) {
+            if (_gazeTracking.value != detected) _gazeTracking.value = detected
+        }
+
         private fun publishConnectionState(connected: Boolean) {
             _isConnected.value = connected
         }
@@ -1271,13 +1333,18 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Fix A6: consecutive missed gaze frames tolerated before the dot hides.
         private const val GAZE_HIDE_MISS_FRAMES = 4
 
+        // Fix (audit #5/#6): re-acquisition priming + blink-intent stillness window.
+        private const val GAZE_REACQUIRE_PRIME_FRAMES = 2
+        private const val BLINK_INTENT_STILLNESS_MS = 200L
+        private const val GAZE_MOVE_EPSILON = 0.008f
+
         // Fix A8: the face must be continuously visible this long before gaze
         // dwell can accumulate (post-(re)acquisition settling grace).
         private const val GAZE_DWELL_STABLE_MS = 500L
         // Fix A8 (full): gaze dwell requires an arrival of at least this much
         // travel (normalized) — reading saccades (0.01–0.04) never qualify, a
         // deliberate look at a target does (≥0.05).
-        private const val GAZE_DELIBERATE_SACCADE_MIN = 0.025f
+        private const val GAZE_DELIBERATE_SACCADE_MIN = 0.02f
 
         // Fix A8 (full): after a dwell click, the cursor must move this far from
         // the click point before another dwell can fire.

@@ -400,6 +400,29 @@ fun SettingsScreen(
                 )
             }
 
+            // Fix (audit #21/#22): hybrid input ownership in plain words — which
+            // modality moves the cursor and which one clicks.
+            if (preferences.eyeTrackingEnabled && preferences.gesturesEnabled) {
+                Spacer(modifier = Modifier.height(Dimens.spacing8))
+                Text(
+                    text = stringResource(R.string.settings_gaze_hybrid_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // Fix (audit #12): a saved calibration can silently go stale when
+            // position/lighting/glasses change — tell the user recalibrating is
+            // the fix instead of leaving them with "tracking got worse".
+            if (preferences.personalizedGazeCalibration.isNotBlank()) {
+                Spacer(modifier = Modifier.height(Dimens.spacing4))
+                Text(
+                    text = stringResource(R.string.settings_gaze_recalibrate_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(

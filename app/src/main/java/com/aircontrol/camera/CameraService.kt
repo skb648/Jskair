@@ -172,6 +172,10 @@ class CameraService : LifecycleService() {
     /** Watchdog bookkeeping for a missing/uninitialized hand tracker (Fix A-1b). */
     private var deadTrackerTicks: Int = 0
     private var nextTrackerRetryTick: Int = TRACKER_RETRY_TICKS
+
+    // Fix (audit #3): independent counters for the eye-only rebuild loop.
+    private var eyeDeadTicks: Int = 0
+    private var nextEyeRetryTick: Int = TRACKER_RETRY_TICKS
     private val pipelineJobs = mutableListOf<Job>()
     private val jobsLock = Any()
 
@@ -734,6 +738,28 @@ class CameraService : LifecycleService() {
                     }
                     continue
                 }
+                // Fix (audit #3): eye-only death must not be invisible. The check
+                // above restarts the CAMERA only when BOTH modalities are dead —
+                // a live hand tracker with a dead face tracker used to leave
+                // "Eye Tracking: ON" over a silent black box (hand cursor fine,
+                // eye cursor frozen, no error anywhere). Rebuild the face tracker
+                // on its own backoff; the camera and hand pipeline are untouched.
+                if (eyeTrackingEnabled && !faceTracker.isInitialized()) {
+                    eyeDeadTicks++
+                    if (eyeDeadTicks >= nextEyeRetryTick) {
+                        nextEyeRetryTick = eyeDeadTicks + TRACKER_RETRY_TICKS
+                        Timber.w("Face tracker dead while eye tracking enabled (tick %d) — rebuilding it", eyeDeadTicks)
+                        serviceScope.launch {
+                            withContext(Dispatchers.Default) {
+                                runCatching { faceTracker.close() }
+                                runCatching { faceTracker.initialize() }
+                            }
+                        }
+                    }
+                } else {
+                    eyeDeadTicks = 0
+                    nextEyeRetryTick = TRACKER_RETRY_TICKS
+                }
                 if (deadTrackerTicks != 0) {
                     Timber.i("Hand tracker recovered after %d watchdog tick(s)", deadTrackerTicks)
                     deadTrackerTicks = 0
@@ -830,6 +856,9 @@ class CameraService : LifecycleService() {
                     thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
                     postRecoveryFps = 0
                     adaptiveFpsController.updateConfiguredFps(configuredFps)
+                    // Fix (audit #14): restore the normal notification text once
+                    // thermal pressure is gone.
+                    updateNotification(isPaused = false)
                 }
             }
             com.aircontrol.tracking.ThermalStatus.LIGHT -> {
@@ -845,6 +874,10 @@ class CameraService : LifecycleService() {
                 } else if (postRecoveryFps <= 0 && !isSevereThrottled()) {
                     val throttledFps = (configuredFps * 2 / 3).coerceIn(8, 20)
                     adaptiveFpsController.updateConfiguredFps(throttledFps)
+                    // Fix (audit #14): the user must be TOLD why the cursor
+                    // suddenly feels slower, or thermal throttling reads as
+                    // "tracking quality is random".
+                    updateNotification(isPaused = false, isThermal = true)
                 }
             }
             com.aircontrol.tracking.ThermalStatus.MODERATE -> {

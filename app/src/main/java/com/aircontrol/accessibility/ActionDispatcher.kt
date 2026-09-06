@@ -131,6 +131,9 @@ class ActionDispatcher @Inject constructor(
         private const val DRAG_START_SLOP_FRACTION = 0.025f
         private const val MIN_DRAG_START_SLOP_PX = 12f
 
+        /** Fix (audit #20/#21): cross-source tap ownership guard window. */
+        private const val CROSS_SOURCE_TAP_GUARD_MS = 350L
+
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"
         const val KEY_SWIPE_UP = "swipe_up"
@@ -480,10 +483,34 @@ class ActionDispatcher @Inject constructor(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN else AccessibilityService.GLOBAL_ACTION_HOME,
                 GestureAction.LOCK_SCREEN
             )
-            GestureAction.TAP -> dispatchTap(service, targetPixelX, targetPixelY)
-            GestureAction.DOUBLE_TAP -> dispatchDoubleTap(service, targetPixelX, targetPixelY)
+            GestureAction.TAP -> if (acquireTapOwnership(fromGaze = false)) dispatchTap(service, targetPixelX, targetPixelY) else true
+            GestureAction.DOUBLE_TAP -> if (acquireTapOwnership(fromGaze = false)) dispatchDoubleTap(service, targetPixelX, targetPixelY) else true
             GestureAction.LONG_PRESS -> dispatchLongPress(service, targetPixelX, targetPixelY)
             GestureAction.DRAG -> dispatchDrag(service, targetPixelX, targetPixelY, screenWidth, screenHeight)
+        }
+    }
+
+    /**
+     * Fix (audit #20/#21): input ownership for taps. With eye + hand + blink +
+     * dwell all enabled, the same physical instant can produce TWO taps (a blink
+     * click while the hand pinches, a dwell while a blink lands). The first
+     * modality to arrive within the guard window owns the click; the other
+     * source's tap is swallowed. Deterministic priority: whoever acted first.
+     */
+    @Volatile private var lastHandTapMs: Long = 0L
+    @Volatile private var lastGazeTapMs: Long = 0L
+
+    /** True if this source may fire a tap right now (and marks it as fired). */
+    private fun acquireTapOwnership(fromGaze: Boolean): Boolean {
+        val now = nowMonotonicMs()
+        return if (fromGaze) {
+            if (now - lastHandTapMs < CROSS_SOURCE_TAP_GUARD_MS) return false
+            lastGazeTapMs = now
+            true
+        } else {
+            if (now - lastGazeTapMs < CROSS_SOURCE_TAP_GUARD_MS) return false
+            lastHandTapMs = now
+            true
         }
     }
 
@@ -496,6 +523,7 @@ class ActionDispatcher @Inject constructor(
         if (!currentPreferences.blinkClickEnabled) return false
         val service = accessibilityServiceRef.get() ?: return false
         if (!actionAllowed(GestureAction.TAP)) return false
+        if (!acquireTapOwnership(fromGaze = true)) return true
         val pxX = normalizeDirect(normX, screenWidth)
         val pxY = normalizeDirect(normY, screenHeight)
         return dispatchTap(service, pxX, pxY)
@@ -511,6 +539,7 @@ class ActionDispatcher @Inject constructor(
     ): Boolean {
         val service = accessibilityServiceRef.get() ?: return false
         if (!actionAllowed(GestureAction.TAP)) return false
+        if (!acquireTapOwnership(fromGaze = fromGaze)) return true
         // Fix D6: coordinates are always screen-normalized — no pixel/normalized
         // range guessing.
         val pxX = if (fromGaze) normalizeDirect(normX, screenWidth) else normalizeToScreenX(normX, screenWidth)
@@ -678,6 +707,11 @@ class ActionDispatcher @Inject constructor(
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
                     Timber.w("Gesture cancelled: %s", action)
+                    // Fix (audit #16): a cancelled Android stroke while the user
+                    // is STILL pinching is recovered on the next move —
+                    // resetDragState() clears isDragging, and dispatchDrag's
+                    // !isDragging branch starts a fresh stroke at the current
+                    // position, so the drag resumes instead of silently dying.
                     if (action == GestureAction.DRAG) resetDragState()
                 }
             }, null)

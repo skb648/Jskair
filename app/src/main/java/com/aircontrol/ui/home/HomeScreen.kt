@@ -92,6 +92,7 @@ fun HomeScreen(
     val serviceState by viewModel.serviceState.collectAsStateWithLifecycle()
     val sessionStats by viewModel.sessionStats.collectAsStateWithLifecycle()
     val handDetected by viewModel.handDetected.collectAsStateWithLifecycle()
+    val gazeTracking by viewModel.gazeTracking.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
 
@@ -265,6 +266,20 @@ fun HomeScreen(
                             ServiceState.OFF -> stringResource(R.string.home_power_off_cd)
                         },
                     )
+
+                    // Fix (audit #23): Enabled vs Ready — say whether the gaze
+                    // pipeline actually sees a face, so "ON but cursor still"
+                    // is self-explanatory instead of looking broken.
+                    if (preferences.eyeTrackingEnabled && preferences.gesturesEnabled) {
+                        Text(
+                            text = stringResource(
+                                if (gazeTracking) R.string.home_gaze_ready else R.string.home_gaze_waiting,
+                            ),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.height(Dimens.spacing8))
+                    }
 
                     Spacer(modifier = Modifier.height(Dimens.spacing16))
 

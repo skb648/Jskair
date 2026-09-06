@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aircontrol.accessibility.ActionDispatcher
+import com.aircontrol.accessibility.GestureControlAccessibilityService
 import com.aircontrol.camera.CameraService
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
@@ -54,6 +55,22 @@ class HomeViewModel @Inject constructor(
         )
 
     val permissionStates: StateFlow<PermissionStates> = permissionsManager.permissionStates
+
+    /**
+     * Fix (audit #23): "Enabled" vs "Ready". True only when eye tracking is
+     * enabled AND the gaze pipeline is actually detecting a face right now —
+     * the Home screen shows this so a still cursor is diagnosable at a glance.
+     */
+    val gazeTracking: StateFlow<Boolean> = combine(
+        settingsRepository.userPreferences,
+        GestureControlAccessibilityService.gazeTracking,
+    ) { prefs, tracking ->
+        prefs.gesturesEnabled && prefs.eyeTrackingEnabled && tracking
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = false,
+    )
 
     val serviceState: StateFlow<ServiceState> = combine(
         settingsRepository.userPreferences,

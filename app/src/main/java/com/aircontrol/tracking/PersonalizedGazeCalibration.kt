@@ -234,8 +234,24 @@ object TargetBalancedValidationSplit {
             val ordered = group.sortedWith(compareBy({ it.timestampMs }, { it.features.values.contentHashCode() }))
             if (ordered.size < 2) train += ordered else {
                 val validationCount = min(ordered.size - 1, max(1, ceil(ordered.size * validationFraction).toInt()))
-                validation += ordered.takeLast(validationCount)
-                train += ordered.dropLast(validationCount)
+                // Fix (audit #1): validation used to be the contiguous TAIL of
+                // each target's fixation — the last ~20% of "user stares at the
+                // same dot" — which is nearly the same eye/head/lighting state as
+                // the training head. Metrics then measured "can the model
+                // reproduce the end of this fixation", not "can it predict a new
+                // one". Interleave instead: take every Nth sample so validation
+                // points are spread across the whole fixation window.
+                val step = (ordered.size / validationCount).coerceAtLeast(1)
+                val picked = ordered.filterIndexed { i, _ -> (i + 1) % step == 0 }
+                if (picked.size == validationCount) {
+                    validation += picked
+                    train += ordered.filterIndexed { i, _ -> (i + 1) % step != 0 }
+                } else {
+                    // Safety net for odd sizes: keep the old tail behaviour
+                    // rather than emitting a wrong split shape.
+                    validation += ordered.takeLast(validationCount)
+                    train += ordered.dropLast(validationCount)
+                }
             }
         }
         return CalibrationDatasetSplit(train, validation)
@@ -308,6 +324,9 @@ data class PersonalizedGazeCalibrationModel(
             if (modelType == LINEAR_MODEL_TYPE) LinearPolynomialFeatures.size(inputDimension)
             else QuadraticPolynomialFeatures.size(inputDimension)
 
+        /** Fix (audit #10/#11): exposed for the fitter's per-target quality gate. */
+        fun dotPublic(a: DoubleArray, b: DoubleArray): Double = dot(a, b)
+
         fun expandBasis(modelType: String, input: DoubleArray): DoubleArray =
             if (modelType == LINEAR_MODEL_TYPE) LinearPolynomialFeatures.expand(input)
             else QuadraticPolynomialFeatures.expand(input)
@@ -365,6 +384,35 @@ object PersonalizedGazeCalibrationFitter {
         val trainingMetrics = metrics(split.training, modelType, standardization, betaX, betaY, screenWidthPx, screenHeightPx, false)
         val validationMetrics = metrics(split.validation, modelType, standardization, betaX, betaY, screenWidthPx, screenHeightPx, true)
         require(validationMetrics.validationSampleCount > 0) { "validation metrics unavailable" }
+
+        // Fix (audit #10/#11): one global error number can hide a broken screen
+        // region — "average is great, but the top-right is unusable" is exactly
+        // the calibration users call inaccurate. Gate on the WORST target's mean
+        // error across all retained samples; a bad corner fails the fit instead
+        // of shipping a model that cannot hit that corner.
+        val samplesByTarget = samples.groupBy { it.target }
+        var worstTarget: CalibrationTarget? = null
+        var worstTargetError = 0.0
+        for ((target, targetSamples) in samplesByTarget) {
+            var sum = 0.0
+            for (sample in targetSamples) {
+                val basis = PersonalizedGazeCalibrationModel.expandBasis(modelType, standardization.transform(sample.features.values))
+                val dx = PersonalizedGazeCalibrationModel.dotPublic(betaX, basis) - sample.targetX
+                val dy = PersonalizedGazeCalibrationModel.dotPublic(betaY, basis) - sample.targetY
+                sum += sqrt(dx * dx + dy * dy)
+            }
+            val meanErr = sum / targetSamples.size
+            if (meanErr > worstTargetError) {
+                worstTargetError = meanErr
+                worstTarget = target
+            }
+        }
+        if (worstTargetError > WORST_TARGET_MAX_NORMALIZED_ERROR) {
+            throw CalibrationFitException(
+                "screen region '${worstTarget}' error too high (${"%.3f".format(worstTargetError)}) — recalibrate",
+            )
+        }
+
         CalibrationFitResult(
             PersonalizedGazeCalibrationModel(
                 modelVersion = PersonalizedGazeCalibrationModel.MODEL_VERSION,
@@ -502,4 +550,8 @@ object PersonalizedGazeCalibrationFitter {
     // Fix (audit #1): the quadratic basis over 23 features has 300 coefficients;
     // require >1.3 training observations per parameter before using it.
     private const val QUADRATIC_MIN_TRAINING_SAMPLES = 400
+
+    // Fix (audit #10/#11): the worst single screen region (target) may not
+    // exceed this mean normalized error, no matter how good the average is.
+    private const val WORST_TARGET_MAX_NORMALIZED_ERROR = 0.10
 }

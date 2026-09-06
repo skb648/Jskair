@@ -256,6 +256,12 @@
     <string name="home_warning_notifications_title_v2">Notifications (optional)</string>
     <string name="home_accessibility_connecting_title">Accessibility service connecting…</string>
     <string name="home_accessibility_connecting_message">AirControl is enabled in Android Settings and its service is connecting — this usually takes a few seconds. No action needed.</string>
+    <!-- Fix (audit #23): Enabled vs Ready for the gaze pipeline. -->
+    <string name="home_gaze_ready">👁 Face detected — eye tracking live</string>
+    <string name="home_gaze_waiting">👁 Looking for your face…</string>
+    <!-- Fix (audit #21/#22/#12): input ownership + calibration staleness hints. -->
+    <string name="settings_gaze_hybrid_note">Hybrid mode: your eyes move the cursor, and any enabled click (pinch, dwell or blink) performs the tap.</string>
+    <string name="settings_gaze_recalibrate_hint">If gaze accuracy drops after changing your position, lighting or glasses, run the calibration again.</string>
     <string name="settings_dwell_to_click">Dwell-to-click</string>
     <string name="settings_dwell_to_click_subtitle">Hold the cursor still to auto-click</string>
     <string name="settings_dwell_duration">Dwell Duration</string>
