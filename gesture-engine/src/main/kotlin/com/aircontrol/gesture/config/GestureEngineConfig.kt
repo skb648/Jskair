@@ -97,7 +97,7 @@ data class GestureEngineConfig(
     // double-fires while feeling immediate.
     val swipeWindowMs: Long = 350L,
     val swipeDisplacementRatio: Float = 0.08f,
-    val swipeVelocityThreshold: Float = 1.45f,
+    val swipeVelocityThreshold: Float = 1.2f,
     val swipeAxisDominanceRatio: Float = 2.0f,
     val swipeRequiresOpenHand: Boolean = true,
     val armingDurationMs: Long = 100L,
