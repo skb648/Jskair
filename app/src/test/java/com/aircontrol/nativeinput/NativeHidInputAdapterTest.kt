@@ -31,13 +31,13 @@ class NativeHidInputAdapterTest {
         val adapter = NativeHidInputAdapter(input)
 
         // Prime on the first frame — nothing sent yet.
-        adapter.onHandFrame(syntheticHandFrame(0.40f, 0.50f, timestampMs = 1_000L))
+        adapter.onHandFrame(syntheticHandFrame(0.5f, 0.5f, timestampMs = 1_000L))
         assertEquals(0, input.sent)
 
-        // 0.05 normalized right = 0.05 * 1600 = 80 counts.
-        adapter.onHandFrame(syntheticHandFrame(0.45f, 0.50f, timestampMs = 1_050L))
+        // 1/16 right (exact in float) = 0.0625 * 1600 = 100 counts.
+        adapter.onHandFrame(syntheticHandFrame(0.5625f, 0.5f, timestampMs = 1_050L))
         assertEquals(1, input.sent)
-        assertEquals(80, input.lastDx)
+        assertEquals(100, input.lastDx)
         assertEquals(0, input.lastDy)
     }
 
@@ -54,16 +54,20 @@ class NativeHidInputAdapterTest {
     fun `fractional counts floor and keep the remainder`() {
         val input = RecordingInput()
         val adapter = NativeHidInputAdapter(input)
-        adapter.onHandFrame(syntheticHandFrame(0.40f, 0.50f, timestampMs = 1_000L))
-        // 0.0015 normalized (just above the dead zone) × 1600 = 2.4 counts:
-        // the report carries whole counts (2), and the 0.4 remainder rides on.
-        adapter.onHandFrame(syntheticHandFrame(0.4015f, 0.50f, timestampMs = 1_050L))
-        assertEquals(1, input.sent)
-        assertEquals(2, input.lastDx)
-        // 0.4 remainder + 2.4 new = 2.8 → floors to 2 again, not 3.
-        adapter.onHandFrame(syntheticHandFrame(0.403f, 0.50f, timestampMs = 1_100L))
-        assertEquals(2, input.sent)
-        assertEquals(2, input.lastDx)
+        adapter.onHandFrame(syntheticHandFrame(0.5f, 0.5f, timestampMs = 1_000L))
+        // 1/256 (exact in float) above the dead zone × 1600 = 6.25 counts:
+        // the report carries whole counts (6) and the 0.25 remainder rides on.
+        var x = 0.5f
+        repeat(3) { i ->
+            x += 0.00390625f
+            adapter.onHandFrame(syntheticHandFrame(x, 0.5f, timestampMs = 1_050L + i * 50L))
+        }
+        assertEquals(3, input.sent)
+        assertEquals(6, input.lastDx) // each of the first 3 steps floors to 6 (residual grows 0.25 → 0.5 → 0.75)
+        // Fourth step: 0.75 carried + 6.25 new = 7.0 → the carry finally tips a whole count.
+        x += 0.00390625f
+        adapter.onHandFrame(syntheticHandFrame(x, 0.5f, timestampMs = 1_200L))
+        assertEquals(7, input.lastDx)
     }
 
     @Test
