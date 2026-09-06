@@ -266,6 +266,7 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
 
         var bestTemplate: LandmarkTemplate? = null
         var bestError = Float.MAX_VALUE
+        var secondError = Float.MAX_VALUE
 
         for (template in customTemplates) {
             if (template.normalizedDistances.size != LandmarkTemplate.EXPECTED_DISTANCE_COUNT) continue
@@ -274,12 +275,27 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
                 totalError += kotlin.math.abs(liveDistances[i] - template.normalizedDistances[i])
             }
             if (totalError < bestError) {
+                secondError = bestError
                 bestError = totalError
                 bestTemplate = template
+            } else if (totalError < secondError) {
+                secondError = totalError
             }
         }
 
-        return if (bestTemplate != null && bestError < LandmarkTemplate.MATCH_TOLERANCE) bestTemplate else null
+        // Fix (audit #34): inter-landmark distances alone cannot always separate
+        // two user-recorded shapes that "fold" differently but measure alike —
+        // the wrong custom action fired. When two templates both match almost
+        // equally well the frame is AMBIGUOUS, and firing no action is strictly
+        // better than firing the wrong one. Only applied when there is a real
+        // runner-up to confuse it with.
+        if (bestTemplate != null && bestError < LandmarkTemplate.MATCH_TOLERANCE) {
+            val ambiguous = customTemplates.size > 1 &&
+                secondError < bestError * LandmarkTemplate.AMBIGUITY_RATIO
+            if (ambiguous) return null
+            return bestTemplate
+        }
+        return null
     }
 
     internal fun distance2D(a: Landmark3D, b: Landmark3D): Float {

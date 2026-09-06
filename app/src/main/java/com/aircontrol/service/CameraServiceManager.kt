@@ -82,11 +82,14 @@ class CameraServiceManager @Inject constructor(
 
     /**
      * Pauses camera tracking (keeps service alive but stops processing).
+     *
+     * Fix (audit #21): [systemInitiated] marks screen-off pauses, which the
+     * watchdog may auto-revive; a user pause (default) is sticky.
      */
-    fun pauseTracking() {
+    fun pauseTracking(systemInitiated: Boolean = false) {
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
-                action = CameraService.ACTION_PAUSE
+                action = if (systemInitiated) CameraService.ACTION_SYSTEM_PAUSE else CameraService.ACTION_PAUSE
             }
             appContext.startService(intent)
             Timber.i("Camera tracking pause requested")

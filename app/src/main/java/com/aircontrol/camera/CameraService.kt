@@ -87,6 +87,10 @@ class CameraService : LifecycleService() {
         const val ACTION_START = "com.aircontrol.action.START_TRACKING"
         const val ACTION_STOP = "com.aircontrol.action.STOP_TRACKING"
         const val ACTION_PAUSE = "com.aircontrol.action.PAUSE_TRACKING"
+        // Fix (audit #21): the screen-off pause must be distinguishable from the
+        // notification's Pause button. A user pause is sticky (the watchdog may
+        // never revive it); a system pause may be auto-recovered on wake.
+        const val ACTION_SYSTEM_PAUSE = "com.aircontrol.action.SYSTEM_PAUSE_TRACKING"
         const val ACTION_RESUME = "com.aircontrol.action.RESUME_TRACKING"
 
         const val COMMAND_START = 1
@@ -113,6 +117,11 @@ class CameraService : LifecycleService() {
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
         private val _isPaused = MutableStateFlow(false)
         val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
+        // Fix (audit #21): lets the accessibility service check "did the USER
+        // pause this?" before auto-resuming after an unlock.
+        private val _userPaused = MutableStateFlow(false)
+        val isUserPaused: StateFlow<Boolean> = _userPaused.asStateFlow()
 
         private fun publishState(state: ServiceState) {
             _state.value = state
@@ -150,6 +159,8 @@ class CameraService : LifecycleService() {
     @Volatile private var cameraBound = false
 
     @Volatile private var userPaused = false
+    // Fix (audit #21): pause raised by the system (screen off), revivable.
+    @Volatile private var systemPaused = false
     @Volatile private var thermalPaused = false
     @Volatile private var lastFrameTimestampMs: Long = 0L
     @Volatile private var lastProcessedFrameMs: Long = 0L
@@ -231,7 +242,8 @@ class CameraService : LifecycleService() {
                         return@launch
                     }
                     ACTION_STOP -> { stopTrackingLocked(); return@launch }
-                    ACTION_PAUSE -> pauseTrackingLocked()
+                    ACTION_PAUSE -> pauseTrackingLocked(userInitiated = true)
+                    ACTION_SYSTEM_PAUSE -> pauseTrackingLocked(userInitiated = false)
                     ACTION_RESUME -> resumeTrackingLocked()
                     ACTION_START -> startTrackingLocked()
                     else -> {
@@ -389,6 +401,8 @@ class CameraService : LifecycleService() {
             // CameraX bind succeeded; now report the session as live.
             publishState(ServiceState(isRunning = true, isPaused = false))
             userPaused = false
+            systemPaused = false
+            _userPaused.value = false
             thermalPaused = false
             lastProcessedFrameMs = SystemClock.elapsedRealtime()
             Timber.i("Camera started")
@@ -469,6 +483,8 @@ class CameraService : LifecycleService() {
         adaptiveFpsController.reset()
         publishState(ServiceState(isRunning = false, isPaused = false))
         userPaused = false
+        systemPaused = false
+        _userPaused.value = false
         thermalPaused = false
         postRecoveryFps = 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -477,9 +493,10 @@ class CameraService : LifecycleService() {
         Timber.i("Tracking stopped")
     }
 
-    private suspend fun pauseTrackingLocked() {
+    private suspend fun pauseTrackingLocked(userInitiated: Boolean = true) {
         if (!_state.value.isRunning) return
-        userPaused = true
+        if (userInitiated) userPaused = true else systemPaused = true
+        _userPaused.value = userInitiated
         publishState(_state.value.copy(isPaused = true))
         withContext(Dispatchers.Main.immediate) {
             imageAnalysis?.clearAnalyzer()
@@ -492,12 +509,14 @@ class CameraService : LifecycleService() {
             cameraBound = false
         }
         updateNotification(isPaused = true)
-        Timber.i("Tracking paused by user")
+        Timber.i(if (userInitiated) "Tracking paused by user (sticky)" else "Tracking paused by system (screen off)")
     }
 
     private suspend fun resumeTrackingLocked() {
         if (!_state.value.isRunning) { startTrackingLocked(); return }
         userPaused = false
+        systemPaused = false
+        _userPaused.value = false
         if (thermalPaused) {
             Timber.i("Resume requested but thermal pause active; waiting for recovery")
             return
@@ -676,14 +695,19 @@ class CameraService : LifecycleService() {
                 delay(WATCHDOG_PERIOD_MS)
                 val s = _state.value
                 if (!s.isRunning || thermalPaused) continue
-                if (s.isPaused || userPaused) {
-                    // A pause releases the camera and normally ends via ACTION_RESUME from the
-                    // screen-on receiver. If that broadcast is ever missed - doze, an OEM that
-                    // reorders or swallows them - the session would sit paused with no camera
-                    // forever: gestures dead and nothing left to restart it. Recover it here,
-                    // but only when the device is plainly awake, so this cannot fight a
-                    // legitimate pause (thermal, "Resume" on the notification, keyguard).
-                    if (userPaused && !cameraBound) revivePausedSessionIfNeeded()
+                if (s.isPaused || userPaused || systemPaused) {
+                    // A pause releases the camera and normally ends via ACTION_RESUME
+                    // (notification button, or the screen-on receiver for system pauses).
+                    // If that broadcast is ever missed - doze, an OEM that reorders or
+                    // swallows them - the session would sit paused with no camera
+                    // forever: gestures dead and nothing left to restart it.
+                    //
+                    // Fix (audit #21): a USER pause is STICKY — the watchdog must
+                    // never revive it. "I pressed Pause" has to mean "stay paused",
+                    // or the camera coming back on by itself destroys trust. Only a
+                    // system pause (screen off with a missed wake broadcast) may be
+                    // recovered here, and only while plainly awake.
+                    if (systemPaused && !userPaused && !cameraBound) revivePausedSessionIfNeeded()
                     continue
                 }
 
@@ -696,7 +720,9 @@ class CameraService : LifecycleService() {
                 // nothing works", forever. The watchdog now notices the missing
                 // tracker and rebuilds the pipeline, with a widening backoff so a hard
                 // failure cannot spin the CPU.
-                if (!handTracker.isInitialized()) {
+                if (!handTracker.isInitialized() &&
+                    !(eyeTrackingEnabled && faceTracker.isInitialized())
+                ) {
                     deadTrackerTicks++
                     if (deadTrackerTicks >= nextTrackerRetryTick) {
                         nextTrackerRetryTick = deadTrackerTicks + TRACKER_RETRY_TICKS
@@ -748,6 +774,22 @@ class CameraService : LifecycleService() {
             // Fix: a restart that failed silently used to leave a "running" session with no
             // analyzer attached - exactly the frozen-cursor state it was meant to clear. The
             // shared binder is used so a restart cannot drift from a cold start.
+            //
+            // Fix (audit #22): NEVER bind the camera when no tracker survived the
+            // re-init. Binding anyway produced the zombie state — camera service
+            // "running", privacy indicator on, but no pipeline to feed — which
+            // users read as "everything says ON but nothing works". Skip the bind
+            // and let the watchdog retry with its widening backoff instead.
+            val handReady = handTracker.isInitialized()
+            val eyeReady = !eyeTrackingEnabled || faceTracker.isInitialized()
+            if (!handReady && !eyeReady) {
+                Timber.e(
+                    "Camera restart skipped — no working tracker (hand=%b, eye=%b); watchdog will retry",
+                    handReady,
+                    eyeReady,
+                )
+                return@launch
+            }
             if (bindAnalysisUseCase()) Timber.i("Camera restarted")
             else Timber.e("Camera restart failed; the watchdog keeps trying")
         }

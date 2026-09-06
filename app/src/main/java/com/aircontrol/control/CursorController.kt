@@ -73,8 +73,17 @@ class CursorControllerImpl @Inject constructor() : CursorController {
         val palmX = (mcpX * 0.70f + wrist.x * 0.30f).coerceIn(0f, 1f)
         val palmY = (mcpY * 0.70f + wrist.y * 0.30f).coerceIn(0f, 1f)
 
+        // Fix (audit #15): humans point with their fingertip, so a pure palm
+        // anchor reads as "the cursor is a little behind my finger". Blend 20%
+        // of the (static, pointing-hand) index tip into the palm anchor: the
+        // cursor drifts toward the fingertip the user is thinking with, while
+        // the palm keeps 80% of its stability during pinch/swipe articulation.
+        val indexTip = lm[8]
+        val anchorX = (palmX * (1f - INDEX_TIP_BLEND) + indexTip.x * INDEX_TIP_BLEND).coerceIn(0f, 1f)
+        val anchorY = (palmY * (1f - INDEX_TIP_BLEND) + indexTip.y * INDEX_TIP_BLEND).coerceIn(0f, 1f)
+
         _cursorState.update {
-            it.copy(x = palmX, y = palmY, isVisible = true)
+            it.copy(x = anchorX, y = anchorY, isVisible = true)
         }
     }
 
@@ -124,5 +133,10 @@ class CursorControllerImpl @Inject constructor() : CursorController {
     fun clearPinClick() {
         pinnedX = null
         pinnedY = null
+    }
+
+    companion object {
+        /** Fix (audit #15): fingertip blend weight — see updatePosition(HandFrame). */
+        private const val INDEX_TIP_BLEND = 0.20f
     }
 }

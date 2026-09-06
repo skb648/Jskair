@@ -120,6 +120,11 @@ class AdaptiveFpsController(
 
     companion object {
         private const val DEFAULT_FPS = 24
-        private const val SCAN_FPS = 5
+
+        // Fix (audit #18): 5 FPS idle scan made hand RE-acquisition feel laggy
+        // (up to 200ms before the hand is even seen). 10 FPS halves that worst
+        // case for a modest idle-cost increase — reacquisition now feels
+        // immediate while still saving most of the full-speed battery.
+        private const val SCAN_FPS = 10
     }
 }

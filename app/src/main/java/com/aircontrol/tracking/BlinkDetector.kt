@@ -11,16 +11,28 @@ package com.aircontrol.tracking
  */
 class BlinkDetector(
     private val earThreshold: Float = 0.22f, // Chashma users EAR 0.18, 0.22 still triggers (was 0.20 too low for glasses reflection)
-    minBlinkMs: Long = 300L,
-    maxBlinkMs: Long = 800L,
+    minBlinkMs: Long = 250L,
+    maxBlinkMs: Long = 750L,
 ) {
     // Fix A10: the blink window is user-tunable ("Blink duration" slider in
-    // Settings). The 300–800ms window demanded an unnaturally slow, deliberate
+    // Settings). The old 300–800ms window demanded an unnaturally slow, deliberate
     // blink; now the minimum is adjustable (150–500ms) and the maximum follows
     // at min + 500ms, so a user can pick a natural-feeling blink while still
     // keeping natural (100–250ms) blinks excluded at the default.
+    // Fix (audit #7): default lowered 300 → 250ms — "slightly slower than
+    // natural" instead of "unnaturally slow", so first-time users are not left
+    // wondering why nothing clicks.
     private var minBlinkMs: Long = minBlinkMs
     private var maxBlinkMs: Long = maxBlinkMs
+
+    /**
+     * Fix (audit #8): Schmitt-trigger hysteresis. A single threshold lets frame
+     * noise right at the boundary flip open/closed/open, which counted phantom
+     * blinks or split one blink into several. Once closed, the eyes must open
+     * meaningfully wider (18% above the close threshold) before the blink can
+     * complete.
+     */
+    private val openEarThreshold: Float = earThreshold * 1.18f
 
     /** Updates the blink duration window (clamped to a sane band). */
     fun updateConfig(minBlinkMs: Long, maxBlinkMs: Long) {
@@ -41,7 +53,9 @@ class BlinkDetector(
      *  - [BlinkResult.NONE] otherwise (still open / still closed).
      */
     fun update(ear: Float, timestampMs: Long): BlinkResult {
-        val closed = ear < earThreshold
+        // Hysteresis (audit #8): enter "closed" below earThreshold, but only
+        // leave it once EAR recovers above openEarThreshold.
+        val closed = if (wasClosed) ear < openEarThreshold else ear < earThreshold
 
         if (closed && !wasClosed) {
             closedStartMs = timestampMs

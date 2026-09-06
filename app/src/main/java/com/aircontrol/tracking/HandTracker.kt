@@ -37,7 +37,9 @@ class HandTrackerImpl @Inject constructor(
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
-        extraBufferCapacity = 32,
+        // Fix (audit #16): deeper buffer — a stalled collector must not eat the
+        // frame that completed a pinch or swipe.
+        extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()

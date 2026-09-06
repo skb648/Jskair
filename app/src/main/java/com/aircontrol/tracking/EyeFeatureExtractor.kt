@@ -190,7 +190,13 @@ object EyeFeatureExtractor {
         val geometryConsistency = 1f - abs(vertical1 - vertical2) / max(vertical1 + vertical2, EPSILON)
         val irisConsistency = 1f - ((irisRadii.maxOrNull() ?: 0f) - (irisRadii.minOrNull() ?: 0f)) /
             max(irisRadii.average().toFloat(), EPSILON)
-        val quality = ((geometryConsistency + irisConsistency) * 0.5f).coerceIn(0f, 1f)
+        // Fix (audit #31): geometry consistency alone calls a far-away, tiny face
+        // "high quality" even though the iris is a handful of pixels. Derate
+        // quality when the eye is small in frame (< 6% of the tracker width):
+        // full quality at >= 6%, down to 0.6x at ~2.4%.
+        val resolutionFactor = (eyeWidthPx / (frame.trackerWidthPx * 0.06f))
+            .coerceIn(0.6f, 1f)
+        val quality = ((geometryConsistency + irisConsistency) * 0.5f * resolutionFactor).coerceIn(0f, 1f)
 
         return EyeGeometry(
             eyeCenter = eyeCenter,

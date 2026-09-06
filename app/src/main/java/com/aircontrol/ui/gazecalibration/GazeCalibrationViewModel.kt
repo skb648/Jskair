@@ -143,13 +143,21 @@ class GazeCalibrationViewModel @Inject constructor(
             var rawSumX = 0f
             var rawSumY = 0f
             var faceFrames = 0
+            // Fix (audit #33): the affine fallback used to average the raw gaze
+            // over EVERY face frame — blinks, squints, low-quality junk included
+            // — and then learned from those averages. Only qualified, eyes-open,
+            // confident frames may feed the fallback calibration.
+            var qualifiedFrames = 0
 
             val collectJob = launch {
                 faceTracker.gazeObservations.collect { obs ->
                     if (!obs.faceDetected) return@collect
                     faceFrames++
-                    rawSumX += obs.rawX
-                    rawSumY += obs.rawY
+                    if (obs.quality >= CALIBRATION_RAW_MIN_QUALITY && obs.ear > CALIBRATION_MIN_OPEN_EAR) {
+                        rawSumX += obs.rawX
+                        rawSumY += obs.rawY
+                        qualifiedFrames++
+                    }
                     val vector = obs.featureVector ?: return@collect
                     // Fix (compile): acceptOrNull avoids naming the nested
                     // Result type from outside its file.
@@ -160,7 +168,14 @@ class GazeCalibrationViewModel @Inject constructor(
                         quality = obs.quality,
                         poseValid = obs.poseValid,
                     )
-                    if (sample != null) samples.add(sample)
+                    if (sample != null) {
+                        samples.add(sample)
+                        // Fix (audit #30): 9 targets × 4s of continuous staring
+                        // fatigues accessibility users and inflates dropout.
+                        // Once a target has plenty of clean samples, end it
+                        // early instead of running the whole window out.
+                        if (samples.size >= TARGET_SAMPLE_GOAL) collectJob.cancel()
+                    }
                 }
             }
 
@@ -175,9 +190,14 @@ class GazeCalibrationViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isCollecting = false, error = GazeCalibrationError.NOT_ENOUGH_SAMPLES)
                 return@launch
             }
+            if (qualifiedFrames == 0) {
+                // Every frame was a blink/low-quality frame — averages would be junk.
+                _uiState.value = _uiState.value.copy(isCollecting = false, error = GazeCalibrationError.NOT_ENOUGH_SAMPLES)
+                return@launch
+            }
 
             featureSamples.addAll(samples)
-            rawGazeAverages.add((rawSumX / faceFrames) to (rawSumY / faceFrames))
+            rawGazeAverages.add((rawSumX / qualifiedFrames) to (rawSumY / qualifiedFrames))
             screenPoints.add(target.x to target.y)
 
             val next = index + 1
@@ -195,6 +215,34 @@ class GazeCalibrationViewModel @Inject constructor(
     private suspend fun finishCalibration() {
         val metrics = appContext.resources.displayMetrics
         var anySaved = false
+
+        // Fix (audit #2): "did the user actually look at the dots?" The per-target
+        // checks gate quality/pose per frame, but a user who stares at ONE spot
+        // for all 9 targets passes them all — and the model then learns that
+        // identical eye pattern "means" nine different screen points. If the
+        // raw-gaze centroids of the targets are all nearly identical, the eye
+        // signal carries no target information: refuse to save anything rather
+        // than shipping a confidently wrong calibration.
+        val centroids = rawGazeAverages.toList()
+        if (centroids.size >= 2) {
+            var spread = 0f
+            for (i in centroids.indices) {
+                for (j in i + 1 until centroids.size) {
+                    val dx = (centroids[i].first - centroids[j].first).toDouble()
+                    val dy = (centroids[i].second - centroids[j].second).toDouble()
+                    spread = maxOf(spread, kotlin.math.hypot(dx, dy).toFloat())
+                }
+            }
+            if (spread < MIN_TARGET_SIGNAL_SPREAD) {
+                Timber.w(
+                    "Calibration gaze signal spread %.4f < %.4f — eyes did not track the targets; rejecting session",
+                    spread,
+                    MIN_TARGET_SIGNAL_SPREAD,
+                )
+                _uiState.value = _uiState.value.copy(isCollecting = false, error = GazeCalibrationError.FIT_FAILED)
+                return
+            }
+        }
 
         // ---- 1) Personalized (head-pose aware) model ----
         val fit = PersonalizedGazeCalibrationFitter.fit(
@@ -307,8 +355,11 @@ class GazeCalibrationViewModel @Inject constructor(
         private const val FACE_WARMUP_TIMEOUT_MS = 4_000L
 
         // Fix C5: generous, human-paced timing.
-        private const val FIXATE_MS = 1_500L
-        private const val COLLECT_WINDOW_MS = 2_500L
+        // Fix (audit #30): trimmed 1500→1200 / 2500→2200 and the early-stop above
+        // (TARGET_SAMPLE_GOAL) — a ~36s continuous stare session is a fatigue and
+        // dropout risk for accessibility users; this lands near ~26s in practice.
+        private const val FIXATE_MS = 1_200L
+        private const val COLLECT_WINDOW_MS = 2_200L
         private const val MIN_FACE_FRAMES_PER_TARGET = 15
 
         /**
@@ -318,5 +369,17 @@ class GazeCalibrationViewModel @Inject constructor(
          * every session would degrade to the affine fallback.
          */
         private const val MIN_SAMPLES_PER_TARGET = 12
+
+        // Fix (audit #30): once a target has this many clean samples the
+        // collector ends it early (see collectCurrentPoint).
+        private const val TARGET_SAMPLE_GOAL = 20
+
+        // Fix (audit #33): frames allowed into the affine-fallback averages.
+        private const val CALIBRATION_RAW_MIN_QUALITY = 0.45f
+        private const val CALIBRATION_MIN_OPEN_EAR = 0.16f
+
+        // Fix (audit #2): minimum pairwise spread of per-target raw-gaze
+        // centroids for the session to carry any target information at all.
+        private const val MIN_TARGET_SIGNAL_SPREAD = 0.05f
     }
 }

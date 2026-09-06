@@ -108,13 +108,15 @@ class FaceTrackerImpl @Inject constructor(
     @Volatile private var lastImageHeightPx: Int = 0
 
     private val _gazePoints = MutableSharedFlow<GazePoint>(
-        extraBufferCapacity = 32,
+        extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gazePoints: SharedFlow<GazePoint> = _gazePoints.asSharedFlow()
 
     private val _gazeObservations = MutableSharedFlow<GazeObservation>(
-        extraBufferCapacity = 32,
+        // Fix (audit #16): calibration collect windows must not lose samples to a
+        // busy collector; 64 slots ≈ >3s of 20fps eye-mode frames.
+        extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gazeObservations: SharedFlow<GazeObservation> = _gazeObservations.asSharedFlow()
@@ -207,12 +209,23 @@ class FaceTrackerImpl @Inject constructor(
 
         val landmarks = faceLandmarks[0]
         val ts = resultTimestampMs.coerceAtLeast(0L)
-        val ear = computeAverageEar(landmarks)
+        // Fix (audit #6): the main EAR (blink path!) must be aspect-correct too —
+        // normalized x (across width) vs y (across height) mix distorted EAR on
+        // non-square camera aspects and made blink detection device-dependent.
+        val frameAspectRatio = if (lastImageHeightPx > 0) {
+            lastImageWidthPx.toFloat() / lastImageHeightPx.toFloat()
+        } else {
+            1f
+        }
+        val ear = computeAverageEar(landmarks, frameAspectRatio)
 
         // ---- Fix A5: advanced pipeline (features + head pose + normalization) ----
         var featureVector: CalibrationFeatureVector? = null
         var poseValid = false
         var advancedQuality = 0f
+        var poseAnglesKnown = false
+        var poseYawDeg = 0f
+        var posePitchDeg = 0f
         val width = lastImageWidthPx
         val height = lastImageHeightPx
         if (landmarks.size >= CanonicalEyes.MIN_LANDMARK_COUNT && width > 0 && height > 0) {
@@ -232,6 +245,11 @@ class FaceTrackerImpl @Inject constructor(
                         features.right?.quality ?: 0f,
                     )
                     advancedQuality = minOf(eyeQuality, pose.confidence).coerceIn(0f, 1f)
+                    if (pose.isValid) {
+                        poseAnglesKnown = true
+                        poseYawDeg = pose.yawDeg
+                        posePitchDeg = pose.pitchDeg
+                    }
                 }
             }.onFailure { Timber.e(it, "Advanced gaze pipeline failed — using iris-ratio fallback") }
         }
@@ -267,7 +285,13 @@ class FaceTrackerImpl @Inject constructor(
         }
 
         // ---- Legacy iris-ratio gaze (fallback + affine calibration source) ----
-        val gaze = computeGaze(landmarks)
+        val aspectRatio = if (height > 0) width.toFloat() / height.toFloat() else 1f
+        val gaze = computeGaze(
+            landmarks,
+            aspectRatio = aspectRatio,
+            headYawDeg = if (poseAnglesKnown) poseYawDeg else 0f,
+            headPitchDeg = if (poseAnglesKnown) posePitchDeg else 0f,
+        )
         if (gaze != null) {
             _gazePoints.tryEmit(gaze.copy(timestampMs = ts))
             _gazeObservations.tryEmit(
@@ -312,6 +336,9 @@ class FaceTrackerImpl @Inject constructor(
 
     private fun computeGaze(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        aspectRatio: Float = 1f,
+        headYawDeg: Float = 0f,
+        headPitchDeg: Float = 0f,
     ): GazePoint? {
         if (landmarks.size < 478) return null
 
@@ -336,7 +363,7 @@ class FaceTrackerImpl @Inject constructor(
 
         val h = ((leftH + rightH) / 2f).coerceIn(0f, 1f)
         val v = ((leftV + rightV) / 2f).coerceIn(0f, 1f)
-        val ear = computeAverageEar(landmarks)
+        val ear = computeAverageEar(landmarks, aspectRatio)
 
         val leftEyeWidth = kotlin.math.abs(leftOuter.x() - leftInner.x())
         val rightEyeWidth = kotlin.math.abs(rightOuter.x() - rightInner.x())
@@ -350,23 +377,41 @@ class FaceTrackerImpl @Inject constructor(
         val geometryConfidence = (0.25f + 0.5f * symmetry + 0.25f * separationConfidence)
             .coerceIn(0f, 1f)
 
-        return GazePoint(x = h, y = v, ear = ear, confidence = geometryConfidence)
+        // Fix (audit #5): the legacy ratio map has no head-pose compensation, so
+        // turning the head read as gaze movement and the cursor drifted. Degrade
+        // confidence as the head rotates away — the consumer's detection gate
+        // (>= MIN_GAZE_CONFIDENCE) then hides the cursor on unreliable head
+        // angles instead of letting it drift. Full confidence up to
+        // HEAD_POSE_GRACE_DEG, linearly to zero at HEAD_POSE_REJECT_DEG.
+        val maxHeadAngle = kotlin.math.abs(headYawDeg).coerceAtLeast(kotlin.math.abs(headPitchDeg))
+        val headStability = if (headYawDeg == 0f && headPitchDeg == 0f) 1f
+        else (1f - (maxHeadAngle - HEAD_POSE_GRACE_DEG) / (HEAD_POSE_REJECT_DEG - HEAD_POSE_GRACE_DEG))
+            .coerceIn(0f, 1f)
+
+        return GazePoint(x = h, y = v, ear = ear, confidence = geometryConfidence * headStability)
     }
 
     private fun computeAverageEar(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        aspectRatio: Float = 1f,
     ): Float {
-        val left = ear(landmarks, 33, 160, 158, 133, 153, 144)
-        val right = ear(landmarks, 263, 387, 385, 362, 380, 373)
+        val left = ear(landmarks, 33, 160, 158, 133, 153, 144, aspectRatio)
+        val right = ear(landmarks, 263, 387, 385, 362, 380, 373, aspectRatio)
         return (left + right) / 2f
     }
 
     private fun ear(
         landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
         p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int,
+        aspectRatio: Float,
     ): Float {
         fun dist(a: Int, b: Int): Float {
-            val dx = landmarks[a].x() - landmarks[b].x()
+            // Fix (audit #6): x is normalized across the image WIDTH and y across
+            // the HEIGHT — mixing them raw distorts EAR on any non-square camera
+            // aspect and made blink detection device-dependent. Scale x into the
+            // same physical unit as y first (the common factor cancels in the
+            // vertical/horizontal ratio, so only the aspect matters).
+            val dx = (landmarks[a].x() - landmarks[b].x()) * aspectRatio
             val dy = landmarks[a].y() - landmarks[b].y()
             return kotlin.math.sqrt(dx * dx + dy * dy)
         }
@@ -430,5 +475,9 @@ class FaceTrackerImpl @Inject constructor(
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
         private const val EPSILON = 1e-6f
+
+        // Fix (audit #5): legacy-path head-pose stability envelope (degrees).
+        private const val HEAD_POSE_GRACE_DEG = 15f
+        private const val HEAD_POSE_REJECT_DEG = 60f
     }
 }

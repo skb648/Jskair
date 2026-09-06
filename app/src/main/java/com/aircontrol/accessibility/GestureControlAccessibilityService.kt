@@ -137,6 +137,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var dwellFireX: Float = 0.5f
     @Volatile private var dwellFireY: Float = 0.5f
 
+    /** Fix (audit #10): last main-thread dwell-ring paint (real ~30fps gate). */
+    @Volatile private var lastDwellUiUpdateMs: Long = 0L
+
     // Gaze ("eye is mouse") cursor state (Fixes A1/A3/A6/A8).
     /** Latest smoothed gaze cursor position in screen-normalized coordinates. */
     @Volatile private var gazeCursorX: Float = 0.5f
@@ -168,7 +171,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // reject. Previously the camera was stopped here and the restart was
                     // gated on "the app is on screen", so every single unlock killed
                     // gestures until the user opened AirControl again.
-                    runCatching { cameraServiceManager?.pauseTracking() }
+                    //
+                    // Fix (audit #21): this is a SYSTEM pause — revivable on wake. The
+                    // notification's Pause button sends a sticky user pause instead.
+                    runCatching { cameraServiceManager?.pauseTracking(systemInitiated = true) }
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     // Re-query keyguard state on SCREEN_ON (fix #25).
@@ -311,15 +317,29 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // this does not create a new camera FGS and is safe after unlock. If the
         // service is gone entirely, defer creation of a new camera FGS until the
         // visible Activity owns the foreground-start opportunity.
-        if (cameraServiceManager?.isTracking() == true) {
+        //
+        // Fix (audit #21): never resume over a USER pause. Waking the screen after
+        // the user tapped Pause on the notification used to restart tracking —
+        // camera indicator back on, trust gone.
+        if (com.aircontrol.camera.CameraService.isUserPaused.value) {
+            Timber.i("Unlock: session is user-paused — staying paused")
+        } else if (cameraServiceManager?.isTracking() == true) {
             runCatching { cameraServiceManager?.resumeTracking() }
                 .onFailure { Timber.e(it, "Failed to resume existing camera service after unlock") }
-        } else if (MainActivity.isVisible) {
+        } else if (MainActivity.isVisible || cameraPermissionGranted()) {
+            // Fix (audit #23): with camera permission granted we attempt the start
+            // from here too — the accessibility service keeps the process elevated
+            // on most OEMs, and a failed FGS start is caught and retried by the
+            // watchdog. The Activity-visible fast path remains the first choice.
             startCameraService()
         } else {
             Timber.v("Unlock: camera service absent; new camera FGS deferred until AirControl is visible")
         }
     }
+
+    private fun cameraPermissionGranted(): Boolean =
+        checkSelfPermission(android.Manifest.permission.CAMERA) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         // Intentionally empty: we don't use accessibility events (fix #47).
@@ -590,8 +610,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
         pipelineJobs.add(serviceScope.launchGuarded("gaze", restart = true) {
             faceTracker?.gazePoints?.collectGuarded("gaze") gaze@{ gaze ->
                 try {
+                    // Fix (audit #11): the gaze pipeline must ALSO run when Blink Click
+                    // is enabled with the cursor overlay OFF — blink taps then land at
+                    // the (invisible) gaze point. Only cursor *visuals* below are gated
+                    // on cursorEnabled.
                     if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
-                        !currentPreferences.cursorEnabled) return@gaze
+                        (!currentPreferences.cursorEnabled && !currentPreferences.blinkClickEnabled)
+                    ) return@gaze
                     if (!gaze.isDetected) {
                         // Fix A6: hysteresis. A single borderline frame (face
                         // slightly small, one eye occluded) used to hide the dot
@@ -650,10 +675,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     gazeCursorY = smoothY
 
                     withContext(Dispatchers.Main) {
-                        cursorOverlay?.show()
-                        // Fix A2: direct mapping — gaze coords are screen-space
-                        // and must not pass through the hand dead-zone mapping.
-                        cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
+                        if (currentPreferences.cursorEnabled) {
+                            cursorOverlay?.show()
+                            // Fix A2: direct mapping — gaze coords are screen-space
+                            // and must not pass through the hand dead-zone mapping.
+                            cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
+                        }
                     }
                     // Fix A1: keep the shared cursor state truthful for this path.
                     cursorController?.updatePosition(smoothX, smoothY)
@@ -664,7 +691,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // short stable-presence grace before dwell accumulates.
                     val nowMs = SystemClock.elapsedRealtime()
                     if (faceStableSinceMs == 0L) faceStableSinceMs = nowMs
-                    if (nowMs - faceStableSinceMs >= GAZE_DWELL_STABLE_MS) {
+                    // Fix (audit #11): dwell needs a VISIBLE cursor — invisible
+                    // taps out of nowhere are worse than no tap.
+                    if (currentPreferences.cursorEnabled &&
+                        nowMs - faceStableSinceMs >= GAZE_DWELL_STABLE_MS
+                    ) {
                         // Fix A-15: gaze feeds the same stillness/dwell machine as
                         // the hand path (monotonic clock), with fromGaze so the
                         // eventual tap maps directly to pixels (Fix A2).
@@ -941,7 +972,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
         cameraRetryJob?.cancel()
         cameraRetryJob = serviceScope.launchGuarded("camera retry") {
             delay(retryDelayMs)
-            if (currentPreferences.gesturesEnabled && MainActivity.isVisible &&
+            // Fix (audit #23): retry whenever the user actually granted the
+            // camera permission — not only while the Activity is on screen.
+            // ("Nothing works until I open AirControl" after an OEM event.)
+            // A start that the platform still rejects is caught and rescheduled.
+            if (currentPreferences.gesturesEnabled && cameraPermissionGranted() &&
                 cameraServiceManager?.isTracking() != true) {
                 startCameraService()
             }
@@ -975,12 +1010,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // Someone else owns the camera on purpose (debug screen).
                         Timber.v("Watchdog: camera revive suppressed (exclusive camera user)")
                     }
-                    wantsTracking && !isTracking && MainActivity.isVisible -> {
-                        Timber.w("Watchdog: gestures enabled and Activity is visible — reviving camera")
+                    wantsTracking && !isTracking && cameraPermissionGranted() -> {
+                        // Fix (audit #23): attempt revival whenever the permission is
+                        // there, not only while AirControl is foreground. Failures are
+                        // caught and retried on the next tick.
+                        Timber.w("Watchdog: gestures enabled — reviving camera")
                         startCameraService()
                     }
                     wantsTracking && !isTracking -> {
-                        Timber.v("Watchdog: camera restart deferred until AirControl is visible")
+                        Timber.v("Watchdog: camera restart deferred until permission is granted")
                     }
                     !wantsTracking && isTracking -> stopCameraService()
                 }
@@ -1102,6 +1140,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // deliberate look across the screen is ≥0.05). Hand dwells are always
         // deliberate by nature (a hand does not "read").
         if (dwellMovingTravel > 0f) {
+            // Fix (audit #9): 0.05 was too coarse for dense UIs — moving to the
+            // button right next to the previous one (~0.02–0.04) never counted as a
+            // deliberate arrival, so staring at it did nothing. 0.025 still filters
+            // reading drift (~0.01) but admits adjacent-control movements.
             fixationDwellAllowed = !isGaze || dwellMovingTravel >= GAZE_DELIBERATE_SACCADE_MIN
             dwellMovingTravel = 0f
         }
@@ -1127,8 +1169,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
             val progress = (stillMs.toFloat() / currentPreferences.dwellDurationMs)
                 .coerceIn(0f, 1f)
             // Throttle dwell ring updates to ~30fps to avoid main-thread spam (fix #62).
-            serviceScope.launch(Dispatchers.Main) {
-                cursorOverlay?.setDwellProgress(progress)
+            // Fix (audit #10): the throttle was only a comment — every qualifying
+            // frame still hopped to the main thread. Time-gate it for real.
+            val uiNow = SystemClock.elapsedRealtime()
+            if (uiNow - lastDwellUiUpdateMs >= 33L) {
+                lastDwellUiUpdateMs = uiNow
+                serviceScope.launch(Dispatchers.Main) {
+                    cursorOverlay?.setDwellProgress(progress)
+                }
             }
         }
     }
@@ -1226,11 +1274,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Fix A8: the face must be continuously visible this long before gaze
         // dwell can accumulate (post-(re)acquisition settling grace).
         private const val GAZE_DWELL_STABLE_MS = 500L
-
         // Fix A8 (full): gaze dwell requires an arrival of at least this much
         // travel (normalized) — reading saccades (0.01–0.04) never qualify, a
         // deliberate look at a target does (≥0.05).
-        private const val GAZE_DELIBERATE_SACCADE_MIN = 0.05f
+        private const val GAZE_DELIBERATE_SACCADE_MIN = 0.025f
 
         // Fix A8 (full): after a dwell click, the cursor must move this far from
         // the click point before another dwell can fire.

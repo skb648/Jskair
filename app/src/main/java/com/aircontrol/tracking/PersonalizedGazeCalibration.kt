@@ -45,7 +45,7 @@ data class CalibrationSample(
 
     companion object {
         enum class RejectionReason {
-            INVALID_FEATURES, INVALID_POSE, NON_FINITE, LOW_QUALITY, INVALID_TARGET, INVALID_TIMESTAMP,
+            INVALID_FEATURES, INVALID_POSE, NON_FINITE, LOW_QUALITY, INVALID_TARGET, INVALID_TIMESTAMP, EYES_CLOSED,
         }
 
         fun create(
@@ -59,8 +59,18 @@ data class CalibrationSample(
             if (!poseValid) return Result.Rejected(RejectionReason.INVALID_POSE)
             if (timestampMs < 0L) return Result.Rejected(RejectionReason.INVALID_TIMESTAMP)
             if (!quality.isFinite()) return Result.Rejected(RejectionReason.NON_FINITE)
-            if (quality < 0.20f) return Result.Rejected(RejectionReason.LOW_QUALITY)
+            // Fix (audit #4): calibration used to accept quality >= 0.20 while
+            // the runtime cursor pipeline treats anything below 0.45 as "no
+            // reliable gaze" — the model was trained on frames the cursor path
+            // itself would have thrown away. Align the floors.
+            if (quality < MIN_SAMPLE_QUALITY) return Result.Rejected(RejectionReason.LOW_QUALITY)
             if (featureVector.values.any { !it.isFinite() }) return Result.Rejected(RejectionReason.NON_FINITE)
+            // Fix (audit #3): blinks during calibration changed iris/eyelid
+            // geometry and were happily learned as "this is what looking at
+            // the top-right looks like". Reject near-closed eyes outright.
+            val leftEar = featureVector.values.getOrNull(LEFT_EAR_INDEX) ?: 1f
+            val rightEar = featureVector.values.getOrNull(RIGHT_EAR_INDEX) ?: 1f
+            if ((leftEar + rightEar) * 0.5f < MIN_OPEN_EAR) return Result.Rejected(RejectionReason.EYES_CLOSED)
             return Result.Accepted(CalibrationSample(target, target.x, target.y, featureVector, timestampMs, quality))
         }
 
@@ -80,6 +90,16 @@ data class CalibrationSample(
             is Result.Accepted -> result.sample
             is Result.Rejected -> null
         }
+
+        // Feature-schema indices for the closed-eye check (audit #3).
+        private val LEFT_EAR_INDEX: Int = GazeCalibrationFeatureSchema.NAMES.indexOf("left_ear")
+        private val RIGHT_EAR_INDEX: Int = GazeCalibrationFeatureSchema.NAMES.indexOf("right_ear")
+
+        /** Matches FaceTracker's runtime detection floor (audit #4). */
+        private const val MIN_SAMPLE_QUALITY = 0.45f
+
+        /** Open eyes keep aspect-correct EAR well above 0.2; closed drop to ~0.1. */
+        private const val MIN_OPEN_EAR = 0.16f
     }
 }
 
@@ -166,6 +186,19 @@ object QuadraticPolynomialFeatures {
     fun size(inputDimension: Int): Int = 1 + inputDimension + inputDimension * (inputDimension + 1) / 2
 }
 
+/**
+ * Fix (audit #1/#32): linear basis — 1, x_i. The quadratic basis over 23
+ * features has 300 coefficients; a default calibration session supplies only
+ * ~80–140 training observations, which is a textbook over-fit ("center is
+ * fine, corners drift"). The fitter now chooses this basis when the training
+ * set is too small to support the quadratic one.
+ */
+object LinearPolynomialFeatures {
+    fun expand(input: DoubleArray): DoubleArray = DoubleArray(size(input.size)) { if (it == 0) 1.0 else input[it - 1] }
+
+    fun size(inputDimension: Int): Int = 1 + inputDimension
+}
+
 data class CalibrationMetrics(
     val meanNormalizedError: Double,
     val medianNormalizedError: Double,
@@ -241,18 +274,23 @@ data class PersonalizedGazeCalibrationModel(
     init {
         require(modelVersion == MODEL_VERSION)
         require(featureSchemaVersion == GazeCalibrationFeatureSchema.VERSION)
-        require(modelType == MODEL_TYPE)
+        // Fix (audit #1): both bases are valid model types (see LinearPolynomialFeatures).
+        require(modelType == MODEL_TYPE || modelType == LINEAR_MODEL_TYPE)
         require(regularization.isFinite() && regularization > 0.0)
         require(transformSignature.isNotBlank())
         require(coefficientsX.size == coefficientsY.size)
-        require(coefficientsX.size == QuadraticPolynomialFeatures.size(standardization.means.size))
+        require(coefficientsX.size == basisSize(modelType, standardization.means.size))
         require(coefficientsX.all { it.isFinite() } && coefficientsY.all { it.isFinite() })
         require(createdAtMs >= 0L)
     }
 
     fun predict(features: CalibrationFeatureVector): Pair<Float, Float> {
         if (features.schemaVersion != featureSchemaVersion) throw CalibrationFitException("incompatible feature schema")
-        val basis = QuadraticPolynomialFeatures.expand(standardization.transform(features.values))
+        val basis = if (modelType == LINEAR_MODEL_TYPE) {
+            LinearPolynomialFeatures.expand(standardization.transform(features.values))
+        } else {
+            QuadraticPolynomialFeatures.expand(standardization.transform(features.values))
+        }
         val x = dot(coefficientsX, basis)
         val y = dot(coefficientsY, basis)
         if (!x.isFinite() || !y.isFinite()) throw CalibrationFitException("non-finite prediction")
@@ -264,6 +302,16 @@ data class PersonalizedGazeCalibrationModel(
     companion object {
         const val MODEL_VERSION = 1
         const val MODEL_TYPE = "quadratic-ridge-v1"
+        const val LINEAR_MODEL_TYPE = "linear-ridge-v1"
+
+        fun basisSize(modelType: String, inputDimension: Int): Int =
+            if (modelType == LINEAR_MODEL_TYPE) LinearPolynomialFeatures.size(inputDimension)
+            else QuadraticPolynomialFeatures.size(inputDimension)
+
+        fun expandBasis(modelType: String, input: DoubleArray): DoubleArray =
+            if (modelType == LINEAR_MODEL_TYPE) LinearPolynomialFeatures.expand(input)
+            else QuadraticPolynomialFeatures.expand(input)
+
         private fun dot(a: DoubleArray, b: DoubleArray): Double {
             if (a.size != b.size) throw CalibrationFitException("coefficient size mismatch")
             var sum = 0.0
@@ -295,18 +343,33 @@ object PersonalizedGazeCalibrationFitter {
         if (samples.map { it.target }.toSet().size != CalibrationTarget.entries.size) throw CalibrationFitException("all 9 targets require retained samples")
         val split = TargetBalancedValidationSplit.split(samples, validationFraction)
         if (!split.isValid) throw CalibrationFitException("validation split is empty")
+        // Fix (audit #1/#32): pick the model the data can actually support.
+        // The quadratic basis has 300 coefficients over 23 features; fitting it
+        // from ~80–140 training observations memorizes the calibration session
+        // and generalizes badly ("center fine, corners wrong"). Ridge shrinks
+        // the coefficients but does not fix a structurally underdetermined
+        // basis, so fall back to the 24-parameter linear basis until there are
+        // enough observations (>1.3 per quadratic parameter) to justify the
+        // richer one.
+        val modelType = if (split.training.size >= QUADRATIC_MIN_TRAINING_SAMPLES) {
+            PersonalizedGazeCalibrationModel.MODEL_TYPE
+        } else {
+            PersonalizedGazeCalibrationModel.LINEAR_MODEL_TYPE
+        }
         val standardization = computeStandardization(split.training)
-        val basis = split.training.map { QuadraticPolynomialFeatures.expand(standardization.transform(it.features.values)) }
+        val basis = split.training.map {
+            PersonalizedGazeCalibrationModel.expandBasis(modelType, standardization.transform(it.features.values))
+        }
         val betaX = solveRidge(basis, split.training.map { it.targetX.toDouble() }, regularization)
         val betaY = solveRidge(basis, split.training.map { it.targetY.toDouble() }, regularization)
-        val trainingMetrics = metrics(split.training, standardization, betaX, betaY, screenWidthPx, screenHeightPx, false)
-        val validationMetrics = metrics(split.validation, standardization, betaX, betaY, screenWidthPx, screenHeightPx, true)
+        val trainingMetrics = metrics(split.training, modelType, standardization, betaX, betaY, screenWidthPx, screenHeightPx, false)
+        val validationMetrics = metrics(split.validation, modelType, standardization, betaX, betaY, screenWidthPx, screenHeightPx, true)
         require(validationMetrics.validationSampleCount > 0) { "validation metrics unavailable" }
         CalibrationFitResult(
             PersonalizedGazeCalibrationModel(
                 modelVersion = PersonalizedGazeCalibrationModel.MODEL_VERSION,
                 featureSchemaVersion = GazeCalibrationFeatureSchema.VERSION,
-                modelType = PersonalizedGazeCalibrationModel.MODEL_TYPE,
+                modelType = modelType,
                 regularization = regularization,
                 transformSignature = transformSignature,
                 standardization = standardization,
@@ -394,6 +457,7 @@ object PersonalizedGazeCalibrationFitter {
 
     private fun metrics(
         samples: List<CalibrationSample>,
+        modelType: String,
         standardization: Standardization,
         betaX: DoubleArray,
         betaY: DoubleArray,
@@ -403,7 +467,7 @@ object PersonalizedGazeCalibrationFitter {
     ): CalibrationMetrics {
         if (samples.isEmpty()) throw CalibrationFitException("cannot compute empty metrics")
         val errors = samples.map { sample ->
-            val basis = QuadraticPolynomialFeatures.expand(standardization.transform(sample.features.values))
+            val basis = PersonalizedGazeCalibrationModel.expandBasis(modelType, standardization.transform(sample.features.values))
             val dx = dot(betaX, basis) - sample.targetX
             val dy = dot(betaY, basis) - sample.targetY
             MetricPoint(abs(dx), abs(dy), sqrt(dx * dx + dy * dy))
@@ -434,4 +498,8 @@ object PersonalizedGazeCalibrationFitter {
     private fun dot(a: DoubleArray, b: DoubleArray): Double { if (a.size != b.size) throw CalibrationFitException("coefficient size mismatch"); var sum = 0.0; for (i in a.indices) sum += a[i] * b[i]; return sum }
     private fun quantileFrom(values: List<Double>, q: Double): Double { val sorted = values.sorted(); val index = q * (sorted.size - 1); val low = index.toInt(); val high = min(sorted.lastIndex, low + 1); val weight = index - low; return sorted[low] * (1 - weight) + sorted[high] * weight }
     private const val MIN_TOTAL_SAMPLES = 90
+
+    // Fix (audit #1): the quadratic basis over 23 features has 300 coefficients;
+    // require >1.3 training observations per parameter before using it.
+    private const val QUADRATIC_MIN_TRAINING_SAMPLES = 400
 }

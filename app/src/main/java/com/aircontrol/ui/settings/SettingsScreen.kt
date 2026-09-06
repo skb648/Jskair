@@ -176,6 +176,17 @@ fun SettingsScreen(
                         onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateAnalysisFps(it) },
                         labelMapper = { stringResource(R.string.settings_analysis_fps_value, it) },
                     )
+                    // Fix (audit #28): eye mode caps analysis at 20 FPS (battery +
+                    // thermal). Silently capping a "30 FPS" selection looked like
+                    // the setting not working — say so up front.
+                    if (preferences.eyeTrackingEnabled && preferences.analysisFps > 20) {
+                        Spacer(modifier = Modifier.height(Dimens.spacing8))
+                        Text(
+                            text = stringResource(R.string.settings_analysis_fps_eye_cap_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -434,9 +445,17 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = if (preferences.gazeCalibration.isNotBlank())
+                            // Fix (audit #29): a saved PERSONALIZED model also means
+                            // "calibrated" — the label used to read only the legacy
+                            // affine string, so a completed 9-point personalized
+                            // session still showed "run the calibration".
+                            text = if (preferences.gazeCalibration.isNotBlank() ||
+                                preferences.personalizedGazeCalibration.isNotBlank()
+                            ) {
                                 stringResource(R.string.gaze_calibration_calibrated)
-                            else stringResource(R.string.gaze_calibration_run),
+                            } else {
+                                stringResource(R.string.gaze_calibration_run)
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

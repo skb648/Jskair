@@ -29,6 +29,11 @@ import javax.inject.Singleton
 data class PermissionStates(
     val cameraGranted: Boolean = false,
     val accessibilityGranted: Boolean = false,
+    // Fix (audit #27): the Android accessibility SETTING can be ON while the
+    // service connection is still catching up (right after the user returns
+    // from Settings). That state is "connecting", not "missing" — showing a
+    // red "required" card for it made users think the toggle failed.
+    val accessibilitySettingEnabled: Boolean = false,
     // TYPE_ACCESSIBILITY_OVERLAY does not require SYSTEM_ALERT_WINDOW when a11y is on.
     val overlayGranted: Boolean = true,
     // Notifications are optional; the foreground camera service remains functional
@@ -38,10 +43,16 @@ data class PermissionStates(
     val allGranted: Boolean
         get() = cameraGranted && accessibilityGranted
 
+    /** Setting enabled but the service has not finished connecting yet. */
+    val accessibilityConnecting: Boolean
+        get() = accessibilitySettingEnabled && !accessibilityGranted
+
     val missingPermissions: List<MissingPermission>
         get() = buildList {
             if (!cameraGranted) add(MissingPermission.CAMERA)
-            if (!accessibilityGranted) add(MissingPermission.ACCESSIBILITY)
+            // Only a genuinely OFF setting is "missing"; the connecting state
+            // is surfaced separately via [accessibilityConnecting].
+            if (!accessibilitySettingEnabled) add(MissingPermission.ACCESSIBILITY)
             if (!notificationsGranted) add(MissingPermission.NOTIFICATIONS)
         }
 }
@@ -103,10 +114,12 @@ class PermissionsManager @Inject constructor(
         _cameraGranted,
         accessibilityGranted,
         _notificationsGranted,
-    ) { camera, accessibility, notifications ->
+        _accessibilityEnabled,
+    ) { camera, accessibility, notifications, accessibilitySetting ->
         PermissionStates(
             cameraGranted = camera,
             accessibilityGranted = accessibility,
+            accessibilitySettingEnabled = accessibilitySetting,
             overlayGranted = true,
             notificationsGranted = notifications,
         )
@@ -116,6 +129,7 @@ class PermissionsManager @Inject constructor(
         initialValue = PermissionStates(
             cameraGranted = _cameraGranted.value,
             accessibilityGranted = accessibilityGranted.value,
+            accessibilitySettingEnabled = _accessibilityEnabled.value,
             overlayGranted = true,
             notificationsGranted = _notificationsGranted.value,
         ),

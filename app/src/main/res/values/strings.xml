@@ -116,7 +116,7 @@
     <string name="settings_cursor_smoothing_hint">Higher keeps the dot steadier, lower makes it react faster</string>
     <string name="settings_hold_duration">Hold Duration (pinch before drag)</string>
     <string name="settings_battery_saver">Battery Saver</string>
-    <string name="settings_start_on_boot">Start on Boot</string>
+    <string name="settings_start_on_boot">Boot Resume Prompt</string>
     <string name="settings_status_pill">Status Pill</string>
     <string name="settings_hand_left">Left</string>
     <string name="settings_hand_right">Right</string>
@@ -248,7 +248,14 @@
     <string name="settings_haptic_subtitle">Vibrate on gesture actions</string>
     <string name="settings_status_pill_subtitle">Show armed/disarmed indicator</string>
     <string name="settings_battery_saver_subtitle">Reduce FPS when idle to save battery</string>
-    <string name="settings_start_on_boot_subtitle">Auto-start tracking after device restart</string>
+    <string name="settings_start_on_boot_subtitle">After a reboot, Android needs your tap: AirControl shows a resume notification instead of auto-starting the camera</string>
+    <!-- Fix (audit #24): the old "Start on Boot / auto-start" wording promised
+         automatic start, but Android forbids a background camera start after
+         reboot — the app can only post a resume notification. -->
+    <string name="settings_analysis_fps_eye_cap_note">Eye tracking mode caps analysis at 20 FPS (battery and thermal), even when a higher value is selected</string>
+    <string name="home_warning_notifications_title_v2">Notifications (optional)</string>
+    <string name="home_accessibility_connecting_title">Accessibility service connecting…</string>
+    <string name="home_accessibility_connecting_message">AirControl is enabled in Android Settings and its service is connecting — this usually takes a few seconds. No action needed.</string>
     <string name="settings_dwell_to_click">Dwell-to-click</string>
     <string name="settings_dwell_to_click_subtitle">Hold the cursor still to auto-click</string>
     <string name="settings_dwell_duration">Dwell Duration</string>

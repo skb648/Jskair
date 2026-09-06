@@ -452,7 +452,7 @@ class SettingsRepositoryImpl @Inject constructor(
         gazeSensitivity = preferences[PreferencesKeys.GAZE_SENSITIVITY] ?: 50,
         gazeInvertX = preferences[PreferencesKeys.GAZE_INVERT_X] ?: true,
         blinkClickEnabled = preferences[PreferencesKeys.BLINK_CLICK_ENABLED] ?: false,
-        blinkWindowMs = preferences[PreferencesKeys.BLINK_WINDOW_MS] ?: 300,
+        blinkWindowMs = preferences[PreferencesKeys.BLINK_WINDOW_MS] ?: 250,
         gazeCalibration = preferences[PreferencesKeys.GAZE_CALIBRATION] ?: "",
         personalizedGazeCalibration = preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] ?: "",
     )

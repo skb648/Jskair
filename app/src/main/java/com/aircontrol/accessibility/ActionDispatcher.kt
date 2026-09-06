@@ -646,16 +646,22 @@ class ActionDispatcher @Inject constructor(
         val deltaX = (x - dragCurrentX).coerceIn(-maxStepX, maxStepX)
         val deltaY = (y - dragCurrentY).coerceIn(-maxStepY, maxStepY)
         if (deltaX == 0f && deltaY == 0f) return true
+        // Fix (audit #13): the clamp was computed but thrown away — the stroke
+        // jumped straight to the RAW target, so fast drags skipped across the
+        // path. Continue the stroke by the CLAMPED step and track the clamped
+        // position, so the injected path is exactly the smooth path we intended.
+        val nextX = dragCurrentX + deltaX
+        val nextY = dragCurrentY + deltaY
         val path = Path()
         path.moveTo(dragCurrentX, dragCurrentY)
-        path.lineTo(x, y)
+        path.lineTo(nextX, nextY)
         val nextStroke = lastDragStroke?.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
             ?: GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
         val submitted = submitGesture(service, GestureDescription.Builder().addStroke(nextStroke).build(), GestureAction.DRAG)
         if (submitted) {
             lastDragStroke = nextStroke
-            dragCurrentX = x
-            dragCurrentY = y
+            dragCurrentX = nextX
+            dragCurrentY = nextY
         }
         return submitted
     }

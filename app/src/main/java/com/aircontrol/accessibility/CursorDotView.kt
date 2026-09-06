@@ -166,8 +166,14 @@ class CursorDotView(
         super.onDraw(canvas)
         val cx = width * 0.43f
         val cy = height * 0.50f
+        // Fix (audit #12): every "where the pointer is" affordance — armed ring,
+        // dwell arc, ripple, scale pivot — must centre on the visible arrow TIP,
+        // because the tip is the point clicks actually land on (the overlay
+        // window is now positioned so the tip covers the dispatch point).
+        val tipX = cx - pointerWidth * 0.42f
+        val tipY = cy - pointerHeight * 0.50f
         canvas.save()
-        canvas.scale(currentScale, currentScale, cx, cy)
+        canvas.scale(currentScale, currentScale, tipX, tipY)
         val path = buildPointerPath(cx, cy)
         canvas.save()
         canvas.translate(1.5f * density, 1.5f * density)
@@ -176,15 +182,15 @@ class CursorDotView(
         canvas.drawPath(path, fillPaint)
         canvas.drawPath(path, outlinePaint)
 
-        if (isArmed) canvas.drawCircle(cx, cy, ringSizePx * 0.72f, ringPaint)
+        if (isArmed) canvas.drawCircle(tipX, tipY, ringSizePx * 0.72f, ringPaint)
         if (dwellProgress > 0f) {
             val r = ringSizePx * 0.82f
-            dwellRect.set(cx - r, cy - r, cx + r, cy + r)
+            dwellRect.set(tipX - r, tipY - r, tipX + r, tipY + r)
             canvas.drawArc(dwellRect, -90f, 360f * dwellProgress, false, ringPaint)
         }
         if (rippleAlpha > 0) {
             ripplePaint.alpha = rippleAlpha
-            canvas.drawCircle(cx, cy, ringSizePx * (0.7f + rippleProgress), ripplePaint)
+            canvas.drawCircle(tipX, tipY, ringSizePx * (0.7f + rippleProgress), ripplePaint)
         }
         canvas.restore()
     }

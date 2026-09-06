@@ -62,7 +62,7 @@ data class UserPreferences(
     // Fix A10: user-tunable minimum blink duration (ms). Natural blinks are
     // 100–250ms; the old fixed 300ms minimum demanded a slow, deliberate blink.
     // 150–500 slider range, max = min + 500.
-    val blinkWindowMs: Int = 300,
+    val blinkWindowMs: Int = 250,
     // Persisted 5-point gaze calibration coefficients (comma-separated, 6 floats).
     val gazeCalibration: String = "",
     // Fix A5: serialized personalized (head-pose-aware, 9-point ridge) gaze

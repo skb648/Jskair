@@ -3,6 +3,8 @@ package com.aircontrol.ui.home
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -97,6 +99,22 @@ fun HomeScreen(
         viewModel.refreshPermissions()
     }
 
+    // Fix (audit #25): "Fix Now" for the camera used to dump the user into the
+    // full App Info page. Ask with the system permission dialog first; the App
+    // Info page is only the fallback once that dialog is denied.
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:${context.packageName}"),
+                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) },
+            )
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -153,12 +171,7 @@ fun HomeScreen(
                                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 when (missing) {
                                     MissingPermission.CAMERA -> {
-                                        context.startActivity(
-                                            Intent(
-                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                Uri.parse("package:${context.packageName}"),
-                                            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) },
-                                        )
+                                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                                     }
                                     MissingPermission.ACCESSIBILITY -> {
                                         context.startActivity(
@@ -183,6 +196,39 @@ fun HomeScreen(
                             },
                         )
                         Spacer(modifier = Modifier.height(Dimens.spacing12))
+                    }
+                }
+            }
+
+            // Fix (audit #27): the accessibility setting is ON but the service is
+            // still connecting — an informational card, NOT a red "required" card.
+            AnimatedVisibility(
+                visible = permissionStates.accessibilityConnecting,
+                enter = fadeIn() + slideInVertically(),
+                exit = fadeOut() + slideOutVertically(),
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().animateContentSize(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    shape = RoundedCornerShape(Dimens.cardCornerRadius),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(Dimens.paddingMedium),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.home_accessibility_connecting_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = stringResource(R.string.home_accessibility_connecting_message),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -510,7 +556,7 @@ private fun PermissionWarningCard(
     val title = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_title)
         MissingPermission.ACCESSIBILITY -> stringResource(R.string.home_warning_accessibility_title)
-        MissingPermission.NOTIFICATIONS -> stringResource(R.string.home_warning_notifications_title)
+        MissingPermission.NOTIFICATIONS -> stringResource(R.string.home_warning_notifications_title_v2)
     }
     val message = when (missingPermission) {
         MissingPermission.CAMERA -> stringResource(R.string.home_warning_camera_message)

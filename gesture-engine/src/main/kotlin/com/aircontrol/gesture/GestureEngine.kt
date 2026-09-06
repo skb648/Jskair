@@ -39,7 +39,12 @@ class GestureEngine(
     private val stateMachine = GestureStateMachine(initialConfig)
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
-        extraBufferCapacity = 16,
+        // Fix (audit #16): 16 slots could be wiped out by a transient main-thread
+        // stall, and DROP_OLDEST then ate a Pinch START/END — the exact
+        // "pinch visualized but no click" failure. 64 slots ≈ >2s of 30fps
+        // events, making a lost critical sequence practically impossible while
+        // keeping memory bounded.
+        extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     val gestureEvents: SharedFlow<GestureEvent> = _gestureEvents.asSharedFlow()

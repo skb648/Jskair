@@ -601,7 +601,12 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         // MediaPipe tracking can produce a single noisy Y sample during fast
         // vertical motion, but two or more reversals indicate genuine erratic
         // drift, not a deliberate swipe.
-        private const val MAX_VERTICAL_REVERSALS = 1
+        // Fix (audit #17): the layered anti-false-positive gates overcorrected —
+        // a natural swipe with a slight backswing was rejected outright. Two
+        // reversals (brief backswing + noise) are still a swipe; three or more
+        // remain erratic. All the other gates (axis dominance, consistency,
+        // moving steps) still apply.
+        private const val MAX_VERTICAL_REVERSALS = 2
 
         // Fix S1: how many consecutive pose-gated frames tolerate keeping the
         // swipe window before it is wiped. 2 frames (~80ms at 24fps) absorbs

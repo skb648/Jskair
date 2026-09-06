@@ -296,8 +296,9 @@ class CursorOverlay(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = currentScreenX.toInt() - size / 2
-            y = currentScreenY.toInt() - size / 2
+            // Fix (audit #12): anchor the window on the pointer TIP, not the centre.
+            x = windowLeft()
+            y = windowTop()
         }
     }
 
@@ -327,9 +328,10 @@ class CursorOverlay(
     }
 
     private fun applyLayout(view: View, params: WindowManager.LayoutParams) {
-        val size = ringSizePx * 2 + dpToPx(4)
-        params.x = currentScreenX.toInt() - size / 2
-        params.y = currentScreenY.toInt() - size / 2
+        // Fix (audit #12): position the window so the pointer's visible TIP —
+        // not the view centre — lands exactly on the injected click point.
+        params.x = windowLeft()
+        params.y = windowTop()
 
         try {
             windowManager.updateViewLayout(view, params)
@@ -337,6 +339,24 @@ class CursorOverlay(
             // View not attached
         }
     }
+
+    private val viewSizePx: Int
+        get() = ringSizePx * 2 + dpToPx(4)
+
+    /**
+     * Fix (audit #12): the arrow is drawn with its TIP at
+     * (0.43*viewSize − 0.42*cursorSize, 0.50*viewSize − 0.50*1.38*cursorSize)
+     * from the window's top-left (see CursorDotView.buildPointerPath/onDraw).
+     * The injected click point is (currentScreenX, currentScreenY), so the
+     * window's top-left must sit so that the TIP — not the window centre —
+     * covers it. Before this, every click landed ~15dp right/below of where
+     * the visible arrow tip pointed.
+     */
+    private fun windowLeft(): Int =
+        (currentScreenX - (viewSizePx * 0.43f - cursorSizePx * 0.42f)).toInt()
+
+    private fun windowTop(): Int =
+        (currentScreenY - (viewSizePx * 0.50f - cursorSizePx * 1.38f * 0.50f)).toInt()
 
     /** Drop a scheduled repaint (hide/remove must not leave a stale frame). */
     private fun cancelPendingLayout() {

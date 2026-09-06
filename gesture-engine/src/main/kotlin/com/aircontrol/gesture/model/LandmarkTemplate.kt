@@ -56,6 +56,13 @@ data class LandmarkTemplate(
         const val MATCH_TOLERANCE = 0.07f // Relaxed 0.05→0.07 for jitter tolerance (avg 0.0035 per pair, still distinct)
 
         /**
+         * Fix (audit #34): if the runner-up template's error is below
+         * bestError * AMBIGUITY_RATIO, the frame does not clearly separate the
+         * two shapes and no custom action fires (better than a wrong action).
+         */
+        const val AMBIGUITY_RATIO = 1.35f
+
+        /**
          * The curated set of landmark index pairs whose normalized distances
          * are stored in the template. These pairs capture:
          * - Fingertip-to-fingertip (hand shape / finger spread)

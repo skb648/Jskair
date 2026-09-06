@@ -84,7 +84,9 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private var currentSensitivity: Int = 70
 
     private val _gestureEvents = MutableSharedFlow<GestureEvent>(
-        extraBufferCapacity = 16,
+        // Fix (audit #16): deeper buffer so pinch start/move/end sequences can
+        // never be dropped by a transient slow collector (see GestureEngine).
+        extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gestureEvents: SharedFlow<GestureEvent> = _gestureEvents.asSharedFlow()
