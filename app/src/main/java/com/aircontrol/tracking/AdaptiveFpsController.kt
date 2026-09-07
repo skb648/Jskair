@@ -111,6 +111,9 @@ class AdaptiveFpsController(
             _currentFps.value = validFps
         }
         Timber.d("Configured FPS updated to: %d", validFps)
+        // Perf audit P18: observe configured-vs-actual for the telemetry
+        // snapshot. Controller logic itself is untouched.
+        com.aircontrol.runtime.PerfTelemetry.recordConfiguredFps(validFps)
     }
 
     private fun Int.coerceToSupportedFps(): Int {

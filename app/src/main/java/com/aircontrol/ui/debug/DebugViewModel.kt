@@ -13,7 +13,6 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,12 +27,14 @@ import com.aircontrol.util.CrashGuard
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.Executors
 import javax.inject.Inject
@@ -110,6 +111,9 @@ class DebugViewModel @Inject constructor(
     private val trackingJobs: MutableList<Job> = mutableListOf()
     private val isPreviewBound = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // Perf audit P4: the bind coroutine, cancellable from stopTracking.
+    private var bindJob: Job? = null
+
     /**
      * Starts tracking: stops CameraService if running, then initializes HandTracker
      * and prepares for camera binding via [bindPreview].
@@ -127,7 +131,10 @@ class DebugViewModel @Inject constructor(
             Timber.d("Stopped CameraService for debug screen")
         }
 
-        handTracker.initialize()
+        // Perf audit P3: the tracker init (asset load + native model creation)
+        // used to run here on the MAIN thread — proven by the logcat line
+        // "7847:7847 W/HandTrackerImpl HandTracker already initialized".
+        viewModelScope.launch(Dispatchers.Default) { handTracker.initialize() }
         _isServiceRunning.value = true
 
         // This screen binds the camera itself. Without this the accessibility
@@ -218,15 +225,30 @@ class DebugViewModel @Inject constructor(
     fun bindPreview(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
         if (!isPreviewBound.compareAndSet(false, true)) return
 
-        val context = previewView.context
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        // Perf audit P4: wait for CameraService to finish stopping BEFORE
+        // binding. Both share the process-wide ProcessCameraProvider; the
+        // service's async ACTION_STOP teardown runs unbindAll() on the main
+        // thread, which used to land *after* this screen had bound — killing
+        // the debug camera and leaving the screen blind (logcat 15:10:09).
+        bindJob?.cancel()
+        bindJob = viewModelScope.launch {
+            awaitCameraServiceStopped(SERVICE_STOP_WAIT_TIMEOUT_MS)
+            if (!isPreviewBound.get() || !_isServiceRunning.value) return@launch
 
-        cameraProviderFuture.addListener(
-            {
+            val context = previewView.context
+            val provider = withContext(Dispatchers.Default) {
+                runCatching { ProcessCameraProvider.getInstance(context).get() }.getOrNull()
+            }
+            if (provider == null) {
+                isPreviewBound.set(false)
+                Timber.e("Could not obtain the camera provider for the debug screen")
+                return@launch
+            }
+            if (!isPreviewBound.get() || !_isServiceRunning.value) return@launch
+            cameraProvider = provider
+
+            withContext(Dispatchers.Main.immediate) {
                 try {
-                    val provider = cameraProviderFuture.get()
-                    cameraProvider = provider
-
                     val cameraSelector = CameraSelector.Builder()
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
                         .build()
@@ -244,9 +266,13 @@ class DebugViewModel @Inject constructor(
                         .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
                         .build()
 
+                    // Perf audit P6: same RGBA_8888 zero-copy path as the
+                    // service — toBitmap() wraps the frame buffer instead of
+                    // allocating a 640×480 ARGB bitmap per frame.
                     val imageAnalysis = ImageAnalysis.Builder()
                         .setResolutionSelector(analysisResolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                         .build()
                     imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                         processDebugFrame(imageProxy)
@@ -260,15 +286,27 @@ class DebugViewModel @Inject constructor(
                         imageAnalysis,
                     )
 
-                    isPreviewBound.set(true)
                     Timber.i("Debug camera bound successfully")
                 } catch (e: Exception) {
                     isPreviewBound.set(false)
                     Timber.e(e, "Failed to bind debug camera")
                 }
-            },
-            ContextCompat.getMainExecutor(context),
-        )
+            }
+        }
+    }
+
+    /**
+     * Suspends until [CameraService] reports itself stopped (or the timeout
+     * expires). Polls cheap companion state — no binder calls.
+     */
+    private suspend fun awaitCameraServiceStopped(timeoutMs: Long) {
+        if (!CameraService.isRunning.value) return
+        val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            if (!CameraService.isRunning.value) return
+            delay(50L)
+        }
+        Timber.w("CameraService did not report stopped within %dms; binding anyway", timeoutMs)
     }
 
     private fun processDebugFrame(imageProxy: ImageProxy) {
@@ -277,8 +315,17 @@ class DebugViewModel @Inject constructor(
                 imageProxyToMPImage(imageProxy)
             }
             if (mpImage != null) {
-                val timestampMs = System.currentTimeMillis()
-                handTracker.processFrame(mpImage, timestampMs)
+                try {
+                    val timestampMs = System.currentTimeMillis()
+                    handTracker.processFrame(mpImage, timestampMs)
+                } finally {
+                    // Perf audit P15: the debug path never closed the MPImage —
+                    // its reference-counted native storage leaked once per
+                    // frame (the service path has always closed it). Close
+                    // after submission; detectAsync consumes the image
+                    // synchronously, same contract as CameraService.
+                    mpImage.close()
+                }
             }
         } catch (e: Exception) {
             Timber.e(e, "Error processing debug frame")
@@ -340,8 +387,10 @@ class DebugViewModel @Inject constructor(
             canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
             canvas.drawBitmap(rawBitmap, matrix, null)
 
-            // Recycle raw bitmap immediately — no longer needed
-            rawBitmap.recycle()
+            // Perf audit P6: with RGBA_8888 output, toBitmap() WRAPS the frame
+            // buffer CameraX still owns — recycling it would free live
+            // storage. On API 26+ even the YUV-converted path is GC-managed,
+            // so the source bitmap is simply left to the GC on both paths.
 
             // BitmapImageBuilder copies data internally, safe to reuse targetBitmap next frame
             BitmapImageBuilder(targetBitmap).build()
@@ -352,6 +401,9 @@ class DebugViewModel @Inject constructor(
     }
 
     fun stopTracking(context: Context) {
+        // Perf audit P4: cancel a pending bind so it cannot land after dispose.
+        bindJob?.cancel()
+        bindJob = null
         try {
             cameraProvider?.unbindAll()
         } catch (e: Exception) {
@@ -362,7 +414,13 @@ class DebugViewModel @Inject constructor(
 
         trackingJobs.forEach { it.cancel() }
         trackingJobs.clear()
-        handTracker.close()
+        // Perf audit P2: the HandTracker is a process-wide @Singleton and no
+        // longer dies with this screen. Leaving it initialized means the
+        // CameraService restarted below (or later, by the watchdog) reuses the
+        // loaded model instead of re-reading it from assets — the churn the
+        // 2026-09-07 logcat showed on every debug-screen round trip. An idle
+        // tracker is released under memory pressure (AirControlApp.onTrimMemory)
+        // or on an explicit gesture disable.
         gestureDetector.reset()
         _isServiceRunning.value = false
 
@@ -394,13 +452,28 @@ class DebugViewModel @Inject constructor(
             reusableDebugBitmap?.recycle()
             reusableDebugBitmap = null
         }
-        analysisExecutor.shutdown()
-        try {
-            if (!analysisExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                analysisExecutor.shutdownNow()
+        // Perf audit P3: the old code blocked the MAIN thread here for up to
+        // 2 s in awaitTermination while navigating away from the screen.
+        // shutdown() is non-blocking; the bounded wait + shutdownNow run on a
+        // short-lived cleanup thread instead.
+        val executor = analysisExecutor
+        executor.shutdown()
+        Thread {
+            try {
+                if (!executor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    executor.shutdownNow()
+                }
+            } catch (e: InterruptedException) {
+                executor.shutdownNow()
             }
-        } catch (e: InterruptedException) {
-            analysisExecutor.shutdownNow()
-        }
+        }.apply {
+            name = "debug-executor-cleanup"
+            isDaemon = true
+        }.start()
+    }
+
+    private companion object {
+        /** Perf audit P4: how long to wait for CameraService to report stopped. */
+        const val SERVICE_STOP_WAIT_TIMEOUT_MS = 2_500L
     }
 }

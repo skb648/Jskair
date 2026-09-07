@@ -34,6 +34,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -363,6 +366,37 @@ private fun StatsBar(
                     )
                 }
             }
+
+            // Perf audit P18: live telemetry row — the same ring-buffer
+            // snapshot the rate-limited "PerfTelemetry" logcat lines print,
+            // polled once a second (this is a debug screen, not the frame
+            // path; snapshot() is a synchronized copy of ~20 longs).
+            Spacer(modifier = Modifier.height(Dimens.spacing4))
+            var perfSummary by remember { mutableStateOf("") }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val s = com.aircontrol.runtime.PerfTelemetry.snapshot()
+                    perfSummary = if (s.framesProcessed == 0L) {
+                        "perf: waiting for frames"
+                    } else {
+                        "perf: actual %dfps (cfg %d) · p50 %dms p95 %dms · drop T%d/N%d · " +
+                            "anlz %dms · hand %dms face %dms".format(
+                            s.actualFps.toInt(), s.configuredFps,
+                            s.intervalP50Ms, s.intervalP95Ms,
+                            s.framesDroppedThrottle, s.framesDroppedNoTracker,
+                            s.analyzerAvgMs, s.handInferAvgMs, s.faceInferAvgMs,
+                        )
+                    }
+                    kotlinx.coroutines.delay(1000L)
+                }
+            }
+            Text(
+                text = perfSummary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

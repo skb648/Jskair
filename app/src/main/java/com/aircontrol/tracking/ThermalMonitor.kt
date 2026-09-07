@@ -10,9 +10,13 @@ import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -44,6 +48,16 @@ class ThermalMonitor(
 
     private val _thermalStatus = MutableStateFlow(ThermalStatus.NONE)
     val thermalStatus: StateFlow<ThermalStatus> = _thermalStatus.asStateFlow()
+
+    // Perf audit P5: every poll emits here — even when the status is unchanged
+    // — so a downstream ThermalGovernor can count *consecutive samples* for
+    // hysteresis. The StateFlow above only re-emits on change, which cannot
+    // distinguish "steady SEVERE" from "flapping into SEVERE".
+    private val _thermalSamples = MutableSharedFlow<ThermalStatus>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val thermalSamples: SharedFlow<ThermalStatus> = _thermalSamples.asSharedFlow()
 
     private var monitoringJob: Job? = null
 
@@ -110,6 +124,8 @@ class ThermalMonitor(
             Timber.i("Thermal status changed: %s → %s", _thermalStatus.value, thermalStatus)
             _thermalStatus.value = thermalStatus
         }
+        // Perf audit P5: sample feed for the governor (fires on every poll).
+        _thermalSamples.tryEmit(thermalStatus)
     }
 
     /**

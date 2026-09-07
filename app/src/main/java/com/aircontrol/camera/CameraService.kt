@@ -5,13 +5,16 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -24,6 +27,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.aircontrol.MainActivity
 import com.aircontrol.R
+import com.aircontrol.runtime.PerfTelemetry
+import com.aircontrol.runtime.ResourceGovernor
 import com.aircontrol.tracking.AdaptiveFpsController
 import com.aircontrol.tracking.HandTracker
 import com.google.mediapipe.framework.image.BitmapImageBuilder
@@ -198,6 +203,22 @@ class CameraService : LifecycleService() {
 
     private lateinit var adaptiveFpsController: AdaptiveFpsController
 
+    // Perf audit P5: hysteresis/debounce over raw thermal samples — FPS tiers
+    // only change on a governor-confirmed transition.
+    private val thermalGovernor = com.aircontrol.tracking.ThermalGovernor()
+
+    // Perf audit P9: OS power-save mode caps the analysis FPS. Battery LEVEL
+    // is deliberately not an input (see ResourceGovernor).
+    private val resourceGovernor = ResourceGovernor()
+    private var powerSaveReceiver: BroadcastReceiver? = null
+
+    // Perf audit P6: set once if RGBA_8888 analysis output could not bind on
+    // this device; later binds then use the YUV conversion path.
+    @Volatile private var rgbaOutputFailed = false
+
+    // Perf audit P9: the mode-configured FPS before the power-save cap.
+    @Volatile private var baseConfiguredFps = 24
+
     override fun onCreate() {
         super.onCreate()
 
@@ -235,7 +256,9 @@ class CameraService : LifecycleService() {
             lifecycleMutex.withLock {
                 when (intent?.action) {
                     ACTION_STOP_AND_DISABLE -> {
-                        stopTrackingLocked()
+                        // The ONLY caller allowed to close the shared trackers:
+                        // an explicit gesture disable means "really stop".
+                        stopTrackingLocked(closeTrackers = true)
                         // Persist the master switch off (idempotent for every other
                         // caller, which already turned it off before stopping).
                         runCatching {
@@ -266,8 +289,17 @@ class CameraService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        // Perf audit P2: onDestroy used to re-run the full stopTrackingLocked()
+        // teardown here. After an ACTION_STOP that had already run it, this
+        // re-ran the job cancels and tracker closes a second time — one of the
+        // triple "HandTracker closed" lines in the 2026-09-07 logcat. The stop
+        // path already did the work; only per-instance resources are released
+        // here. Trackers survive by design (P2) and are reclaimed under
+        // memory pressure (AirControlApp.onTrimMemory) or explicit disable.
+        PerfTelemetry.recordCameraLifecycle("service-destroyed", SystemClock.elapsedRealtime())
+        runCatching { unregisterPowerSaveReceiver() }
+            .onFailure { Timber.e(it, "Power-save receiver unregister on destroy failed") }
         serviceScope.launch(Dispatchers.IO) {
-            runCatching { stopTrackingLocked() }
             val executor = analysisExecutor
             analysisExecutor = null
             executor?.shutdown()
@@ -340,12 +372,14 @@ class CameraService : LifecycleService() {
                     // Capping the analysis rate at 20 fps (only in eye mode) cuts
                     // the combined CPU load ~20–35% while the One Euro-smoothed
                     // gaze cursor stays visually smooth; battery saver still wins.
-                    configuredFps = when {
+                    // Perf audit P9: this is the mode BASE rate; applyConfiguredFps
+                    // layers the OS power-save cap on top.
+                    baseConfiguredFps = when {
                         prefs.batterySaver -> minOf(15, prefs.analysisFps)
                         prefs.eyeTrackingEnabled -> minOf(EYE_MODE_FPS_CAP, prefs.analysisFps)
                         else -> prefs.analysisFps
                     }
-                    adaptiveFpsController.updateConfiguredFps(configuredFps)
+                    applyConfiguredFps()
                     if (eyeTrackingEnabled != prefs.eyeTrackingEnabled) {
                         eyeTrackingEnabled = prefs.eyeTrackingEnabled
                         if (eyeTrackingEnabled && !faceTracker.isInitialized()) {
@@ -410,8 +444,10 @@ class CameraService : LifecycleService() {
             thermalPaused = false
             lastProcessedFrameMs = SystemClock.elapsedRealtime()
             Timber.i("Camera started")
+            PerfTelemetry.recordCameraLifecycle("started", SystemClock.elapsedRealtime())
             startFrameWatchdog()
             startThermalMonitoring()
+            registerPowerSaveReceiver()
         } catch (e: Exception) {
             Timber.e(e, "Failed to start camera")
             stopTrackingLocked()
@@ -440,22 +476,26 @@ class CameraService : LifecycleService() {
             withContext(Dispatchers.Main.immediate) {
                 val cameraSelector = CameraSelector.Builder()
                     .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
-                val resolutionSelector = ResolutionSelector.Builder()
-                    .setResolutionStrategy(
-                        ResolutionStrategy(
-                            android.util.Size(ANALYSIS_WIDTH, ANALYSIS_HEIGHT),
-                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
-                        )
-                    ).build()
-                val analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(resolutionSelector)
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build().also { img ->
-                        img.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
-                    }
-                imageAnalysis = analysis
-                provider.unbindAll()
-                provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
+                // Perf audit P6: RGBA_8888 analysis output lets
+                // ImageProxy.toBitmap() wrap the existing frame buffer instead
+                // of allocating a fresh 640×480 ARGB bitmap (~1.2 MB large
+                // object) per analyzed frame — the young-GC LOS churn proven
+                // in the 2026-09-07 logcat. If this device cannot bind the
+                // RGBA stream, fall back to YUV once and remember it.
+                val analysis = buildAnalysisUseCase(executor, rgbaOutput = !rgbaOutputFailed)
+                try {
+                    provider.unbindAll()
+                    provider.bindToLifecycle(this@CameraService, cameraSelector, analysis)
+                    imageAnalysis = analysis
+                } catch (rgbaError: Exception) {
+                    if (rgbaOutputFailed) throw rgbaError
+                    Timber.w(rgbaError, "RGBA analysis output failed to bind; falling back to YUV")
+                    rgbaOutputFailed = true
+                    val fallback = buildAnalysisUseCase(executor, rgbaOutput = false)
+                    provider.unbindAll()
+                    provider.bindToLifecycle(this@CameraService, cameraSelector, fallback)
+                    imageAnalysis = fallback
+                }
                 cameraBound = true
             }
             true
@@ -466,7 +506,42 @@ class CameraService : LifecycleService() {
         }
     }
 
-    private suspend fun stopTrackingLocked() {
+    private fun buildAnalysisUseCase(
+        executor: java.util.concurrent.ExecutorService,
+        rgbaOutput: Boolean,
+    ): ImageAnalysis {
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    android.util.Size(ANALYSIS_WIDTH, ANALYSIS_HEIGHT),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                )
+            ).build()
+        return ImageAnalysis.Builder()
+            .setResolutionSelector(resolutionSelector)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .apply {
+                if (rgbaOutput) setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            }
+            .build()
+            .also { img ->
+                img.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
+            }
+    }
+
+    private suspend fun stopTrackingLocked(closeTrackers: Boolean = false) {
+        // Perf audit P2: idempotent. Two owners used to send ACTION_STOP for
+        // one user action; the second re-ran the whole teardown (and re-closed
+        // the shared trackers) for an already-dead session. A duplicate stop
+        // intent that spawned a fresh service instance still stops that
+        // instance — it just skips the (already done) pipeline teardown.
+        if (!closeTrackers && !_state.value.isRunning && !cameraBound) {
+            Timber.d("Stop requested for an already-stopped session; nothing to do")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
+            else @Suppress("DEPRECATION") stopForeground(true)
+            stopSelf()
+            return
+        }
         restartJob?.cancel(); restartJob = null
         frameWatchdogJob?.cancel(); frameWatchdogJob = null
         thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
@@ -475,14 +550,21 @@ class CameraService : LifecycleService() {
             pipelineJobs.clear()
         }
         stopThermalMonitoring()
+        unregisterPowerSaveReceiver()
         runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
             .onFailure { Timber.e(it, "unbindAll failed") }
         cameraProvider = null
         imageAnalysis = null
         cameraBound = false
-        withContext(Dispatchers.Default) {
-            runCatching { handTracker.close() }
-            runCatching { faceTracker.close() }
+        if (closeTrackers) {
+            // Perf audit P2: only an explicit gesture disable closes the
+            // @Singleton trackers. An ordinary session stop leaves the loaded
+            // models in place so the next start skips the asset re-read and
+            // native model creation entirely.
+            withContext(Dispatchers.Default) {
+                runCatching { handTracker.close() }
+                runCatching { faceTracker.close() }
+            }
         }
         adaptiveFpsController.reset()
         publishState(ServiceState(isRunning = false, isPaused = false))
@@ -491,6 +573,7 @@ class CameraService : LifecycleService() {
         _userPaused.value = false
         thermalPaused = false
         postRecoveryFps = 0
+        PerfTelemetry.recordCameraLifecycle("stopped", SystemClock.elapsedRealtime())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
         else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
@@ -514,6 +597,10 @@ class CameraService : LifecycleService() {
         }
         updateNotification(isPaused = true)
         Timber.i(if (userInitiated) "Tracking paused by user (sticky)" else "Tracking paused by system (screen off)")
+        PerfTelemetry.recordCameraLifecycle(
+            if (userInitiated) "paused-user" else "paused-system",
+            SystemClock.elapsedRealtime(),
+        )
     }
 
     private suspend fun resumeTrackingLocked() {
@@ -549,44 +636,60 @@ class CameraService : LifecycleService() {
         }
         updateNotification(isPaused = false)
         Timber.i("Tracking resumed")
+        PerfTelemetry.recordCameraLifecycle("resumed", SystemClock.elapsedRealtime())
     }
 
     // ------------------- Frame processing -------------------
 
     private fun processImageFrame(imageProxy: ImageProxy) {
+        val startMs = SystemClock.elapsedRealtime()
         try {
             if (_state.value.isPaused) return
-            val now = SystemClock.elapsedRealtime()
             val intervalMs = adaptiveFpsController.analysisIntervalMs
-            if (now - lastFrameTimestampMs < intervalMs) return
-            lastFrameTimestampMs = now
-            lastProcessedFrameMs = now
+            if (startMs - lastFrameTimestampMs < intervalMs) {
+                // Perf audit P18: throttled frames are counted, not processed.
+                PerfTelemetry.recordFrameDroppedThrottle()
+                return
+            }
+            lastFrameTimestampMs = startMs
+            lastProcessedFrameMs = startMs
 
             val mpImage = imageProxyToMPImage(imageProxy)
             if (mpImage != null) {
                 try {
-                    handTracker.processFrame(mpImage, now)
+                    if (!handTracker.isInitialized()) PerfTelemetry.recordFrameDroppedNoTracker()
+                    handTracker.processFrame(mpImage, startMs)
                     if (eyeTrackingEnabled && faceTracker.isInitialized()) {
-                        faceTracker.processFrame(mpImage, now)
+                        faceTracker.processFrame(mpImage, startMs)
                     }
                 } finally {
                     // MPImage owns reference-counted native storage. Explicit close
                     // prevents native-memory growth during continuous tracking.
                     mpImage.close()
                 }
+                PerfTelemetry.recordFrameProcessed(startMs)
+            } else {
+                PerfTelemetry.recordFrameDroppedNoTracker()
             }
         } catch (e: Exception) {
             Timber.e(e, "processImageFrame error")
         } finally {
             imageProxy.close()
+            PerfTelemetry.recordAnalyzerDuration(SystemClock.elapsedRealtime() - startMs)
         }
     }
 
     private fun imageProxyToMPImage(imageProxy: ImageProxy): MPImage? {
-        var rawBitmap: Bitmap? = null
         return try {
+            // Perf audit P6: with RGBA_8888 output (the default bind path)
+            // toBitmap() WRAPS the frame's existing buffer — there is nothing
+            // to allocate and, crucially, nothing to recycle: recycling a
+            // wrapper would free storage CameraX still owns. On the YUV
+            // fallback path toBitmap() allocates, but on API 26+ bitmap
+            // pixels are GC-managed native allocations, so skipping recycle()
+            // costs only promptness, not memory. One rule for both paths:
+            // never recycle the source bitmap here.
             val sourceBitmap = imageProxy.toBitmap()
-            rawBitmap = sourceBitmap
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
             val targetW: Int
             val targetH: Int
@@ -618,7 +721,7 @@ class CameraService : LifecycleService() {
         } catch (e: Exception) {
             Timber.e(e, "imageProxyToMPImage failed")
             null
-        } finally { rawBitmap?.recycle() }
+        }
     }
 
     // ------------------- Notifications -------------------
@@ -697,6 +800,10 @@ class CameraService : LifecycleService() {
         frameWatchdogJob = serviceScope.launchGuarded("frame watchdog", restart = true) {
             while (isActive) {
                 delay(WATCHDOG_PERIOD_MS)
+                // Perf audit P18: one rate-limited summary per ≥30 s window,
+                // emitted from this slow loop (never from the frame path) and
+                // only while PerfTelemetry.enableLogging (debug builds).
+                PerfTelemetry.maybeLogSummary(SystemClock.elapsedRealtime())
                 val s = _state.value
                 if (!s.isRunning || thermalPaused) continue
                 if (s.isPaused || userPaused || systemPaused) {
@@ -787,6 +894,7 @@ class CameraService : LifecycleService() {
     }
 
     private suspend fun restartCamera() {
+        PerfTelemetry.recordWatchdogAction("restart-camera", SystemClock.elapsedRealtime())
         runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
             .onFailure { Timber.e(it, "unbindAll on restart failed") }
         imageAnalysis = null
@@ -829,14 +937,78 @@ class CameraService : LifecycleService() {
         // the camera use-case (resolution/fps), which can throw on some OEM HALs
         // while the camera is mid-reconfiguration; losing thermal throttling (or
         // the process) is worse than one skipped update, so retry.
+        //
+        // Perf audit P5: samples now flow through the ThermalGovernor — the
+        // raw 5 s poll used to drive applyThermalThrottling directly, so a
+        // single threshold-crossing sample flipped the FPS tier and cancelled
+        // the 30 s recovery ramp (30↔10 oscillation). Throttling is applied
+        // only on a governor-confirmed transition.
+        val governor = thermalGovernor
         thermalMonitoringJob = serviceScope.launchGuarded("thermal", restart = true) {
-            thermalMonitor.thermalStatus.collectGuarded("thermal") { applyThermalThrottling(it) }
+            thermalMonitor.thermalSamples.collectGuarded("thermal") { raw ->
+                val previous = governor.current()
+                val effective = governor.onSample(raw, System.currentTimeMillis())
+                if (effective != null) {
+                    Timber.i("Effective thermal status applied: %s → %s", previous, effective)
+                    PerfTelemetry.recordThermalTransition(
+                        from = previous.name,
+                        to = effective.name,
+                        nowMs = SystemClock.elapsedRealtime(),
+                    )
+                    applyThermalThrottling(effective)
+                }
+            }
         }
     }
 
     private fun stopThermalMonitoring() {
         thermalMonitoringJob?.cancel(); thermalMonitoringJob = null
         thermalMonitor.stopMonitoring(resetStatus = false) // fix #43
+        // Perf audit P5: a stopped monitor must not leave pending confirmation
+        // counts behind; the next session debounces from a clean NONE.
+        thermalGovernor.reset()
+    }
+
+    // ------------------- Power save (perf audit P9) -------------------
+
+    /**
+     * OS power-save mode caps the analysis FPS while active. Registered per
+     * session (unregistered on stop and destroy) so a stopped service never
+     * keeps a receiver alive. Battery LEVEL and thermal status are handled
+     * elsewhere by design — see ResourceGovernor.
+     */
+    private fun registerPowerSaveReceiver() {
+        if (powerSaveReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val pm = getSystemService(POWER_SERVICE) as? PowerManager
+                val active = pm?.isPowerSaveMode == true
+                PerfTelemetry.recordPowerSaveChanged(active, SystemClock.elapsedRealtime())
+                Timber.i("OS power-save mode %s — reapplying the FPS cap", if (active) "ON" else "OFF")
+                applyConfiguredFps()
+            }
+        }
+        powerSaveReceiver = receiver
+        runCatching {
+            registerReceiver(receiver, IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
+        }.onFailure { Timber.e(it, "Could not register the power-save receiver") }
+    }
+
+    private fun unregisterPowerSaveReceiver() {
+        val receiver = powerSaveReceiver ?: return
+        powerSaveReceiver = null
+        runCatching { unregisterReceiver(receiver) }
+    }
+
+    /** Effective configured FPS = mode base rate × OS power-save cap. */
+    private fun applyConfiguredFps() {
+        val pm = getSystemService(POWER_SERVICE) as? PowerManager
+        val capped = minOf(
+            baseConfiguredFps,
+            resourceGovernor.fpsCapFor(isPowerSaveMode = pm?.isPowerSaveMode == true),
+        )
+        configuredFps = capped
+        adaptiveFpsController.updateConfiguredFps(capped)
     }
 
     private fun applyThermalThrottling(status: com.aircontrol.tracking.ThermalStatus) {

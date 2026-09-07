@@ -69,6 +69,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private var cameraWatchdogJob: Job? = null
     private var cameraRetryJob: Job? = null
 
+    // Perf audit P1/P11: rate-limited watchdog logging — emit when the
+    // decision changes, or at most once per repeat window while it is steady.
+    private var lastWatchdogLogged: CameraRevivePolicy.Decision? = null
+    private var lastWatchdogLogAtMs = 0L
+
     // Overlays (must only be touched on the main thread).
     private var cursorOverlay: CursorOverlay? = null
     private var statusOverlay: StatusOverlay? = null
@@ -1086,34 +1091,68 @@ class GestureControlAccessibilityService : AccessibilityService() {
         cameraWatchdogJob = serviceScope.launchGuarded("camera watchdog", restart = true) {
             while (isActive) {
                 delay(CAMERA_WATCHDOG_MS)
-                val wantsTracking = currentPreferences.gesturesEnabled
-                val isTracking = cameraServiceManager?.isTracking() == true
-                val keyguard = keyguardLocked()
-                when {
-                    // Screen locked: the session stays down until the unlock
-                    // broadcast, which calls wakeTracking(). Reviving behind a
-                    // lock screen would burn the camera (and battery) for nobody,
-                    // and a camera FGS start while locked is exactly what some
-                    // OEM policies reject.
-                    wantsTracking && !isTracking && keyguard -> Unit
-                    wantsTracking && !isTracking &&
-                        cameraServiceManager?.autoReviveEnabled == false -> {
-                        // Someone else owns the camera on purpose (debug screen).
-                        Timber.v("Watchdog: camera revive suppressed (exclusive camera user)")
-                    }
-                    wantsTracking && !isTracking && cameraPermissionGranted() -> {
-                        // Fix (audit #23): attempt revival whenever the permission is
-                        // there, not only while AirControl is foreground. Failures are
-                        // caught and retried on the next tick.
-                        Timber.w("Watchdog: gestures enabled — reviving camera")
+                // Perf audit P1/P11: one pure decision function replaces the
+                // ad-hoc when-chain that attempted a revival on EVERY 5 s tick
+                // while the Activity was invisible (startCameraService() then
+                // no-oped) and logged a WARN each time — 30 attempt+defer pairs
+                // per window in the 2026-09-07 logcat. The preconditions the
+                // start path checks anyway (keyguard, exclusive user,
+                // permission, visibility) are now evaluated BEFORE the attempt.
+                val decision = CameraRevivePolicy.decide(
+                    gesturesEnabled = currentPreferences.gesturesEnabled,
+                    isTracking = cameraServiceManager?.isTracking() == true,
+                    keyguardLocked = keyguardLocked(),
+                    exclusiveCameraUser = cameraServiceManager?.autoReviveEnabled == false,
+                    permissionGranted = cameraPermissionGranted(),
+                    activityVisible = MainActivity.isVisible,
+                )
+                when (decision) {
+                    CameraRevivePolicy.Decision.REVIVE -> {
+                        // Fix (audit #23) semantics preserved: with the
+                        // permission granted and the Activity visible, revive
+                        // immediately. Failures are caught and retried on the
+                        // next tick.
+                        logWatchdogDecision(decision)
+                        com.aircontrol.runtime.PerfTelemetry.recordWatchdogAction(
+                            "revive", android.os.SystemClock.elapsedRealtime(),
+                        )
                         startCameraService()
                     }
-                    wantsTracking && !isTracking -> {
-                        Timber.v("Watchdog: camera restart deferred until permission is granted")
-                    }
-                    !wantsTracking && isTracking -> stopCameraService()
+                    CameraRevivePolicy.Decision.STOP_SERVICE -> stopCameraService()
+                    else -> logWatchdogDecision(decision)
                 }
             }
+        }
+    }
+
+    /**
+     * Rate-limited watchdog logging: emits when the decision changes or at
+     * most once per [WATCHDOG_LOG_REPEAT_MS] while the same decision persists.
+     * The old code logged a W+V pair every 5 s tick forever (WARN survives the
+     * release log filter), which the perf audit proved to be the single
+     * largest steady-state log source.
+     */
+    private fun logWatchdogDecision(decision: CameraRevivePolicy.Decision) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (decision == lastWatchdogLogged && now - lastWatchdogLogAtMs < WATCHDOG_LOG_REPEAT_MS) {
+            return
+        }
+        lastWatchdogLogged = decision
+        lastWatchdogLogAtMs = now
+        when (decision) {
+            CameraRevivePolicy.Decision.ALREADY_CONSISTENT -> Unit // steady state: never log
+            CameraRevivePolicy.Decision.STOP_SERVICE ->
+                Timber.i("Watchdog: gestures disabled while tracking — stopping the camera service")
+            CameraRevivePolicy.Decision.REVIVE ->
+                Timber.w("Watchdog: gestures enabled — reviving camera")
+            CameraRevivePolicy.Decision.DEFER_KEYGUARD ->
+                Timber.v("Watchdog: camera start deferred (keyguard locked)")
+            CameraRevivePolicy.Decision.SUPPRESS_EXCLUSIVE_USER ->
+                Timber.v("Watchdog: camera revive suppressed (exclusive camera user)")
+            CameraRevivePolicy.Decision.DEFER_PERMISSION ->
+                Timber.v("Watchdog: camera restart deferred until permission is granted")
+            CameraRevivePolicy.Decision.DEFER_NOT_VISIBLE ->
+                Timber.v("Watchdog: camera start deferred (AirControl Activity not visible)")
         }
     }
 
@@ -1393,6 +1432,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val CAMERA_WATCHDOG_MS = 5_000L
         private const val CAMERA_RETRY_BASE_MS = 2_000L
         private const val CAMERA_MAX_RETRIES = 6
+
+        // Perf audit P11: a steady watchdog decision is logged at most this
+        // often — logging must never itself become a performance problem.
+        private const val WATCHDOG_LOG_REPEAT_MS = 60_000L
 
         private const val INJECTION_RETRY_MS = 1_500L
         private const val INJECTION_MAX_RETRIES = 4

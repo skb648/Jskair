@@ -86,6 +86,15 @@ interface FaceTracker {
      * `personalized = true`; otherwise the tracker falls back to iris ratios.
      */
     fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?)
+
+    /**
+     * Perf audit P8: marks whether a gaze-calibration session is actively
+     * collecting. The per-frame advanced feature pipeline (normalization +
+     * feature-vector construction) only runs while this is true or a
+     * personalized model is installed — with neither, the vectors have no
+     * consumer and building them every frame is pure overhead.
+     */
+    fun setCalibrationCollecting(active: Boolean)
 }
 
 @Singleton
@@ -96,8 +105,15 @@ class FaceTrackerImpl @Inject constructor(
     private var faceLandmarker: FaceLandmarker? = null
     @Volatile private var _isInitialized = false
     @Volatile private var isClosing = false
-    private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
+
+    // Perf audit P7: guards detectAsync submission against close().
+    private val closeLock = Any()
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
+
+    // Perf audit P8: true only while a gaze-calibration session is actively
+    // collecting. Together with a non-null personalized model it decides
+    // whether the per-frame feature-vector tier runs at all.
+    @Volatile private var calibrationCollecting = false
 
     // Fix A5: the active personalized model (null = legacy ratio mode).
     @Volatile private var personalizedModel: PersonalizedGazeCalibrationModel? = null
@@ -129,7 +145,10 @@ class FaceTrackerImpl @Inject constructor(
 
     override fun initialize() {
         if (_isInitialized) {
-            Timber.w("FaceTracker already initialized")
+            // Perf audit P2: reuse across service stop/start is now the NORMAL
+            // path (models survive a session stop), so this is informational,
+            // not a warning.
+            Timber.d("FaceTracker already initialized — reusing the loaded model")
             return
         }
         if (!validateModelFile()) {
@@ -147,6 +166,10 @@ class FaceTrackerImpl @Inject constructor(
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         Timber.i("FaceTracker initialized successfully")
+        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+            "face-initialized",
+            android.os.SystemClock.elapsedRealtime(),
+        )
     }
 
     override fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?) {
@@ -164,38 +187,53 @@ class FaceTrackerImpl @Inject constructor(
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
         if (isClosing || !_isInitialized) return
-        val landmarker = faceLandmarker ?: return
-        lastImageWidthPx = mpImage.width
-        lastImageHeightPx = mpImage.height
-        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
-            lastSubmittedTimestampMs + 1L
-        } else {
-            timestampMs
-        }
-        lastSubmittedTimestampMs = mediaPipeTimestampMs
-        try {
-            landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
-        } catch (e: Exception) {
-            Timber.e(e, "Error processing face frame at timestamp %d", mediaPipeTimestampMs)
+        // Perf audit P7: submission and close share one lock (see HandTracker).
+        synchronized(closeLock) {
+            if (isClosing) return
+            val landmarker = faceLandmarker ?: return
+            lastImageWidthPx = mpImage.width
+            lastImageHeightPx = mpImage.height
+            val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+                lastSubmittedTimestampMs + 1L
+            } else {
+                timestampMs
+            }
+            lastSubmittedTimestampMs = mediaPipeTimestampMs
+            try {
+                landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
+            } catch (e: Exception) {
+                Timber.e(e, "Error processing face frame at timestamp %d", mediaPipeTimestampMs)
+            }
         }
     }
 
     override fun close() {
-        isClosing = true
-        val latch = java.util.concurrent.CountDownLatch(1)
-        pendingCloseLatch = latch
-        try {
-            latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)
-            faceLandmarker?.close()
-        } catch (e: Exception) {
-            Timber.e(e, "Error closing FaceLandmarker")
+        // Perf audit P7: no unconditional 200 ms latch wait — MediaPipe's own
+        // close() drains the graph, and the lock keeps submissions out.
+        synchronized(closeLock) {
+            if (!_isInitialized && faceLandmarker == null) return // idempotent
+            isClosing = true
+            try {
+                faceLandmarker?.close()
+            } catch (e: Exception) {
+                Timber.e(e, "Error closing FaceLandmarker")
+            }
+            faceLandmarker = null
+            _isInitialized = false
+            isClosing = false
+            lastSubmittedTimestampMs = Long.MIN_VALUE
         }
-        faceLandmarker = null
-        _isInitialized = false
-        isClosing = false
-        lastSubmittedTimestampMs = Long.MIN_VALUE
-        pendingCloseLatch = null
         Timber.i("FaceTracker closed")
+        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+            "face-closed",
+            android.os.SystemClock.elapsedRealtime(),
+        )
+    }
+
+    override fun setCalibrationCollecting(active: Boolean) {
+        // Perf audit P8: a calibration session needs the per-frame feature
+        // vectors; nothing else does unless a personalized model is installed.
+        calibrationCollecting = active
     }
 
     override fun isInitialized(): Boolean = _isInitialized
@@ -203,8 +241,13 @@ class FaceTrackerImpl @Inject constructor(
     @Suppress("DEPRECATION")
     private fun handleResult(result: FaceLandmarkerResult, resultTimestampMs: Long) {
         if (isClosing) {
-            pendingCloseLatch?.countDown()
             return
+        }
+        // Perf audit P18: end-to-end inference latency (the result timestamp
+        // echoes the elapsedRealtime value submitted with the frame).
+        val latencyMs = android.os.SystemClock.elapsedRealtime() - resultTimestampMs
+        if (latencyMs in 0..60_000L) {
+            com.aircontrol.runtime.PerfTelemetry.recordFaceInference(latencyMs)
         }
 
         val faceLandmarks = result.faceLandmarks()
@@ -238,6 +281,14 @@ class FaceTrackerImpl @Inject constructor(
         var posePitchDeg = 0f
         val width = lastImageWidthPx
         val height = lastImageHeightPx
+        // Perf audit P8: the normalized feature vector exists for exactly two
+        // consumers — the personalized model's per-frame prediction, and an
+        // active gaze-calibration collection. When neither is present, its
+        // per-frame construction is skipped. The head-POSE tier still runs:
+        // the legacy iris-ratio cursor consumes the pose angles for the
+        // audit-#5 head-angle confidence degradation, and cursor behavior
+        // must not change.
+        val advancedPipelineNeeded = personalizedModel != null || calibrationCollecting
         if (landmarks.size >= CanonicalEyes.MIN_LANDMARK_COUNT && width > 0 && height > 0) {
             // A single bad frame must never kill the cursor: any failure here
             // simply falls back to the legacy iris-ratio gaze below.
@@ -245,21 +296,28 @@ class FaceTrackerImpl @Inject constructor(
                 val frame = buildFaceLandmarkFrame(result, landmarks, ts, width, height)
                 val features = EyeFeatureExtractor.extract(frame)
                 val pose = HeadPoseEstimator.estimate(frame, features)
-                val normalized = HeadPoseNormalizer.normalize(features, pose)
-                val vector = GazeCalibrationFeatureVectorBuilder.from(normalized)
-                if (vector != null) {
-                    featureVector = vector
-                    poseValid = pose.isValid
-                    val eyeQuality = minOf(
-                        features.left?.quality ?: 0f,
-                        features.right?.quality ?: 0f,
-                    )
-                    advancedQuality = minOf(eyeQuality, pose.confidence).coerceIn(0f, 1f)
-                    if (pose.isValid) {
-                        poseAnglesKnown = true
-                        poseYawDeg = pose.yawDeg
-                        posePitchDeg = pose.pitchDeg
+                if (advancedPipelineNeeded) {
+                    val normalized = HeadPoseNormalizer.normalize(features, pose)
+                    val vector = GazeCalibrationFeatureVectorBuilder.from(normalized)
+                    if (vector != null) {
+                        featureVector = vector
+                        poseValid = pose.isValid
+                        val eyeQuality = minOf(
+                            features.left?.quality ?: 0f,
+                            features.right?.quality ?: 0f,
+                        )
+                        advancedQuality = minOf(eyeQuality, pose.confidence).coerceIn(0f, 1f)
+                        if (pose.isValid) {
+                            poseAnglesKnown = true
+                            poseYawDeg = pose.yawDeg
+                            posePitchDeg = pose.pitchDeg
+                        }
                     }
+                } else if (pose.isValid) {
+                    poseValid = true
+                    poseAnglesKnown = true
+                    poseYawDeg = pose.yawDeg
+                    posePitchDeg = pose.pitchDeg
                 }
             }.onFailure { Timber.e(it, "Advanced gaze pipeline failed — using iris-ratio fallback") }
         }

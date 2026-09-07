@@ -69,6 +69,11 @@ class CameraServiceManager @Inject constructor(
      * Safe to call multiple times — CameraService handles idempotency internally.
      */
     fun stopTracking() {
+        // Perf audit P10: startService() with ACTION_STOP while the service is
+        // not running CREATES a service instance whose only job is to stop
+        // itself — one of the duplicate lifecycle churn sources in the
+        // 2026-09-07 logcat. Nothing running means nothing to stop.
+        if (!CameraService.isRunning.value) return
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = CameraService.ACTION_STOP
@@ -87,6 +92,9 @@ class CameraServiceManager @Inject constructor(
      * watchdog may auto-revive; a user pause (default) is sticky.
      */
     fun pauseTracking(systemInitiated: Boolean = false) {
+        // Perf audit P10: same guard as stopTracking — never spawn a service
+        // instance just to pause a session that isn't running.
+        if (!CameraService.isRunning.value) return
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = if (systemInitiated) CameraService.ACTION_SYSTEM_PAUSE else CameraService.ACTION_PAUSE

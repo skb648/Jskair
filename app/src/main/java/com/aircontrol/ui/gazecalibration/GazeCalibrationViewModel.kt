@@ -64,6 +64,10 @@ class GazeCalibrationViewModel @Inject constructor(
 ) : ViewModel() {
 
     override fun onCleared() {
+        // Perf audit P8: belt-and-braces — if the VM dies mid-collection the
+        // coroutine's finally normally runs, but never leave the tracker's
+        // advanced pipeline latched on for a dead session.
+        runCatching { faceTracker.setCalibrationCollecting(false) }
         Suppression.release()
         super.onCleared()
     }
@@ -136,6 +140,13 @@ class GazeCalibrationViewModel @Inject constructor(
         _uiState.value = state.copy(isCollecting = true, error = null)
 
         viewModelScope.launch {
+            // Perf audit P8: the face tracker only builds per-frame feature
+            // vectors while a calibration collection is active (or a
+            // personalized model is installed). Request them for the whole
+            // fixation + collection window; the finally clears the flag on
+            // every exit path, including cancellation.
+            faceTracker.setCalibrationCollecting(true)
+            try {
             // Fixate delay: let the user settle their gaze (and head) on the target.
             delay(FIXATE_MS)
 
@@ -209,6 +220,10 @@ class GazeCalibrationViewModel @Inject constructor(
                     currentPointIndex = next,
                     isCollecting = false,
                 )
+            }
+            } finally {
+                // Perf audit P8: never leave the advanced pipeline latched on.
+                faceTracker.setCalibrationCollecting(false)
             }
         }
     }

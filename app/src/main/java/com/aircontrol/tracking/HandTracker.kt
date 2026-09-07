@@ -33,7 +33,9 @@ class HandTrackerImpl @Inject constructor(
     private var handLandmarker: HandLandmarker? = null
     @Volatile private var _isInitialized = false
     @Volatile private var isClosing = false
-    private var pendingCloseLatch: java.util.concurrent.CountDownLatch? = null
+
+    // Perf audit P7: guards detectAsync submission against close().
+    private val closeLock = Any()
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
@@ -46,7 +48,10 @@ class HandTrackerImpl @Inject constructor(
 
     override fun initialize() {
         if (_isInitialized) {
-            Timber.w("HandTracker already initialized")
+            // Perf audit P2: reuse across service stop/start is now the NORMAL
+            // path (models survive a session stop), so this is informational,
+            // not a warning.
+            Timber.d("HandTracker already initialized — reusing the loaded model")
             return
         }
         if (!validateModelFile()) {
@@ -65,45 +70,64 @@ class HandTrackerImpl @Inject constructor(
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         Timber.i("HandTracker initialized successfully")
+        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+            "hand-initialized",
+            android.os.SystemClock.elapsedRealtime(),
+        )
     }
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long) {
         if (isClosing || !_isInitialized) return
-        val landmarker = handLandmarker ?: return
+        // Perf audit P7: submission and close share one lock. Before, a
+        // detectAsync submission could interleave with landmarker.close() on
+        // another thread — a native use-after-close window.
+        synchronized(closeLock) {
+            if (isClosing) return
+            val landmarker = handLandmarker ?: return
 
-        // MediaPipe LIVE_STREAM timestamps must be monotonically increasing.
-        // Use the camera pipeline's elapsedRealtime timestamp as the authoritative
-        // value instead of generating another clock value here.
-        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
-            lastSubmittedTimestampMs + 1L
-        } else {
-            timestampMs
-        }
-        lastSubmittedTimestampMs = mediaPipeTimestampMs
+            // MediaPipe LIVE_STREAM timestamps must be monotonically increasing.
+            // Use the camera pipeline's elapsedRealtime timestamp as the authoritative
+            // value instead of generating another clock value here.
+            val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+                lastSubmittedTimestampMs + 1L
+            } else {
+                timestampMs
+            }
+            lastSubmittedTimestampMs = mediaPipeTimestampMs
 
-        try {
-            landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
-        } catch (e: Exception) {
-            Timber.e(e, "Error processing hand frame at timestamp %d", mediaPipeTimestampMs)
+            try {
+                landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
+            } catch (e: Exception) {
+                Timber.e(e, "Error processing hand frame at timestamp %d", mediaPipeTimestampMs)
+            }
         }
     }
 
     override fun close() {
-        isClosing = true
-        val latch = java.util.concurrent.CountDownLatch(1)
-        pendingCloseLatch = latch
-        try {
-            latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)
-            handLandmarker?.close()
-        } catch (e: Exception) {
-            Timber.e(e, "Error closing HandLandmarker")
+        // Perf audit P7: the old close() waited a fixed 200 ms on a latch that
+        // only counted down when an async *result* happened to arrive — every
+        // close with no in-flight inference blocked the caller a full 200 ms
+        // (on the MAIN thread via DebugViewModel). MediaPipe's own close()
+        // drains the graph, so the wait bought nothing. The lock guarantees no
+        // submission is in flight while the native landmarker is released.
+        synchronized(closeLock) {
+            if (!_isInitialized && handLandmarker == null) return // idempotent
+            isClosing = true
+            try {
+                handLandmarker?.close()
+            } catch (e: Exception) {
+                Timber.e(e, "Error closing HandLandmarker")
+            }
+            handLandmarker = null
+            _isInitialized = false
+            isClosing = false
+            lastSubmittedTimestampMs = Long.MIN_VALUE
         }
-        handLandmarker = null
-        _isInitialized = false
-        isClosing = false
-        lastSubmittedTimestampMs = Long.MIN_VALUE
-        pendingCloseLatch = null
         Timber.i("HandTracker closed")
+        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+            "hand-closed",
+            android.os.SystemClock.elapsedRealtime(),
+        )
     }
 
     override fun isInitialized(): Boolean = _isInitialized
@@ -111,8 +135,13 @@ class HandTrackerImpl @Inject constructor(
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
         if (isClosing) {
-            pendingCloseLatch?.countDown()
             return
+        }
+        // Perf audit P18: end-to-end inference latency — the result timestamp
+        // echoes the elapsedRealtime value submitted with the frame.
+        val latencyMs = android.os.SystemClock.elapsedRealtime() - resultTimestampMs
+        if (latencyMs in 0..60_000L) {
+            com.aircontrol.runtime.PerfTelemetry.recordHandInference(latencyMs)
         }
 
         val timestampMs = resultTimestampMs
