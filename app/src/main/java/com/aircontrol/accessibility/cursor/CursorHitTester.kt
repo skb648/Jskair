@@ -64,7 +64,7 @@ private class WindowAdapter(window: AccessibilityWindowInfo) : CursorHitWindowSo
 }
 
 /** Adapts a platform node to the pure walk's view (never retained; file-private). */
-private class NodeAdapter(node: AccessibilityNodeInfo) : CursorHitNodeSource {
+private class NodeAdapter(private val node: AccessibilityNodeInfo) : CursorHitNodeSource {
 
     private val boundsRect = Rect()
 
