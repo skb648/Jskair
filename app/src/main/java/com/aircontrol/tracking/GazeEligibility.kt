@@ -55,6 +55,16 @@ enum class GazeEligibility {
 
     /** Show AND allow click/dwell/blink targets: trustworthy enough to act on. */
     ACTIONABLE,
+    ;
+
+    /** Anything but NOTHING: the position may be re-estimated silently (warm-up, held jump). */
+    val updatesCursor: Boolean get() = this != NOTHING
+
+    /** Display floor. */
+    val showsCursor: Boolean get() = this == VISIBLE || this == ACTIONABLE
+
+    /** Action floor: the only state in which a click, dwell or blink-click may fire. */
+    val canAct: Boolean get() = this == ACTIONABLE
 }
 
 /**
@@ -162,9 +172,16 @@ object GazeEligibilityPolicy {
     /** Calibration is stricter about cross-eye agreement than acting is. */
     const val CALIBRATION_AGREEMENT = 0.5f
 
+    /**
+     * The verdict for one frame. The three display/action predicates live on
+     * [GazeEligibility] itself — one home for the meaning — and are delegated
+     * here so callers holding a `Decision` and callers holding only a published
+     * `GazePoint` (which carries the enum, not the Decision) ask the same
+     * question and get the same answer.
+     */
     data class Decision(val eligibility: GazeEligibility, val rejectionReason: GazeDiagnostics.RejectionReason?) {
-        val updatesCursor: Boolean get() = eligibility != GazeEligibility.NOTHING
-        val showsCursor: Boolean get() = eligibility == GazeEligibility.VISIBLE || eligibility == GazeEligibility.ACTIONABLE
-        val canAct: Boolean get() = eligibility == GazeEligibility.ACTIONABLE
+        val updatesCursor: Boolean get() = eligibility.updatesCursor
+        val showsCursor: Boolean get() = eligibility.showsCursor
+        val canAct: Boolean get() = eligibility.canAct
     }
 }
