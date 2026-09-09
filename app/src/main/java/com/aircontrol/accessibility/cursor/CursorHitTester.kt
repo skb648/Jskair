@@ -43,40 +43,41 @@ object CursorHitTester {
         return BoundedCursorTreeWalk.hitTest(windows = adapted, x = x, y = y)
     }
 
-    /** Reads ONLY scalar facts — no node object escapes this function. */
-    private fun snapshotOf(node: AccessibilityNodeInfo): CursorNodeSnapshot = CursorNodeSnapshot(
-        className = node.className?.toString() ?: "",
-        isClickable = node.isClickable,
-        isEnabled = node.isEnabled,
-        isEditable = node.isEditable,
-        hasClickAction = (node.actions and AccessibilityNodeInfo.ACTION_CLICK) != 0,
-    )
+}
 
-    /** Adapts a platform window to the pure walk's view. */
-    private class WindowAdapter(window: AccessibilityWindowInfo) : CursorHitWindowSource {
-        override val isOverlayLike: Boolean =
-            window.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY ||
-                window.type == AccessibilityWindowInfo.TYPE_MAGNIFICATION_OVERLAY
+/** Reads ONLY scalar facts — no node object escapes this function. */
+private fun snapshotOf(node: AccessibilityNodeInfo): CursorNodeSnapshot = CursorNodeSnapshot(
+    className = node.className?.toString() ?: "",
+    isClickable = node.isClickable,
+    isEnabled = node.isEnabled,
+    isEditable = node.isEditable,
+    hasClickAction = (node.actions and AccessibilityNodeInfo.ACTION_CLICK) != 0,
+)
 
-        override val root: CursorHitNodeSource? = window.root?.let(::NodeAdapter)
+/** Adapts a platform window to the pure walk's view (file-private). */
+private class WindowAdapter(window: AccessibilityWindowInfo) : CursorHitWindowSource {
+    override val isOverlayLike: Boolean =
+        window.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY ||
+            window.type == AccessibilityWindowInfo.TYPE_MAGNIFICATION_OVERLAY
+
+    override val root: CursorHitNodeSource? = window.root?.let { NodeAdapter(it) }
+}
+
+/** Adapts a platform node to the pure walk's view (never retained; file-private). */
+private class NodeAdapter(node: AccessibilityNodeInfo) : CursorHitNodeSource {
+
+    private val boundsRect = Rect()
+
+    override val bounds: CursorRect? by lazy {
+        node.getBoundsInScreen(boundsRect)
+        CursorRect(boundsRect.left, boundsRect.top, boundsRect.right, boundsRect.bottom)
     }
 
-    /** Adapts a platform node to the pure walk's view (never retained). */
-    private class NodeAdapter(node: AccessibilityNodeInfo) : CursorHitNodeSource {
+    override val childCount: Int
+        get() = node.childCount
 
-        private val boundsRect = Rect()
+    override fun childAt(index: Int): CursorHitNodeSource? =
+        node.getChild(index)?.let { NodeAdapter(it) }
 
-        override val bounds: CursorRect? by lazy {
-            node.getBoundsInScreen(boundsRect)
-            CursorRect(boundsRect.left, boundsRect.top, boundsRect.right, boundsRect.bottom)
-        }
-
-        override val childCount: Int
-            get() = node.childCount
-
-        override fun childAt(index: Int): CursorHitNodeSource? =
-            node.getChild(index)?.let(::NodeAdapter)
-
-        override fun snapshot(): CursorNodeSnapshot = snapshotOf(node)
-    }
+    override fun snapshot(): CursorNodeSnapshot = snapshotOf(node)
 }
