@@ -186,3 +186,33 @@ engine's `COMMITTED`/`REJECTED` labels), so it cannot grow either. Counters and 
 `extraBufferCapacity = 64` with `DROP_OLDEST`, i.e. a slow collector drops rather than backs up the
 frame thread. Nothing in the swipe path does I/O, allocation-free? no: allocation yes, I/O none —
 and nothing blocks the main thread: the debug screen only reads `StateFlow` values it is handed.
+
+## Artifacts
+
+Built by `main` = `c49b320`, run
+[34325871553](https://github.com/skb648/Jskair/actions/runs/34325871553) — "Android APK CI", all
+three jobs `success` — plus `Android 17 Debug APK` in run 34325871675 (`success`, which is the run
+that executes `:app:testDebugUnitTest` and `:gesture-engine:test`).
+
+| artifact | local path (sandbox) | bytes | SHA-256 |
+|---|---|---|---|
+| debug | `apks/debug/app-debug.apk` | 76,761,016 | `3809579a2c0ee174484fdad557e41fa53ec91d99b1baecae7cc62a8261a8ad8e` |
+| signed release | `apks/release/app-release.apk` | 55,165,199 | `73664a0bfcc224220e8ca00184441191d64e1568d25649902017b89759ee630a` |
+
+Both were downloaded from the CI artifacts (`aircontrol-debug-apk`, `aircontrol-release-signed-apk`,
+14-day retention) and re-checked here rather than trusted:
+`build-tools/37.0.0/apksigner verify --print-certs app-release.apk` reports a V3.0 signer with
+`CN=AirControl Release, OU=Mobile, O=AirControl, L=Udaipur, ST=Rajasthan, C=IN` and certificate
+SHA-256 `8bae93eb7b6cd64d5edf2827344b11e1aed4ecc8ed628005bf12cf230c7985c2`.
+
+The debug APK is larger than the release one because this app does not shrink resources; the release
+build is the one signed with the repo's `KEYSTORE_*` secrets, and the CI job fails if the file is
+missing (`if-no-files-found: error`) or `apksigner verify` rejects it.
+
+## Hand-off state
+
+- `main` contains the audit and this evidence log; the work branch
+  `fix/eye-tracking-swipe-intent-recovery` is identical to it, and PR #10 shows as merged.
+- The local clone's `origin` URL no longer embeds an access token (`git remote set-url`).
+- **A personal access token was pasted into this conversation in plaintext and was used for the
+  pushes. It must be revoked/rotated by its owner** — no action here can undo its exposure.
