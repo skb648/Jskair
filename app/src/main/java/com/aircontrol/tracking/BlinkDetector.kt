@@ -82,6 +82,31 @@ class BlinkDetector(
         wasClosed = false
     }
 
+    /** True while a blink (eye closure) is in progress and not yet completed. */
+    val hasInProgressBlink: Boolean
+        get() = wasClosed
+
+    private var abortedBlinkCount = 0
+
+    /** How many in-progress blinks were aborted (Issue 4 metrics). */
+    fun abortedBlinkCount(): Int = abortedBlinkCount
+
+    /**
+     * Issue 4: aborts an in-progress blink because the eyes stopped being
+     * observed (face lost / occlusion / tracking gap). A closure that was
+     * interrupted can no longer be assumed continuous, so it must NEVER
+     * complete into a click after re-acquisition. This is a no-op when no
+     * blink is in progress, so transient uncertain frames that occur while
+     * the eyes are open do not disturb the detector at all.
+     */
+    fun abortInProgressBlink() {
+        if (wasClosed || closedStartMs >= 0L) {
+            closedStartMs = -1L
+            wasClosed = false
+            abortedBlinkCount++
+        }
+    }
+
     /**
      * True while the eyes are currently detected as closed. Consumers should
      * freeze the cursor while this is true — the iris landmarks are unreliable

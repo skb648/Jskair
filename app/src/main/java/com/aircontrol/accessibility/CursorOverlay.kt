@@ -12,6 +12,8 @@ import timber.log.Timber
 import com.aircontrol.accessibility.cursor.CursorDotView
 import com.aircontrol.accessibility.cursor.CursorGeometry
 import com.aircontrol.accessibility.cursor.CursorIcon
+import com.aircontrol.accessibility.cursor.CursorVisibilityAction
+import com.aircontrol.accessibility.cursor.CursorVisibilityStateMachine
 
 /**
  * Accessibility overlay that renders the NATIVE-LIKE cursor (a clean,
@@ -41,6 +43,18 @@ class CursorOverlay(
     private var cursorView: View? = null
     private var isAdded = false
     private var isVisible = false
+
+    // Issue 1: cursor visibility is a state machine, not a frame operation.
+    // Repeated show() while visible/fading-in is a no-op; show() during a
+    // fade-out cancels the fade-out and restores full visibility without
+    // starting a new fade-in. Animations are transitions between explicit
+    // states (HIDDEN/SHOWING/VISIBLE/HIDING), never per-frame restarts.
+    private val visibilityMachine = CursorVisibilityStateMachine()
+
+    // Monotonic token that lets stale animation end-callbacks know they belong
+    // to an animation that was cancelled/removed — a cancelled fade must never
+    // flip the machine (and a removed overlay must not inherit old callbacks).
+    private var animationGeneration = 0L
 
     // Logical cursor position in screen pixels (kept as floats; rounding to
     // window ints happens once per applied frame, never accumulated).
@@ -118,41 +132,59 @@ class CursorOverlay(
 
         updateViewLayout()
 
-        if (!isVisible) show()
+        // Idempotent: no-op while visible or fading in; see CursorVisibilityStateMachine.
+        if (!visibilityMachine.isEffectivelyVisible) show()
     }
 
-    /** Shows the cursor overlay (200ms fade-in, never restarted while visible). */
+    /**
+     * Shows the cursor (200ms fade-in). IDEMPOTENT (Issue 1):
+     *  - already fully visible  → nothing happens;
+     *  - fade-in already running → not restarted;
+     *  - fade-out running → cancelled and full visibility restored WITHOUT
+     *    starting a new fade-in;
+     *  - position changes elsewhere never restart the visibility animation.
+     */
     fun show() {
         if (!isAdded) {
             addView()
         }
-        if (isVisible && cursorView?.visibility == View.VISIBLE && cursorView?.alpha == 1f) return
-        cancelPendingHide()
-        cursorView?.apply {
-            alpha = 0f
-            visibility = View.VISIBLE
-            animate()
-                .alpha(1f)
-                .setDuration(hideDelayMs)
-                .start()
+        when (val action = visibilityMachine.onShowRequest()) {
+            CursorVisibilityAction.START_FADE_IN -> {
+                cursorView?.apply {
+                    alpha = 0f
+                    visibility = View.VISIBLE
+                }
+                animateAlpha(1f, hideDelayMs) {
+                    visibilityMachine.onFadeInCompleted()
+                    syncVisibilityState()
+                }
+            }
+            CursorVisibilityAction.CANCEL_AND_RESTORE -> {
+                // Cancel the running fade-out and restore full visibility
+                // cleanly — no new fade-in (the machine already moved to VISIBLE).
+                cancelViewAnimation()
+                cursorView?.apply {
+                    alpha = 1f
+                    visibility = View.VISIBLE
+                }
+            }
+            else -> Unit
         }
-        isVisible = true
+        syncVisibilityState()
     }
 
-    /** Hides the cursor with a 200ms fade-out. */
+    /** Hides the cursor with a 200ms fade-out (idempotent when already hidden). */
     fun hide() {
         cancelPendingLayout()
-        if (!isVisible) return
-        val view = cursorView ?: return
-
-        view.animate()
-            .alpha(0f)
-            .setDuration(hideDelayMs)
-            .withEndAction {
-                view.visibility = View.INVISIBLE
-                isVisible = false
+        if (visibilityMachine.onHideRequest() == CursorVisibilityAction.START_FADE_OUT) {
+            animateAlpha(0f, hideDelayMs) {
+                if (visibilityMachine.onFadeOutCompleted() == CursorVisibilityAction.MAKE_INVISIBLE) {
+                    cursorView?.visibility = View.INVISIBLE
+                }
+                syncVisibilityState()
             }
-            .start()
+        }
+        syncVisibilityState()
     }
 
     /** Updates the screen size after rotation/display changes. */
@@ -193,8 +225,13 @@ class CursorOverlay(
         (cursorView as? CursorDotView)?.setReducedMotion(reduced)
     }
 
-    /** Removes the overlay from the window manager. */
+    /** Removes the overlay from the window manager (cancels all animations). */
     fun remove() {
+        // Reset the machine to HIDDEN and cancel every running animation so a
+        // stale end-callback can never flip a freshly recreated overlay.
+        visibilityMachine.onRemoved()
+        cancelViewAnimation()
+        cancelPendingLayout()
         try {
             cursorView?.let { windowManager.removeView(it) }
         } catch (_: Exception) {
@@ -295,8 +332,36 @@ class CursorOverlay(
         pendingLayout = null
     }
 
-    private fun cancelPendingHide() {
+    /** Keeps the legacy [isVisible] flag in lockstep with the state machine. */
+    private fun syncVisibilityState() {
+        isVisible = visibilityMachine.isEffectivelyVisible
+    }
+
+    /**
+     * Cancels the currently running alpha animation. Increments the generation
+     * token so any stale withEndAction that was already posted is ignored.
+     */
+    private fun cancelViewAnimation() {
+        animationGeneration++
         cursorView?.animate()?.cancel()
-        cursorView?.alpha = 1f
+    }
+
+    /**
+     * Runs a fade to [targetAlpha] over [fadeDurationMs]. A stale end-callback
+     * (from an animation that was later cancelled or whose overlay was removed)
+     * is dropped via the generation token, so animation callbacks can never
+     * leak across overlay recreations (Issue 1 acceptance).
+     */
+    private fun animateAlpha(targetAlpha: Float, fadeDurationMs: Long, onFinished: () -> Unit) {
+        val view = cursorView ?: return
+        cancelViewAnimation()
+        val generation = ++animationGeneration
+        view.animate()
+            .alpha(targetAlpha)
+            .setDuration(fadeDurationMs)
+            .withEndAction {
+                if (generation == animationGeneration) onFinished()
+            }
+            .start()
     }
 }

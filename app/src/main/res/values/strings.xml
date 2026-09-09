@@ -391,4 +391,22 @@
     <string name="calibration_measurement_progress_cd">Measurement progress %1$d%%</string>
     <string name="accessibility_start_failed_toast">AirControl accessibility could not start. Return to the app and retry.</string>
     <string name="error_collector_gave_up">AirControl: the %1$s component stopped responding. Turn AirControl off and on again in Accessibility settings if gestures keep failing.</string>
+
+    <!-- Issue 10: status-pill block-reason hints (change-only, never per frame) -->
+    <string name="block_reason_waiting_for_hand">Show an open palm to arm</string>
+    <string name="block_reason_hand_not_confident">Hand tracking is uncertain</string>
+    <string name="block_reason_eye_not_stable">Keep looking at the target</string>
+    <string name="block_reason_face_lost">Face not visible</string>
+    <string name="block_reason_blink_too_short">Blink was too quick</string>
+    <string name="block_reason_blink_too_long">Eyes were closed too long</string>
+    <string name="block_reason_blink_during_movement">Eyes still moving</string>
+    <string name="block_reason_waiting_for_gaze_to_settle">Let your gaze settle</string>
+    <string name="block_reason_cursor_not_armed">Cursor not ready yet</string>
+    <string name="block_reason_gesture_cooldown">Slow down — still cooling down</string>
+    <string name="block_reason_drag_threshold_not_reached">Move further to drag</string>
+    <string name="block_reason_suppressed_calibration">Calibration in progress</string>
+    <string name="block_reason_another_modality_acted">Another input just acted</string>
+    <string name="block_reason_action_unsupported">Not supported on this device</string>
+    <string name="block_reason_service_unavailable">Accessibility service unavailable</string>
+    <string name="block_reason_generic">Action blocked</string>
 </resources>

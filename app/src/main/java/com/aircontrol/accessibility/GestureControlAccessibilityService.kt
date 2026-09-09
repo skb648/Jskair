@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.control.CursorController
 import com.aircontrol.data.model.UserPreferences
@@ -179,6 +180,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var lastHandDetectedMs: Long = 0L
     @Volatile private var lastHintShownMs: Long = 0L
 
+    // Issue 5: debug-only eye-smoothing telemetry. Recording is allocation-free
+    // and cheap, but is strictly gated on BuildConfig.DEBUG so release builds
+    // carry zero per-frame cost. Never logged per frame — snapshots are pulled
+    // by debug surfaces at a sane rate.
+    private val gazeSmoothingMetrics = com.aircontrol.tracking.GazeSmoothingMetrics()
+    @Volatile private var gazeWasLost: Boolean = false
+
     // HID POC (experimental, isolated): Bluetooth HID mouse path. Disabled by
     // default; the adapter no-ops unless the pref is on AND a host is connected.
     private var nativeHidMouseController: com.aircontrol.nativeinput.NativeHidMouseController? = null
@@ -261,6 +269,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
             actionDispatcher?.onGestureDispatched = { actionName ->
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.ripple() }
                 Timber.d("Gesture dispatched: %s — cursor ripple", actionName)
+            }
+            // Issue 10: the dispatcher surfaces WHY an action was blocked
+            // (unsupported action, another modality just acted, calibration owns
+            // the screen, …) as a throttled change-only reason. Relay effective
+            // changes to the status pill — never per frame, never a toast storm.
+            actionDispatcher?.blockReasonHub?.onChange = { reason ->
+                onBlockReasonChanged(reason)
             }
 
             updateScreenMetrics()
@@ -373,6 +388,21 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // Intentionally empty: we don't use accessibility events (fix #47).
     }
 
+    /**
+     * Issue 10: effective block-reason changes from [BlockReasonHub] update the
+     * floating status pill's hint line. Hops to the main thread (hub callbacks
+     * fire on the recording coroutine); pill may be disabled — then nothing shows.
+     */
+    private fun onBlockReasonChanged(reason: BlockReason?) {
+        if (reason == null) return
+        val text = StatusOverlay.hintText(this, reason) ?: return
+        serviceScope?.launch(Dispatchers.Main) {
+            if (currentPreferences.statusPillEnabled) {
+                statusOverlay?.showHint(text)
+            }
+        }
+    }
+
     override fun onDestroy() {
         // Tear down BEFORE calling super.onDestroy() (fix #64).
         Timber.i("GestureControlAccessibilityService destroyed")
@@ -383,6 +413,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         stopTrackingPipeline()
         removeOverlays()
         actionDispatcher?.onGestureDispatched = null // fix #6: clear callback
+        actionDispatcher?.blockReasonHub?.onChange = null // Issue 10: no leak
         actionDispatcher?.detachService()
         // GestureDetector is application-scoped. Closing it here permanently cancels
         // its internal scope, so toggling accessibility Off/On in the same process
@@ -679,13 +710,25 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // misses; a single re-detection restores immediately.
                         gazeMissCount++
                         if (gazeMissCount >= GAZE_HIDE_MISS_FRAMES) {
+                            // Definitive tracking-LOST transition (Issue 4):
+                            // consecutive misses crossed the hysteresis bound.
                             gazeMissCount = 0
                             faceStableSinceMs = 0L
                             setGazeTracking(false)
                             withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                             cursorController?.hide()
                             gazeCursorSmoother.reset()
-                            blinkDetector.reset()
+                            // Issue 4: abort (never complete into a click) any blink
+                            // that was in progress when tracking was lost — a closure
+                            // interrupted by a tracking gap is not a continuous
+                            // blink, and re-acquisition must not fire a stale click.
+                            // Only THIS transition may abort; per-frame uncertain
+                            // states (above) never touch the detector.
+                            blinkDetector.abortInProgressBlink()
+                            gazeWasLost = true
+                            if (BuildConfig.DEBUG) {
+                                gazeSmoothingMetrics.onTrackingLost(gazeCursorX, gazeCursorY)
+                            }
                             // Fix (audit #5): on re-acquisition the cursor must
                             // REAPPEAR where the face is now — not teleport there.
                             // Prime the (reset) smoother for a couple of frames
@@ -697,6 +740,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     gazeMissCount = 0
                     lastFaceDetectedMs = SystemClock.elapsedRealtime()
                     setGazeTracking(true)
+                    // Issue 5: note the re-acquisition for debug telemetry (the
+                    // teleport displacement is measured on the next smoothed sample).
+                    if (gazeWasLost) {
+                        gazeWasLost = false
+                        if (BuildConfig.DEBUG) gazeSmoothingMetrics.onReacquired()
+                    }
 
                     if (currentPreferences.blinkClickEnabled) {
                         // Fix A7: the blink window must be measured on the
@@ -745,6 +794,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
                     gazeCursorX = smoothX
                     gazeCursorY = smoothY
+
+                    // Issue 5: debug-only telemetry of the RAW signal vs the
+                    // FILTERED cursor (raw velocity, filter lag, rest jitter).
+                    // No allocation, release builds skip it entirely.
+                    if (BuildConfig.DEBUG) {
+                        gazeSmoothingMetrics.onSample(nx, ny, smoothX, smoothY, gaze.timestampMs)
+                    }
 
                     // Fix (audit #6): track when the gaze was last seen MOVING —
                     // the blink-click intent gate above reads this.

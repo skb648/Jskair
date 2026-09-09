@@ -10,8 +10,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
+import com.aircontrol.R
 import com.aircontrol.gesture.model.GestureEngineState
 import timber.log.Timber
 
@@ -35,6 +36,15 @@ class StatusOverlay(
 
     private var statusView: View? = null
     private var labelView: TextView? = null
+
+    // Issue 10: an optional one-line hint shown under the state dot on MEANINGFUL
+    // block-reason changes (never per frame). Auto-clears after a short timeout;
+    // a generation token stops an old timer from erasing a newer reason.
+    private var hintView: TextView? = null
+    private var hintGeneration = 0L
+    private var hintAutoHideRunnable: Runnable? = null
+    private val hintAutoHideMs = 3_000L
+
     private var isAdded = false
 
     // Position (persisted)
@@ -96,9 +106,40 @@ class StatusOverlay(
     }
 
     /**
+     * Issue 10: shows a short block-reason hint under the pill (auto-clears
+     * after [hintAutoHideMs]). Callers invoke this ONLY on meaningful reason
+     * changes (see BlockReasonHub) — never per frame. An older pending auto-hide
+     * cannot erase a newer reason because each call bumps a generation token.
+     */
+    fun showHint(text: String) {
+        if (!isAdded) addView()
+        val hint = hintView ?: return
+        val generation = ++hintGeneration
+        hint.text = text
+        hint.visibility = View.VISIBLE
+        hint.requestLayout()
+
+        hintAutoHideRunnable?.let { statusView?.removeCallbacks(it) }
+        val runnable = Runnable {
+            if (generation == hintGeneration) clearHint()
+        }
+        hintAutoHideRunnable = runnable
+        statusView?.postDelayed(runnable, hintAutoHideMs)
+    }
+
+    /** Hides the reason hint immediately (and invalidates pending auto-hides). */
+    fun clearHint() {
+        hintGeneration++
+        hintAutoHideRunnable?.let { statusView?.removeCallbacks(it) }
+        hintAutoHideRunnable = null
+        hintView?.visibility = View.GONE
+    }
+
+    /**
      * Removes the overlay.
      */
     fun remove() {
+        clearHint()
         try {
             statusView?.let { windowManager.removeView(it) }
         } catch (_: Exception) {
@@ -106,6 +147,7 @@ class StatusOverlay(
         }
         statusView = null
         labelView = null
+        hintView = null
         isAdded = false
     }
 
@@ -115,7 +157,9 @@ class StatusOverlay(
     private fun addView() {
         if (isAdded) return
 
-        val container = FrameLayout(context).apply {
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -127,11 +171,26 @@ class StatusOverlay(
             textSize = 10f
             setTextColor(android.graphics.Color.WHITE)
             setPadding(
-                dpToPx(12), dpToPx(4),
-                dpToPx(12), dpToPx(4),
+                dpToPx(12), dpToPx(6),
+                dpToPx(12), dpToPx(6),
             )
         }
         container.addView(labelView)
+
+        // One-line block-reason hint (hidden until [showHint] is called). Uses a
+        // translucent dark rounded chip so it reads on any status-pill color.
+        hintView = TextView(context).apply {
+            textSize = 10f
+            setTextColor(android.graphics.Color.WHITE)
+            visibility = View.GONE
+            setPadding(dpToPx(10), dpToPx(2), dpToPx(10), dpToPx(4))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xCC000000.toInt())
+                cornerRadius = dpToPx(8).toFloat()
+            }
+        }
+        container.addView(hintView)
+        (hintView!!.layoutParams as LinearLayout.LayoutParams).topMargin = dpToPx(2)
 
         // Set up drag handling
         container.setOnTouchListener { _, event ->
@@ -305,5 +364,28 @@ class StatusOverlay(
         private const val DEFAULT_POS_X_DP = 12
         private const val DEFAULT_POS_Y_DP = 8
         // TOUCH_SLOP moved to instance field (m-10) — uses ViewConfiguration.get(context).scaledTouchSlop
+
+        /**
+         * UI text for a [BlockReason] (Issue 10). Returns null for "no reason".
+         * Display strings live in string resources — the enum only carries a
+         * stable id and the hub logic.
+         */
+        fun hintText(context: Context, reason: BlockReason): String? = when (reason) {
+            BlockReason.WAITING_FOR_HAND -> context.getString(R.string.block_reason_waiting_for_hand)
+            BlockReason.HAND_NOT_CONFIDENT -> context.getString(R.string.block_reason_hand_not_confident)
+            BlockReason.EYE_NOT_STABLE -> context.getString(R.string.block_reason_eye_not_stable)
+            BlockReason.FACE_LOST -> context.getString(R.string.block_reason_face_lost)
+            BlockReason.BLINK_TOO_SHORT -> context.getString(R.string.block_reason_blink_too_short)
+            BlockReason.BLINK_TOO_LONG -> context.getString(R.string.block_reason_blink_too_long)
+            BlockReason.BLINK_DURING_MOVEMENT -> context.getString(R.string.block_reason_blink_during_movement)
+            BlockReason.WAITING_FOR_GAZE_TO_SETTLE -> context.getString(R.string.block_reason_waiting_for_gaze_to_settle)
+            BlockReason.CURSOR_NOT_ARMED -> context.getString(R.string.block_reason_cursor_not_armed)
+            BlockReason.GESTURE_COOLDOWN -> context.getString(R.string.block_reason_gesture_cooldown)
+            BlockReason.DRAG_THRESHOLD_NOT_REACHED -> context.getString(R.string.block_reason_drag_threshold_not_reached)
+            BlockReason.SUPPRESSED_DURING_CALIBRATION -> context.getString(R.string.block_reason_suppressed_calibration)
+            BlockReason.ANOTHER_MODALITY_ACTED -> context.getString(R.string.block_reason_another_modality_acted)
+            BlockReason.ACTION_UNSUPPORTED -> context.getString(R.string.block_reason_action_unsupported)
+            BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE -> context.getString(R.string.block_reason_service_unavailable)
+        }
     }
 }

@@ -136,9 +136,6 @@ class ActionDispatcher @Inject constructor(
         private const val DRAG_START_SLOP_FRACTION = 0.025f
         private const val MIN_DRAG_START_SLOP_PX = 12f
 
-        /** Fix (audit #20/#21): cross-source tap ownership guard window. */
-        private const val CROSS_SOURCE_TAP_GUARD_MS = 350L
-
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"
         const val KEY_SWIPE_UP = "swipe_up"
@@ -151,6 +148,12 @@ class ActionDispatcher @Inject constructor(
     const val KEY_POSE_THREE_FINGERS = "pose_three_fingers"
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
         const val KEY_PALM_HOME = "palm_home"
+
+        // Issue 15: modality identities for cross-modality tap ownership.
+        const val TAP_OWNER_HAND = "hand_gesture"
+        const val TAP_OWNER_BLINK = "blink"
+        const val TAP_OWNER_GAZE_DWELL = "gaze_dwell"
+        const val TAP_OWNER_HAND_DWELL = "hand_dwell"
 
         @Volatile private var cursorGain = 0.5f
         @Volatile private var sitBackModeEnabled = false
@@ -243,6 +246,22 @@ class ActionDispatcher @Inject constructor(
 
     @Volatile
     private var currentPose: Pose = Pose.NONE
+
+    // Issue 15: deterministic cross-modality tap ownership (one intent → one action).
+    private val tapOwnership = InputOwnershipPolicy()
+
+    // Issue 10: shared interaction block-reason hub; the service records gaze/
+    // face-side reasons into the same hub and relays effective changes to UI.
+    val blockReasonHub = BlockReasonHub()
+
+    private fun reportBlocked(reason: BlockReason) {
+        blockReasonHub.record(reason, nowMonotonicMs())
+    }
+
+    /** Reports suppression when a setup flow (calibration…) owns the screen. */
+    private fun maybeReportSuppressed() {
+        if (Suppression.isSuppressed()) reportBlocked(BlockReason.SUPPRESSED_DURING_CALIBRATION)
+    }
 
     private var lastDragStroke: GestureDescription.StrokeDescription? = null
     @Volatile private var isDragging = false
@@ -379,7 +398,10 @@ class ActionDispatcher @Inject constructor(
                     if (service == null) return false
                     val customPinchHold = matchCustomGesture(Pose.PINCH)
                     val action = customPinchHold ?: gestureMap[KEY_POSE_PINCH_HOLD] ?: GestureAction.DRAG
-                    if (!actionAllowed(action)) return false
+                    if (!actionAllowed(action)) {
+                        maybeReportSuppressed()
+                        return false
+                    }
                     val targetX = mapCursorX(cursorX, screenWidth, fromGaze)
                     val targetY = mapCursorY(cursorY, screenHeight, fromGaze)
                     if (action == GestureAction.DRAG) {
@@ -409,7 +431,10 @@ class ActionDispatcher @Inject constructor(
                     }
                     val customPinchAction = matchCustomGesture(Pose.PINCH)
                     val action = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
-                    if (!actionAllowed(action)) return false
+                    if (!actionAllowed(action)) {
+                        maybeReportSuppressed()
+                        return false
+                    }
                     return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight, fromGaze)
                 }
             }
@@ -438,7 +463,10 @@ class ActionDispatcher @Inject constructor(
             else -> currentPose
         }
 
-        if (!actionAllowed(action)) return false
+        if (!actionAllowed(action)) {
+            maybeReportSuppressed()
+            return false
+        }
 
         return executeAction(action, cursorX, cursorY, screenWidth, screenHeight, fromGaze)
     }
@@ -484,46 +512,58 @@ class ActionDispatcher @Inject constructor(
             GestureAction.VOLUME_UP -> pressVolume(true)
             GestureAction.VOLUME_DOWN -> pressVolume(false)
             GestureAction.MEDIA_PLAY_PAUSE -> pressMediaPlayPause()
-            GestureAction.SCREENSHOT -> performGlobalAction(
-                service,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT else AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS,
-                GestureAction.SCREENSHOT
-            )
-            GestureAction.LOCK_SCREEN -> performGlobalAction(
-                service,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN else AccessibilityService.GLOBAL_ACTION_HOME,
-                GestureAction.LOCK_SCREEN
-            )
-            GestureAction.TAP -> if (acquireTapOwnership(fromGaze = false)) dispatchTap(service, targetPixelX, targetPixelY) else true
-            GestureAction.DOUBLE_TAP -> if (acquireTapOwnership(fromGaze = false)) dispatchDoubleTap(service, targetPixelX, targetPixelY) else true
+            // Issue 14: unsupported actions FAIL HONESTLY — they are never
+            // silently substituted with an unrelated action (the old fallbacks
+            // sent screenshot → notifications and lock → home on API < 28).
+            GestureAction.SCREENSHOT -> {
+                if (!ActionCapabilityChecker.isSupported(GestureAction.SCREENSHOT, Build.VERSION.SDK_INT)) {
+                    reportBlocked(BlockReason.ACTION_UNSUPPORTED)
+                    return false
+                }
+                performGlobalAction(
+                    service,
+                    AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT,
+                    GestureAction.SCREENSHOT,
+                )
+            }
+            GestureAction.LOCK_SCREEN -> {
+                if (!ActionCapabilityChecker.isSupported(GestureAction.LOCK_SCREEN, Build.VERSION.SDK_INT)) {
+                    reportBlocked(BlockReason.ACTION_UNSUPPORTED)
+                    return false
+                }
+                performGlobalAction(
+                    service,
+                    AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN,
+                    GestureAction.LOCK_SCREEN,
+                )
+            }
+            // Issue 15: every tap-like action flows through the cross-modality
+            // ownership policy (see InputOwnershipPolicy).
+            GestureAction.TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) {
+                dispatchTap(service, targetPixelX, targetPixelY)
+            } else {
+                reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
+                true
+            }
+            GestureAction.DOUBLE_TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) {
+                dispatchDoubleTap(service, targetPixelX, targetPixelY)
+            } else {
+                reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
+                true
+            }
             GestureAction.LONG_PRESS -> dispatchLongPress(service, targetPixelX, targetPixelY)
             GestureAction.DRAG -> dispatchDrag(service, targetPixelX, targetPixelY, screenWidth, screenHeight)
         }
     }
 
     /**
-     * Fix (audit #20/#21): input ownership for taps. With eye + hand + blink +
-     * dwell all enabled, the same physical instant can produce TWO taps (a blink
-     * click while the hand pinches, a dwell while a blink lands). The first
-     * modality to arrive within the guard window owns the click; the other
-     * source's tap is swallowed. Deterministic priority: whoever acted first.
+     * Issue 15: true if [source] may fire a tap right now (and marks it as
+     * fired). The deterministic cross-modality ownership policy lives in
+     * [InputOwnershipPolicy] — the first modality to actually arrive owns the
+     * slot; other modalities are refused within the serialization window.
      */
-    @Volatile private var lastHandTapMs: Long = 0L
-    @Volatile private var lastGazeTapMs: Long = 0L
-
-    /** True if this source may fire a tap right now (and marks it as fired). */
-    private fun acquireTapOwnership(fromGaze: Boolean): Boolean {
-        val now = nowMonotonicMs()
-        return if (fromGaze) {
-            if (now - lastHandTapMs < CROSS_SOURCE_TAP_GUARD_MS) return false
-            lastGazeTapMs = now
-            true
-        } else {
-            if (now - lastGazeTapMs < CROSS_SOURCE_TAP_GUARD_MS) return false
-            lastHandTapMs = now
-            true
-        }
-    }
+    private fun acquireTapOwnership(source: String): Boolean =
+        tapOwnership.tryAcquire(source, nowMonotonicMs())
 
     /**
      * Blink taps are gaze-only: their coordinates are screen-normalized and are
@@ -532,9 +572,17 @@ class ActionDispatcher @Inject constructor(
      */
     fun dispatchBlinkTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.blinkClickEnabled) return false
-        val service = accessibilityServiceRef.get() ?: return false
+        val service = accessibilityServiceRef.get()
+        if (service == null) {
+            reportBlocked(BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE)
+            return false
+        }
         if (!actionAllowed(GestureAction.TAP)) return false
-        if (!acquireTapOwnership(fromGaze = true)) return true
+        // Issue 15: blink taps must never collide with a just-fired dwell/pinch tap.
+        if (!acquireTapOwnership(TAP_OWNER_BLINK)) {
+            reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
+            return true
+        }
         val pxX = normalizeDirect(normX, screenWidth)
         val pxY = normalizeDirect(normY, screenHeight)
         return dispatchTap(service, pxX, pxY)
@@ -548,9 +596,18 @@ class ActionDispatcher @Inject constructor(
         /** Fix A2: dwell ticks from the gaze cursor map directly; hand-path dwell keeps the hand mapping. */
         fromGaze: Boolean = false,
     ): Boolean {
-        val service = accessibilityServiceRef.get() ?: return false
+        val service = accessibilityServiceRef.get()
+        if (service == null) {
+            reportBlocked(BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE)
+            return false
+        }
         if (!actionAllowed(GestureAction.TAP)) return false
-        if (!acquireTapOwnership(fromGaze = fromGaze)) return true
+        // Issue 15: dwell (gaze or hand) must never collide with a just-fired tap
+        // from another modality.
+        if (!acquireTapOwnership(if (fromGaze) TAP_OWNER_GAZE_DWELL else TAP_OWNER_HAND_DWELL)) {
+            reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
+            return true
+        }
         // Fix D6: coordinates are always screen-normalized — no pixel/normalized
         // range guessing.
         val pxX = if (fromGaze) normalizeDirect(normX, screenWidth) else normalizeToScreenX(normX, screenWidth)

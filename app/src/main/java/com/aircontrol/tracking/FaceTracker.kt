@@ -322,7 +322,27 @@ class FaceTrackerImpl @Inject constructor(
             }.onFailure { Timber.e(it, "Advanced gaze pipeline failed — using iris-ratio fallback") }
         }
 
-        // ---- Personalized prediction wins whenever it is available ----
+        // ---- RAW legacy gaze (Issue 2) ----
+        // The iris-ratio gaze is computed INDEPENDENTLY of the personalized
+        // model and is the only source of a GazeObservation's raw coordinates.
+        // When the user recalibrates while an old personalized model is still
+        // installed, the old model's output (already screen-transformed) must
+        // not become part of the new training session — model predictions are
+        // only ever emitted as GazePoints for the CURSOR, never as the raw
+        // coordinate of a calibration observation.
+        val aspectRatio = if (height > 0) width.toFloat() / height.toFloat() else 1f
+        val rawGaze = if (landmarks.size >= 478) {
+            computeGaze(
+                landmarks,
+                aspectRatio = aspectRatio,
+                headYawDeg = if (poseAnglesKnown) poseYawDeg else 0f,
+                headPitchDeg = if (poseAnglesKnown) posePitchDeg else 0f,
+            )
+        } else {
+            null
+        }
+
+        // ---- Personalized prediction wins for the CURSOR when available ----
         val model = personalizedModel
         if (model != null && featureVector != null) {
             val prediction = runCatching { model.predict(featureVector!!) }
@@ -368,10 +388,18 @@ class FaceTrackerImpl @Inject constructor(
                         personalized = true,
                     ),
                 )
+                // Raw observation carries the RAW iris ratios (never the model
+                // prediction) — Issue 2: recalibration is never contaminated by
+                // the very model it is replacing.
                 _gazeObservations.tryEmit(
                     GazeObservation(
-                        rawX = x, rawY = y, ear = ear, quality = advancedQuality,
-                        poseValid = poseValid, featureVector = featureVector, timestampMs = ts,
+                        rawX = rawGaze?.x ?: 0.5f,
+                        rawY = rawGaze?.y ?: 0.5f,
+                        ear = ear,
+                        quality = advancedQuality,
+                        poseValid = poseValid,
+                        featureVector = featureVector,
+                        timestampMs = ts,
                         faceDetected = true,
                     ),
                 )
@@ -380,13 +408,7 @@ class FaceTrackerImpl @Inject constructor(
         }
 
         // ---- Legacy iris-ratio gaze (fallback + affine calibration source) ----
-        val aspectRatio = if (height > 0) width.toFloat() / height.toFloat() else 1f
-        val gaze = computeGaze(
-            landmarks,
-            aspectRatio = aspectRatio,
-            headYawDeg = if (poseAnglesKnown) poseYawDeg else 0f,
-            headPitchDeg = if (poseAnglesKnown) posePitchDeg else 0f,
-        )
+        val gaze = rawGaze
         if (gaze != null) {
             _gazePoints.tryEmit(gaze.copy(timestampMs = ts))
             _gazeObservations.tryEmit(
