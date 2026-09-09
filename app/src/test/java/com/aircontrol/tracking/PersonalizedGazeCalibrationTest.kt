@@ -160,9 +160,21 @@ class PersonalizedGazeCalibrationTest {
     }
 
     private fun normalizedFixture(frameWidth: Int = 800, frameHeight: Int = 600, scale: Float = 120f, translationX: Float = 0f, translationY: Float = 0f): NormalizedBinocularEyeFeatures {
+        // `offset > 0` is the viewer-right eye, i.e. the anatomical left one, so its
+        // temporal corner lies to the viewer's right -> axis sign +1; the other eye is -1.
+        // The viewer-frame iris offsets are then exactly the relation
+        // EyeFeatureExtractor publishes (viewerX = axisSign * (along - 0.5),
+        // viewerY = -axisSign * perpendicular), so the fixture stays internally
+        // consistent instead of inventing a second, unrelated number for the same iris.
+        // Both eyes keep the same `irisAlongAxis` here, which geometrically is a
+        // divergence rather than a version - fine for these tests, which only assert
+        // that the feature vector is invariant to tracker scale and translation.
         fun eye(offset: Float) = NormalizedEyeFeatures(
             eyeCenterX = 0.4f + offset, eyeCenterY = 0.5f, irisCenterX = 0.42f + offset, irisCenterY = 0.5f,
-            irisAlongAxis = 0.52f, irisPerpendicular = 0.02f, irisDiameterOverEyeWidth = 0.3f,
+            irisAlongAxis = 0.52f, irisPerpendicular = 0.02f,
+            irisViewerX = (if (offset > 0f) 1f else -1f) * (0.52f - 0.5f),
+            irisViewerY = -(if (offset > 0f) 1f else -1f) * 0.02f,
+            irisDiameterOverEyeWidth = 0.3f,
             eyelidOpening = 0.4f, ear = 0.38f, eyeCenterFromFaceCenterX = offset, eyeCenterFromFaceCenterY = 0f, quality = 0.95f,
         )
         val pose = HeadPoseEstimate(0f, 0f, 0f, translationX, translationY, frameWidth, frameHeight, scale, 0.95f, HeadPoseSource.MATRIX, true)
