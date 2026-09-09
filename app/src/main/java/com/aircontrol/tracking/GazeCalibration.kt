@@ -1,8 +1,20 @@
 package com.aircontrol.tracking
 
 /**
- * 2D affine gaze calibration.
- * Maps camera-space gaze ratios to normalized display-space coordinates.
+ * 2D affine gaze calibration: camera-space raw gaze ([RawIrisGaze], neutral 0.5,
+ * viewer-frame) → normalized display-space coordinates.
+ *
+ * ## Persisted format
+ *
+ * `v<schema>:c0,c1,c2,c3,c4,c5`
+ *
+ * The prefix exists because this mapping is only valid for the raw gaze
+ * DEFINITION it was fitted from. The historical raw signal averaged two
+ * opposite-signed per-eye ratios (so its horizontal axis was ≈ constant), and an
+ * affine fit built on that is not merely inaccurate, it is meaningless: it maps a
+ * channel that never moved. [RAW_SCHEMA_V2] makes any such fit unusable instead of
+ * silently re-applying it, so an old install degrades to the (now correct) gain
+ * map rather than to garbage, and the next calibration overwrites it.
  */
 class GazeCalibration(
     private val coeffs: FloatArray,
@@ -47,12 +59,32 @@ class GazeCalibration(
                 UNAVAILABLE
             }
 
+        /**
+         * Raw-gaze schema this affine mapping is valid for. v1 (the un-prefixed
+         * 6-number form) predates the viewer-frame raw gaze and is rejected.
+         */
+        const val RAW_SCHEMA_V2 = 2
+
+        /** Serializes in the versioned form [fromString] expects. */
+        fun toStringV2(coeffs: FloatArray): String =
+            "v$RAW_SCHEMA_V2:" + coeffs.joinToString(",")
+
         fun fromString(raw: String?): GazeCalibration {
             if (raw.isNullOrBlank()) return UNAVAILABLE
-            val parts = raw.split(",").map { it.trim() }
+            val versioned = raw.startsWith("v")
+            val separator = raw.indexOf(':')
+            if (versioned) {
+                if (separator < 0) return UNAVAILABLE
+                val version = raw.substring(1, separator).toIntOrNull() ?: return UNAVAILABLE
+                if (version != RAW_SCHEMA_V2) return UNAVAILABLE
+            }
+            val payload = if (versioned) raw.substring(separator + 1) else raw
+            val parts = payload.split(",").map { it.trim() }
             if (parts.size != 6) return UNAVAILABLE
             val coeffs = parts.map { it.toFloatOrNull() ?: return UNAVAILABLE }.toFloatArray()
-            return fromFloatArray(coeffs)
+            // An un-prefixed string is a pre-v2 fit: same shape, wrong input
+            // signal. Rejected rather than trusted.
+            return if (versioned) fromFloatArray(coeffs) else UNAVAILABLE
         }
 
         fun fit(

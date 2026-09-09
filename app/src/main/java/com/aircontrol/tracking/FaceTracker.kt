@@ -15,32 +15,73 @@ import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.Volatile
+import kotlin.math.max
+
+/**
+ * Which representation [GazePoint.x]/[GazePoint.y] hold. Phase 3: a gaze value may
+ * never be ambiguous about this, because the two producers are different
+ * transforms and applying the wrong one silently ruins the mapping.
+ */
+enum class GazePointSpace {
+    /**
+     * Raw camera-space gaze in [0,1], 0.5 = neutral, +x toward the viewer's right,
+     * +y downward (see [RawIrisGaze]). NOT a screen position: the consumer still
+     * owns the raw→screen transform (calibration, or gain/invert when
+     * uncalibrated).
+     */
+    CAMERA_RAW,
+
+    /**
+     * Output of a calibrated transform: already screen-normalized [0,1], origin at
+     * the top-left, +x right, +y down. Mapping this through the raw gain/invert or
+     * the hand dead-zone path would apply the calibration twice.
+     */
+    SCREEN_NORMALIZED,
+}
 
 /**
  * Cursor-facing gaze sample.
  *
- * - Uncalibrated: (x, y) are raw iris-ratio coordinates in [0,1] (camera space).
- * - Personalized model active ([personalized] = true): (x, y) are the model's
- *   prediction already in *screen-normalized* space — consumers must map them
- *   straight to pixels, never through the hand-cursor dead-zone mapping.
+ * [x]/[y] are in the space named by [space] — that is the whole reason the field
+ * exists: previously one float pair meant "raw iris ratio" when no model was
+ * installed and "screen prediction" when one was, and the only way to tell was to
+ * know that [personalized] happened to be set in exactly the one place that
+ * differed. See [GazeCoordinateContract] for the full table.
  *
- * Fix D1: the sample now carries its own monotonic [timestampMs] (previously a
- * no-op `copyTimestamp()` lost the result timestamp, and downstream filters had
- * no time base for dt-aware smoothing).
+ * Confidence is split (Phase 5): [confidence] describes whether the gaze is good
+ * enough to *move the dot*, [actionConfidence] whether it is good enough to *tap*
+ * with. Both are derived by [GazeEligibilityPolicy] from the separate uncertainty
+ * sources, never from a single merged gate.
  */
 data class GazePoint(
     val x: Float,
     val y: Float,
     val ear: Float = 1f,
+    /** Eye-geometry + visibility eligibility score in [0,1]; drives the cursor show/hide hysteresis. */
     val confidence: Float,
+    /** [confidence] further restricted by head angle, model reliability and binocular agreement. */
+    val actionConfidence: Float = confidence,
+    val eligibility: GazeEligibility = GazeEligibility.VISIBLE,
     val timestampMs: Long = 0L,
-    val personalized: Boolean = false,
+    val space: GazePointSpace = GazePointSpace.CAMERA_RAW,
 ) {
-    val isDetected: Boolean get() = confidence >= MIN_GAZE_CONFIDENCE
+    /** True when this frame is good enough to display a cursor at (x, y). */
+    val isDetected: Boolean get() = eligibility.showsCursor
+
+    /** True when (x, y) is trustworthy enough to fire a click/dwell at. */
+    val isActionable: Boolean get() = eligibility.canAct && actionConfidence >= ACTION_CONFIDENCE_FLOOR
+
+    /** Convenience for consumers written before the split: which transform owns (x, y). */
+    val personalized: Boolean get() = space == GazePointSpace.SCREEN_NORMALIZED
 
     companion object {
-        const val MIN_GAZE_CONFIDENCE = 0.45f
-        val EMPTY = GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f)
+        /** Same floor as [GazeEligibilityPolicy.ACTION_QUALITY] — one number, two names kept equal on purpose. */
+        const val ACTION_CONFIDENCE_FLOOR = GazeEligibilityPolicy.ACTION_QUALITY
+
+        /** Historical name of the single merged gate; retained so the meaning stays greppable. */
+        const val MIN_GAZE_CONFIDENCE = GazeEligibilityPolicy.ACTION_QUALITY
+
+        val EMPTY = GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f, eligibility = GazeEligibility.NOTHING)
     }
 }
 
@@ -52,12 +93,25 @@ data class GazePoint(
  * vector (head-pose normalized) used by the personalized model.
  */
 data class GazeObservation(
+    /** Raw camera-space horizontal iris gaze, 0.5 neutral (see [GazePointSpace.CAMERA_RAW]). */
     val rawX: Float,
+    /** Raw camera-space vertical iris gaze, 0.5 neutral. */
     val rawY: Float,
     val ear: Float,
-    /** Min(binocular eye quality, head-pose confidence); 0 when no face. */
+    /**
+     * [RawIrisGaze.eyeQuality] — eye-geometry consistency ONLY.
+     *
+     * Fix (audit A3): this used to be `min(eye quality, pose confidence)`, i.e. the
+     * same field meant a different thing than the runtime's confidence and dragged a
+     * 0.75 pose multiplier into the calibration floor. A frame whose eyes are clean
+     * is a good calibration frame even if the face is slightly asymmetric.
+     */
     val quality: Float,
     val poseValid: Boolean,
+    /** Head-pose tier confidence, exposed separately so it never silently reweights [quality]. */
+    val poseConfidence: Float = 0f,
+    /** How much the two eyes agree about the same gaze direction. */
+    val binocularAgreement: Float = 0f,
     val featureVector: CalibrationFeatureVector?,
     val timestampMs: Long,
     val faceDetected: Boolean,
@@ -95,6 +149,13 @@ interface FaceTracker {
      * consumer and building them every frame is pure overhead.
      */
     fun setCalibrationCollecting(active: Boolean)
+
+    /**
+     * Phase 1: bounded, allocation-free per-frame pipeline trace. Always present
+     * (20 slots); only *read* in debug builds, and only written when a debug build
+     * is running, so release builds pay one null check per frame.
+     */
+    val diagnostics: GazeDiagnostics
 }
 
 @Singleton
@@ -118,11 +179,27 @@ class FaceTrackerImpl @Inject constructor(
     // Fix A5: the active personalized model (null = legacy ratio mode).
     @Volatile private var personalizedModel: PersonalizedGazeCalibrationModel? = null
 
-    // Fix (user test: random gaze wander): continuity bookkeeping for the
-    // personalized-prediction jump suppressor (see handleResult).
-    @Volatile private var lastPersonalizedFeatures: FloatArray? = null
-    @Volatile private var lastPersonalizedX: Float = 0.5f
-    @Volatile private var lastPersonalizedY: Float = 0.5f
+    // Fix (audit A4): the personalized prediction is checked against the measured
+    // iris motion by a stateful policy that HOLDS instead of dropping frames.
+    private val jumpPolicy = GazeJumpPolicy()
+
+    /**
+     * Reliability of the installed personalized model, in [0,1].
+     *
+     * Not a new threshold: it is the model's own cross-validated p95 error mapped
+     * against [WORST_ACCEPTED_P95_ERROR] — the very bound
+     * `PersonalizedGazeCalibrationFitter` uses to decide whether to keep a fit at
+     * all. A model that barely passed is allowed to move the cursor but is not
+     * trusted for blind taps, which is what the previous shared 0.45 gate got wrong
+     * in the other direction (it rejected GOOD raw gaze because a 0.75 pose factor
+     * was multiplied into it).
+     */
+    @Volatile private var modelReliability: Float? = null
+
+    /** Phase 1 diagnostics. Written only when [diagnosticsEnabled] (debug builds). */
+    private val _diagnostics = GazeDiagnostics()
+    override val diagnostics: GazeDiagnostics get() = _diagnostics
+    private val diagnosticsEnabled = com.aircontrol.BuildConfig.DEBUG
 
     // Dimensions of the last submitted image (the mirrored/rotated analysis
     // bitmap), needed to build aspect-correct FaceLandmarkFrames.
@@ -173,11 +250,14 @@ class FaceTrackerImpl @Inject constructor(
     }
 
     override fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?) {
-        // New model → reset the jump-suppressor history.
-        lastPersonalizedFeatures = null
-        lastPersonalizedX = 0.5f
-        lastPersonalizedY = 0.5f
+        // New model → its screen scale is unrelated to the previous one, so the
+        // jump policy must not compare across the swap.
+        jumpPolicy.reset()
         personalizedModel = model
+        modelReliability = model?.let {
+            (1f - (it.validationMetrics.p95NormalizedError / WORST_ACCEPTED_P95_ERROR).toFloat())
+                .coerceIn(0f, 1f)
+        }
         Timber.i(
             if (model != null) "Personalized gaze model activated (trained %d, val p95 %.4f)"
                 .format(model.createdAtMs, model.validationMetrics.p95NormalizedError)
@@ -251,182 +331,247 @@ class FaceTrackerImpl @Inject constructor(
         }
 
         val faceLandmarks = result.faceLandmarks()
+        val width = lastImageWidthPx
+        val height = lastImageHeightPx
         if (faceLandmarks.isEmpty()) {
             val ts = resultTimestampMs.coerceAtLeast(0L)
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f, timestampMs = ts))
-            _gazeObservations.tryEmit(
-                GazeObservation(0.5f, 0.5f, 1f, 0f, false, null, ts, faceDetected = false),
+            _gazePoints.tryEmit(
+                GazePoint(
+                    x = 0.5f, y = 0.5f, ear = 1f, confidence = 0f,
+                    eligibility = GazeEligibility.NOTHING, timestampMs = ts,
+                ),
             )
+            _gazeObservations.tryEmit(
+                GazeObservation(
+                    rawX = 0.5f, rawY = 0.5f, ear = 1f, quality = 0f,
+                    poseValid = false, featureVector = null, timestampMs = ts,
+                    faceDetected = false,
+                ),
+            )
+            if (diagnosticsEnabled) {
+                _diagnostics.record(
+                    GazeDiagnostics.Sample(
+                        timestampMs = ts, faceDetected = false, leftEyeValid = false, rightEyeValid = false,
+                        leftEyeQuality = 0f, rightEyeQuality = 0f, ear = 1f, rawIrisX = 0.5f, rawIrisY = 0.5f,
+                        headYawDeg = Float.NaN, headPitchDeg = Float.NaN, headPoseValid = false,
+                        headPoseConfidence = 0f, calibrationActive = calibrationCollecting,
+                        personalizedModelActive = personalizedModel != null,
+                        personalizedPredictionX = Float.NaN, personalizedPredictionY = Float.NaN,
+                        rawConfidence = 0f, finalConfidence = 0f,
+                        smoothingInputX = Float.NaN, smoothingInputY = Float.NaN,
+                        smoothingOutputX = Float.NaN, smoothingOutputY = Float.NaN,
+                        rejectionReason = GazeDiagnostics.RejectionReason.FACE_LOST,
+                        gazeCursorX = Float.NaN, gazeCursorY = Float.NaN,
+                    ),
+                )
+            }
             return
         }
 
         val landmarks = faceLandmarks[0]
         val ts = resultTimestampMs.coerceAtLeast(0L)
-        // Fix (audit #6): the main EAR (blink path!) must be aspect-correct too —
-        // normalized x (across width) vs y (across height) mix distorted EAR on
-        // non-square camera aspects and made blink detection device-dependent.
-        val frameAspectRatio = if (lastImageHeightPx > 0) {
-            lastImageWidthPx.toFloat() / lastImageHeightPx.toFloat()
-        } else {
-            1f
-        }
-        val ear = computeAverageEar(landmarks, frameAspectRatio)
 
-        // ---- Fix A5: advanced pipeline (features + head pose + normalization) ----
+        // ---- ONE geometry source for every consumer (Phase 2/3) ----
+        // Eye features, head pose and the feature vector are all derived from a
+        // single FaceLandmarkFrame. The raw gaze cursor, the blink EAR and the
+        // calibration vector therefore describe the same measured eye, with the
+        // same mirror interpretation and the same aspect handling — previously the
+        // legacy path recomputed its own ratios from raw landmarks (with swapped
+        // left/right naming and no mirror correction), which is what cancelled
+        // horizontal gaze.
+        var features: BinocularEyeFeatures? = null
+        var pose: HeadPoseEstimate? = null
         var featureVector: CalibrationFeatureVector? = null
-        var poseValid = false
-        var advancedQuality = 0f
-        var poseAnglesKnown = false
-        var poseYawDeg = 0f
-        var posePitchDeg = 0f
-        val width = lastImageWidthPx
-        val height = lastImageHeightPx
-        // Perf audit P8: the normalized feature vector exists for exactly two
-        // consumers — the personalized model's per-frame prediction, and an
-        // active gaze-calibration collection. When neither is present, its
-        // per-frame construction is skipped. The head-POSE tier still runs:
-        // the legacy iris-ratio cursor consumes the pose angles for the
-        // audit-#5 head-angle confidence degradation, and cursor behavior
-        // must not change.
-        val advancedPipelineNeeded = personalizedModel != null || calibrationCollecting
+        val needsFeatureVector = personalizedModel != null || calibrationCollecting
         if (landmarks.size >= CanonicalEyes.MIN_LANDMARK_COUNT && width > 0 && height > 0) {
-            // A single bad frame must never kill the cursor: any failure here
-            // simply falls back to the legacy iris-ratio gaze below.
+            // A single bad frame must never kill the cursor: a failure here leaves
+            // `features` null and the frame is reported as "no usable gaze", which
+            // the consumer's hysteresis absorbs.
             runCatching {
                 val frame = buildFaceLandmarkFrame(result, landmarks, ts, width, height)
-                val features = EyeFeatureExtractor.extract(frame)
-                val pose = HeadPoseEstimator.estimate(frame, features)
-                if (advancedPipelineNeeded) {
-                    val normalized = HeadPoseNormalizer.normalize(features, pose)
-                    val vector = GazeCalibrationFeatureVectorBuilder.from(normalized)
-                    if (vector != null) {
-                        featureVector = vector
-                        poseValid = pose.isValid
-                        val eyeQuality = minOf(
-                            features.left?.quality ?: 0f,
-                            features.right?.quality ?: 0f,
-                        )
-                        advancedQuality = minOf(eyeQuality, pose.confidence).coerceIn(0f, 1f)
-                        if (pose.isValid) {
-                            poseAnglesKnown = true
-                            poseYawDeg = pose.yawDeg
-                            posePitchDeg = pose.pitchDeg
-                        }
-                    }
-                } else if (pose.isValid) {
-                    poseValid = true
-                    poseAnglesKnown = true
-                    poseYawDeg = pose.yawDeg
-                    posePitchDeg = pose.pitchDeg
+                val extracted = EyeFeatureExtractor.extract(frame)
+                features = extracted
+                val estimated = HeadPoseEstimator.estimate(frame, extracted)
+                pose = estimated
+                if (needsFeatureVector && estimated.isValid) {
+                    featureVector = GazeCalibrationFeatureVectorBuilder.from(
+                        HeadPoseNormalizer.normalize(extracted, estimated),
+                    )
                 }
-            }.onFailure { Timber.e(it, "Advanced gaze pipeline failed — using iris-ratio fallback") }
+            }.onFailure { Timber.e(it, "Gaze feature pipeline failed") }
         }
 
-        // ---- RAW legacy gaze (Issue 2) ----
-        // The iris-ratio gaze is computed INDEPENDENTLY of the personalized
-        // model and is the only source of a GazeObservation's raw coordinates.
-        // When the user recalibrates while an old personalized model is still
-        // installed, the old model's output (already screen-transformed) must
-        // not become part of the new training session — model predictions are
-        // only ever emitted as GazePoints for the CURSOR, never as the raw
-        // coordinate of a calibration observation.
-        val aspectRatio = if (height > 0) width.toFloat() / height.toFloat() else 1f
-        val rawGaze = if (landmarks.size >= 478) {
-            computeGaze(
-                landmarks,
-                aspectRatio = aspectRatio,
-                headYawDeg = if (poseAnglesKnown) poseYawDeg else 0f,
-                headPitchDeg = if (poseAnglesKnown) posePitchDeg else 0f,
-            )
-        } else {
-            null
-        }
+        val raw = features?.let(RawIrisGazeExtractor::from)
 
-        // ---- Personalized prediction wins for the CURSOR when available ----
+        // ---- VALIDITY + QUALITY, decided once (Phase 5/6) ----
+        val headAngleDeg = pose?.takeIf { it.isValid }?.let {
+            max(kotlin.math.abs(it.yawDeg), kotlin.math.abs(it.pitchDeg))
+        }
         val model = personalizedModel
-        if (model != null && featureVector != null) {
-            val prediction = runCatching { model.predict(featureVector!!) }
-            prediction.getOrNull()?.let { (px, py) ->
-                val x = px.coerceIn(0f, 1f)
-                val y = py.coerceIn(0f, 1f)
+        val uncertainty = GazeUncertainty(
+            faceDetected = true,
+            eyeQuality = raw?.eyeQuality ?: 0f,
+            binocularAgreement = raw?.binocularAgreement ?: 0f,
+            poseConfidence = pose?.takeIf { it.isValid }?.confidence,
+            headAngleDeg = headAngleDeg,
+            poseValid = pose?.isValid == true,
+            modelQuality = modelReliability,
+            modelAbsent = model == null,
+        )
+        val eligibility = GazeEligibilityPolicy.evaluate(uncertainty)
 
-                // Fix (user test: "eye cursor kahin bhi hilta rehta hai"):
-                // an ill-conditioned model can swing its OUTPUT wildly on a
-                // tiny feature change — the eye barely moved but the cursor
-                // jumped. If the feature vector is essentially unchanged since
-                // the last accepted prediction, yet the prediction leapt, this
-                // frame is model noise, not a gaze change: skip it entirely
-                // (the consumer's miss-hysteresis tolerates single skips, so
-                // the cursor simply holds still instead of wandering).
-                if (lastPersonalizedFeatures != null) {
-                    var featureDelta = 0f
-                    val prev = lastPersonalizedFeatures!!
-                    val curr = featureVector!!.values
-                    for (i in curr.indices) featureDelta += kotlin.math.abs(curr[i] - prev[i])
-                    val outputJump = kotlin.math.hypot(
-                        (x - lastPersonalizedX).toDouble(),
-                        (y - lastPersonalizedY).toDouble(),
-                    ).toFloat()
-                    if (featureDelta < STABLE_FEATURE_DELTA && outputJump > PREDICTION_JUMP) {
-                        Timber.d("Personalized gaze jump suppressed (dFeat=%.3f jump=%.3f)", featureDelta, outputJump)
-                        return
-                    }
-                }
-                lastPersonalizedFeatures = featureVector!!.values.copyOf()
-                lastPersonalizedX = x
-                lastPersonalizedY = y
-
-                _gazePoints.tryEmit(
-                    GazePoint(
-                        x = x,
-                        y = y,
-                        ear = ear,
-                        // Honest quality — never force-detected. The consumer's
-                        // hysteresis decides visibility from real signal quality.
-                        confidence = advancedQuality,
-                        timestampMs = ts,
-                        personalized = true,
-                    ),
+        // ---- TARGET ESTIMATION: raw gaze -> screen-normalized ----
+        // Exactly one transform runs per frame, chosen by which representation the
+        // value is in. The raw path stays in CAMERA_RAW here on purpose: the
+        // affine/gain mapping is owned by the consumer, which also owns the saved
+        // calibration coefficients.
+        var screenX = 0.5f
+        var screenY = 0.5f
+        var space = GazePointSpace.CAMERA_RAW
+        var jumpFactor = 1f
+        var jumpHeld = false
+        if (raw != null) {
+            screenX = raw.h
+            screenY = raw.v
+            val prediction = if (model != null && featureVector != null) {
+                runCatching { model.predict(featureVector!!) }.getOrNull()
+            } else {
+                null
+            }
+            if (prediction != null) {
+                val decision = jumpPolicy.evaluate(
+                    predictedX = prediction.first.coerceIn(0f, 1f),
+                    predictedY = prediction.second.coerceIn(0f, 1f),
+                    irisX = raw.signedTravelX,
+                    irisY = raw.signedTravelY,
                 )
-                // Raw observation carries the RAW iris ratios (never the model
-                // prediction) — Issue 2: recalibration is never contaminated by
-                // the very model it is replacing.
-                _gazeObservations.tryEmit(
-                    GazeObservation(
-                        rawX = rawGaze?.x ?: 0.5f,
-                        rawY = rawGaze?.y ?: 0.5f,
-                        ear = ear,
-                        quality = advancedQuality,
-                        poseValid = poseValid,
-                        featureVector = featureVector,
-                        timestampMs = ts,
-                        faceDetected = true,
-                    ),
-                )
-                return
+                screenX = decision.x
+                screenY = decision.y
+                space = GazePointSpace.SCREEN_NORMALIZED
+                jumpFactor = decision.actionConfidenceFactor
+                jumpHeld = decision.outcome == GazeJumpPolicy.JumpOutcome.HOLD
             }
         }
 
-        // ---- Legacy iris-ratio gaze (fallback + affine calibration source) ----
-        val gaze = rawGaze
-        if (gaze != null) {
-            _gazePoints.tryEmit(gaze.copy(timestampMs = ts))
-            _gazeObservations.tryEmit(
-                GazeObservation(
-                    rawX = gaze.x, rawY = gaze.y, ear = ear,
-                    quality = gaze.confidence,
-                    poseValid = poseValid,
-                    featureVector = featureVector,
+        val eyeQuality = raw?.eyeQuality ?: 0f
+        // The cursor floor comes from the eligibility decision, not from an ad-hoc
+        // product of unrelated scores: "shown" is a decision, not a side effect of
+        // how the numbers happened to multiply.
+        val confidence = when {
+            raw == null -> 0f
+            eligibility.eligibility == GazeEligibility.NOTHING -> 0f
+            else -> eyeQuality.coerceIn(0f, 1f)
+        }
+        val actionConfidence = (confidence * jumpFactor).coerceIn(0f, 1f)
+        val rejection = when {
+            jumpHeld -> GazeDiagnostics.RejectionReason.PREDICTION_SUPPRESSED
+            raw == null -> GazeDiagnostics.RejectionReason.LOW_EYE_QUALITY
+            else -> eligibility.rejectionReason
+        }
+
+        // ---- EMIT: a face frame ALWAYS produces an observation ----
+        // Fix (audit A4): the old early-return on a suppressed jump skipped both
+        // emissions, so suppressed frames were also lost calibration samples. Only
+        // the CURSOR position is held now; the evidence keeps flowing.
+        val ear = raw?.eyeOpenness ?: 1f
+        _gazeObservations.tryEmit(
+            GazeObservation(
+                rawX = raw?.h ?: 0.5f,
+                rawY = raw?.v ?: 0.5f,
+                ear = ear,
+                quality = eyeQuality,
+                poseValid = pose?.isValid == true,
+                poseConfidence = pose?.takeIf { it.isValid }?.confidence ?: 0f,
+                binocularAgreement = raw?.binocularAgreement ?: 0f,
+                featureVector = featureVector,
+                timestampMs = ts,
+                faceDetected = true,
+            ),
+        )
+        if (raw != null) {
+            _gazePoints.tryEmit(
+                GazePoint(
+                    x = screenX,
+                    y = screenY,
+                    ear = ear,
+                    confidence = confidence,
+                    actionConfidence = actionConfidence,
+                    eligibility = eligibility.eligibility,
                     timestampMs = ts,
-                    faceDetected = true,
+                    space = space,
                 ),
             )
         } else {
-            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = 1f, confidence = 0f, timestampMs = ts))
-            _gazeObservations.tryEmit(
-                GazeObservation(0.5f, 0.5f, ear, 0f, poseValid, featureVector, ts, faceDetected = true),
+            _gazePoints.tryEmit(GazePoint(0.5f, 0.5f, ear = ear, confidence = 0f, eligibility = GazeEligibility.NOTHING, timestampMs = ts))
+        }
+
+        if (diagnosticsEnabled) {
+            recordDiagnostics(
+                timestampMs = ts,
+                features = features,
+                raw = raw,
+                pose = pose,
+                eligibility = eligibility,
+                rejection = rejection,
+                screenX = screenX,
+                screenY = screenY,
+                confidence = confidence,
+                actionConfidence = actionConfidence,
+                modelActive = model != null,
+                featureVector = featureVector,
             )
         }
+    }
+
+    /** Debug-only: writes one [GazeDiagnostics.Sample]; no allocation outside this branch. */
+    private fun recordDiagnostics(
+        timestampMs: Long,
+        features: BinocularEyeFeatures?,
+        raw: RawIrisGaze?,
+        pose: HeadPoseEstimate?,
+        eligibility: GazeEligibilityPolicy.Decision,
+        rejection: GazeDiagnostics.RejectionReason?,
+        screenX: Float,
+        screenY: Float,
+        confidence: Float,
+        actionConfidence: Float,
+        modelActive: Boolean,
+        featureVector: CalibrationFeatureVector?,
+    ) {
+        _diagnostics.record(
+            GazeDiagnostics.Sample(
+                timestampMs = timestampMs,
+                faceDetected = features != null,
+                leftEyeValid = features?.left != null,
+                rightEyeValid = features?.right != null,
+                leftEyeQuality = features?.left?.quality ?: 0f,
+                rightEyeQuality = features?.right?.quality ?: 0f,
+                ear = raw?.eyeOpenness ?: 0f,
+                rawIrisX = raw?.h ?: 0f,
+                rawIrisY = raw?.v ?: 0f,
+                headYawDeg = pose?.yawDeg ?: Float.NaN,
+                headPitchDeg = pose?.pitchDeg ?: Float.NaN,
+                headPoseValid = pose?.isValid == true,
+                headPoseConfidence = pose?.confidence ?: 0f,
+                calibrationActive = calibrationCollecting,
+                personalizedModelActive = modelActive,
+                personalizedPredictionX = if (modelActive) screenX else Float.NaN,
+                personalizedPredictionY = if (modelActive) screenY else Float.NaN,
+                rawConfidence = confidence,
+                finalConfidence = actionConfidence,
+                smoothingInputX = screenX,
+                smoothingInputY = screenY,
+                smoothingOutputX = screenX,
+                smoothingOutputY = screenY,
+                rejectionReason = rejection ?: eligibility.rejectionReason
+                    ?: GazeDiagnostics.RejectionReason.CURSOR_UPDATED,
+                gazeCursorX = screenX,
+                gazeCursorY = screenY,
+            ),
+        )
+        // `featureVector` is only reported through the sample's model fields: a
+        // model that is installed but never fed a valid vector shows up as
+        // personalizedPredictionX = NaN, which is the actionable signal.
     }
 
     private fun buildFaceLandmarkFrame(
@@ -441,7 +586,7 @@ class FaceTrackerImpl @Inject constructor(
         timestampMs = timestampMs,
         trackerWidthPx = widthPx,
         trackerHeightPx = heightPx,
-        isFrontCameraMirrored = true,
+        isFrontCameraMirrored = GazeCoordinateContract.ANALYSIS_MIRRORED_HORIZONTALLY,
         landmarks = landmarks.map { FaceLandmark(it.x(), it.y(), it.z()) },
         // Fix (compile): the facialTransformationMatrixes() accessor shape varies
         // across tasks-vision builds and did not resolve here; the matrix was an
@@ -450,99 +595,6 @@ class FaceTrackerImpl @Inject constructor(
         // (confidence 0.75, valid up to ±70° yaw/pitch).
         facialTransformationMatrix = null,
     )
-
-    private fun computeGaze(
-        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
-        aspectRatio: Float = 1f,
-        headYawDeg: Float = 0f,
-        headPitchDeg: Float = 0f,
-    ): GazePoint? {
-        if (landmarks.size < 478) return null
-
-        fun lm(i: Int) = landmarks[i]
-        val leftIris = lm(468)
-        val leftOuter = lm(33)
-        val leftInner = lm(133)
-        val leftH = gazeRatio(leftIris.x(), leftInner.x(), leftOuter.x())
-
-        val rightIris = lm(473)
-        val rightOuter = lm(263)
-        val rightInner = lm(362)
-        val rightH = gazeRatio(rightIris.x(), rightInner.x(), rightOuter.x())
-
-        val leftTop = lm(159)
-        val leftBottom = lm(145)
-        val leftV = gazeRatio(leftIris.y(), leftTop.y(), leftBottom.y())
-
-        val rightTop = lm(386)
-        val rightBottom = lm(374)
-        val rightV = gazeRatio(rightIris.y(), rightTop.y(), rightBottom.y())
-
-        val h = ((leftH + rightH) / 2f).coerceIn(0f, 1f)
-        val v = ((leftV + rightV) / 2f).coerceIn(0f, 1f)
-        val ear = computeAverageEar(landmarks, aspectRatio)
-
-        val leftEyeWidth = kotlin.math.abs(leftOuter.x() - leftInner.x())
-        val rightEyeWidth = kotlin.math.abs(rightOuter.x() - rightInner.x())
-        if (leftEyeWidth < EPSILON || rightEyeWidth < EPSILON) return null
-        val eyeRatio = (leftEyeWidth / rightEyeWidth).coerceIn(0f, 10f)
-        val symmetry = 1f - kotlin.math.abs(1f - eyeRatio).coerceIn(0f, 1f)
-        val eyeSeparation = kotlin.math.abs(
-            ((leftOuter.x() + leftInner.x()) / 2f) - ((rightOuter.x() + rightInner.x()) / 2f),
-        )
-        val separationConfidence = (eyeSeparation / 0.12f).coerceIn(0f, 1f)
-        val geometryConfidence = (0.25f + 0.5f * symmetry + 0.25f * separationConfidence)
-            .coerceIn(0f, 1f)
-
-        // Fix (audit #5): the legacy ratio map has no head-pose compensation, so
-        // turning the head read as gaze movement and the cursor drifted. Degrade
-        // confidence as the head rotates away — the consumer's detection gate
-        // (>= MIN_GAZE_CONFIDENCE) then hides the cursor on unreliable head
-        // angles instead of letting it drift. Full confidence up to
-        // HEAD_POSE_GRACE_DEG, linearly to zero at HEAD_POSE_REJECT_DEG.
-        val maxHeadAngle = kotlin.math.abs(headYawDeg).coerceAtLeast(kotlin.math.abs(headPitchDeg))
-        val headStability = if (headYawDeg == 0f && headPitchDeg == 0f) 1f
-        else (1f - (maxHeadAngle - HEAD_POSE_GRACE_DEG) / (HEAD_POSE_REJECT_DEG - HEAD_POSE_GRACE_DEG))
-            .coerceIn(0f, 1f)
-
-        return GazePoint(x = h, y = v, ear = ear, confidence = geometryConfidence * headStability)
-    }
-
-    private fun computeAverageEar(
-        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
-        aspectRatio: Float = 1f,
-    ): Float {
-        val left = ear(landmarks, 33, 160, 158, 133, 153, 144, aspectRatio)
-        val right = ear(landmarks, 263, 387, 385, 362, 380, 373, aspectRatio)
-        return (left + right) / 2f
-    }
-
-    private fun ear(
-        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
-        p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int,
-        aspectRatio: Float,
-    ): Float {
-        fun dist(a: Int, b: Int): Float {
-            // Fix (audit #6): x is normalized across the image WIDTH and y across
-            // the HEIGHT — mixing them raw distorts EAR on any non-square camera
-            // aspect and made blink detection device-dependent. Scale x into the
-            // same physical unit as y first (the common factor cancels in the
-            // vertical/horizontal ratio, so only the aspect matters).
-            val dx = (landmarks[a].x() - landmarks[b].x()) * aspectRatio
-            val dy = landmarks[a].y() - landmarks[b].y()
-            return kotlin.math.sqrt(dx * dx + dy * dy)
-        }
-        val vertical = dist(p2, p6) + dist(p3, p5)
-        val horizontal = 2f * dist(p1, p4)
-        if (horizontal < EPSILON) return 1f
-        return vertical / horizontal
-    }
-
-    private fun gazeRatio(value: Float, inner: Float, outer: Float): Float {
-        val span = outer - inner
-        if (kotlin.math.abs(span) < EPSILON) return 0.5f
-        return ((value - inner) / span).coerceIn(0f, 1f)
-    }
 
     private fun validateModelFile(): Boolean {
         return try {
@@ -593,14 +645,7 @@ class FaceTrackerImpl @Inject constructor(
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
         private const val EPSILON = 1e-6f
 
-        // Jump-suppressor tuning: total |Δfeature| across all 23 dims below this
-        // means "the eyes/head essentially did not move"; a prediction leap
-        // larger than PREDICTION_JUMP then is model noise, not gaze.
-        private const val STABLE_FEATURE_DELTA = 0.8f
-        private const val PREDICTION_JUMP = 0.12f
-
-        // Fix (audit #5): legacy-path head-pose stability envelope (degrees).
-        private const val HEAD_POSE_GRACE_DEG = 15f
-        private const val HEAD_POSE_REJECT_DEG = 60f
+        /** `PersonalizedGazeCalibrationFitter.WORST_TARGET_MAX_NORMALIZED_ERROR`, in words. */
+        private const val WORST_ACCEPTED_P95_ERROR = 0.10
     }
 }

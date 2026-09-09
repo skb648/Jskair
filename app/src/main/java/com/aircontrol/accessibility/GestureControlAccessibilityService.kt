@@ -747,13 +747,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         if (BuildConfig.DEBUG) gazeSmoothingMetrics.onReacquired()
                     }
 
+                    // Phase 5: displaying the dot and TAPPING with it are different
+                    // risk levels, so they are gated separately. `isActionable` is
+                    // false when the head is turned far, the eyes disagree, or the
+                    // personalized prediction is being held — none of which should
+                    // stop the cursor from moving, but all of which should stop a
+                    // blind tap from landing in the wrong place.
+                    val gazeActionable = gaze.isActionable
                     if (currentPreferences.blinkClickEnabled) {
                         // Fix A7: the blink window must be measured on the
                         // monotonic clock like the rest of the pipeline; wall
                         // time broke (phantom/missed blinks) whenever the user
                         // changed system time or NTP synced.
                         val blinkResult = blinkDetector.update(gaze.ear, SystemClock.elapsedRealtime())
-                        if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
+                        if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK && !gazeActionable) {
+                            // A completed blink at an untrusted position must not
+                            // fire. Consume it (the detector already has) and say so
+                            // in the pill, rather than clicking something arbitrary.
+                            Timber.d("Blink click suppressed: gaze not actionable this frame")
+                            resetDwellState()
+                            return@gaze
+                        } else if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
                             // Fix (audit #6/#7): a NATURAL blink fires mid-saccade
                             // all the time — that is how eyes work — and clicking
                             // then both fires unintentionally AND lands on the
@@ -800,6 +814,23 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // No allocation, release builds skip it entirely.
                     if (BuildConfig.DEBUG) {
                         gazeSmoothingMetrics.onSample(nx, ny, smoothX, smoothY, gaze.timestampMs)
+                        // Phase 1: the smoothing/overlay half of this frame is folded
+                        // into the tracker's sample, so the reported latency is the
+                        // one the user actually experiences.
+                        val heldByDeadZone = smoothX == nx && smoothY == ny
+                        faceTracker?.diagnostics?.completeCursorSample(
+                            timestampMs = gaze.timestampMs,
+                            smoothingInputX = nx,
+                            smoothingInputY = ny,
+                            smoothingOutputX = smoothX,
+                            smoothingOutputY = smoothY,
+                            reason = when {
+                                gazeReacquireFrames > 0 -> com.aircontrol.tracking.GazeDiagnostics.RejectionReason.CURSOR_REACQUIRING
+                                heldByDeadZone -> com.aircontrol.tracking.GazeDiagnostics.RejectionReason.SMOOTHING_HELD
+                                else -> com.aircontrol.tracking.GazeDiagnostics.RejectionReason.CURSOR_UPDATED
+                            },
+                        )
+                        gazeDiagnosticsSnapshot()?.let { Timber.d(it) }
                     }
 
                     // Fix (audit #6): track when the gaze was last seen MOVING —
@@ -846,7 +877,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // Fix A-15: gaze feeds the same stillness/dwell machine as
                         // the hand path (monotonic clock), with fromGaze so the
                         // eventual tap maps directly to pixels (Fix A2).
-                        handleCursorStillness(smoothX, smoothY, nowMs, isGaze = true)
+                        // Phase 5: dwell only from an actionable gaze sample. The
+                        // fixation timer itself keeps running (a borderline frame
+                        // must not reset a deliberate fixation, Phase 11), but the
+                        // tap only lands while the position is trusted.
+                        if (gazeActionable) {
+                            handleCursorStillness(smoothX, smoothY, nowMs, isGaze = true)
+                        }
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating gaze cursor — skipping")
@@ -1296,6 +1333,34 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Phase 1: one bounded, periodic pipeline snapshot per debug build. Returns
+     * null most frames (the diagnostics object rate-limits internally), so calling
+     * this from the per-frame path costs a comparison.
+     */
+    private fun gazeDiagnosticsSnapshot(): String? =
+        if (BuildConfig.DEBUG) {
+            faceTracker?.diagnostics?.maybeSnapshot(SystemClock.elapsedRealtime())
+        } else {
+            null
+        }
+
+    /** Debug surface for the gaze ring buffer (see [GazeDiagnostics]). */
+    internal fun debugGazeSamples(): List<com.aircontrol.tracking.GazeDiagnostics.Sample> =
+        faceTracker?.diagnostics?.recent() ?: emptyList()
+
+    /**
+     * Raw camera gaze ([GazePointSpace.CAMERA_RAW]) → screen-normalized.
+     *
+     * The gain is not a "sensitivity multiplier" in the arbitrary sense: the raw
+     * signal spans the eye's full physical travel (±1 = iris at the corner, see
+     * [RawIrisGaze]), and nobody holds their eyes at the socket limit to point at
+     * the corner of a screen. A comfortable usable range is roughly half of that,
+     * so ~2x compression maps *comfortable* extreme gaze to the screen edge. The
+     * slider only decides where inside 1.2x..2.5x that compression sits; it is
+     * applied here and nowhere else, and never to a value that already crossed a
+     * calibration (see [GazePoint.space]).
+     */
     private fun mapGazeToDisplay(gx: Float, gy: Float): Pair<Float, Float> {
         if (gazeCalibration.isCalibrated) return gazeCalibration.map(gx, gy)
         val gain = 1.2f + (currentPreferences.gazeSensitivity / 100f) * 1.3f

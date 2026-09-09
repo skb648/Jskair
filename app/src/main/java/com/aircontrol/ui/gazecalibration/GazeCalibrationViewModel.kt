@@ -321,7 +321,9 @@ class GazeCalibrationViewModel @Inject constructor(
             Timber.w("Affine gaze fallback rejected: mean residual %.3f", meanResidual)
             return false
         }
-        settingsRepository.updateGazeCalibration(calibration.toFloatArray().joinToString(","))
+        settingsRepository.updateGazeCalibration(
+            com.aircontrol.tracking.GazeCalibration.toStringV2(calibration.toFloatArray()),
+        )
         Timber.i("Affine gaze fallback saved (mean residual %.3f)", meanResidual)
         true
         } catch (e: Exception) {

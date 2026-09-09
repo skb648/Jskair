@@ -5,16 +5,44 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** Independent, aspect-correct feature set for one anatomical eye. */
+/**
+ * Independent, aspect-correct feature set for one anatomical eye.
+ *
+ * ## Coordinate contract (Phase 3 — see also [GazeCoordinateContract])
+ *
+ * | field | space | normalization | axis convention | range |
+ * |---|---|---|---|---|
+ * | [eyeCenterX], [eyeCenterY], [irisCenterX], [irisCenterY] | canonical tracker image (front-camera mirror ALREADY undone by [EyeFeatureExtractor]) | divided by tracker width / height respectively | +x = viewer right, +y = down | ~[0,1] |
+ * | [irisAlongAxis], [irisPerpendicular] | EYE-local frame, per-eye | divided by that eye's own width | **+axis = this eye's temporal corner** (nasal = 0) | along ~[0,1] |
+ * | [irisViewerX], [irisViewerY] | canonical VIEWER frame | divided by that eye's own width | +x = viewer right, +y = down | ~[-1,1] |
+ * | [eyeCenterFromFaceCenterX/Y] | face-centred | divided by inter-eye distance (or eye width for a monocular frame) | +x = viewer right, +y = down | ~[-0.5,0.5] |
+ *
+ * The distinction between [irisAlongAxis] and [irisViewerX] is the whole reason eye
+ * tracking used to be broken: `irisAlongAxis` counts *away from each eye's own nose*,
+ * so the left and right eyes move in OPPOSITE directions for the same gaze shift, and
+ * averaging it cancels horizontal gaze. [axisSign] is derived from the landmark
+ * geometry (never hardcoded) and converts one into the other. Nothing downstream may
+ * treat [irisAlongAxis] as a screen direction.
+ */
 data class EyeFeatures(
     val eyeCenterX: Float,
     val eyeCenterY: Float,
     val irisCenterX: Float,
     val irisCenterY: Float,
-    /** Iris center projected along the eye axis, normalized by eye width. */
+    /** Iris center projected along the eye axis, normalized by eye width. Per-eye convention: 0 = nasal corner, 1 = temporal corner. */
     val irisAlongAxis: Float,
-    /** Iris center offset perpendicular to the eye axis, normalized by eye width. */
+    /** Iris center offset perpendicular to the eye axis, normalized by eye width. Per-eye convention, see [irisViewerY]. */
     val irisPerpendicular: Float,
+    /**
+     * +1 when this eye's temporal corner lies to the viewer's right, -1 otherwise.
+     * Derived from the (un-mirrored) landmark geometry, so it is correct for any
+     * camera/eye/left-right combination and for head roll.
+     */
+    val axisSign: Float,
+    /** Horizontal iris offset from eye center in the VIEWER frame, / eye width. + = looking to the viewer's right. */
+    val irisViewerX: Float,
+    /** Vertical iris offset from eye center in the VIEWER frame, / eye width. + = looking down. */
+    val irisViewerY: Float,
     /** Iris diameter estimate divided by eye width. */
     val irisDiameterOverEyeWidth: Float,
     /** Euclidean eye-corner distance in aspect-correct tracker pixels. */
@@ -93,6 +121,21 @@ object EyeFeatureExtractor {
                 !irisDiameter.isFinite() || !eyeWidth.isFinite() || eyeWidth <= EPSILON
             ) return null
 
+            // Phase 2 (single intentional mirror/sign interpretation): the
+            // per-eye `along` axis points from this eye's NASAL corner to its
+            // TEMPORAL corner, so for the two eyes it points in opposite viewer
+            // directions. Deriving the sign from the geometry itself (instead of
+            // hardcoding +1/-1 per eye) keeps it correct under any camera
+            // mirroring, any left/right naming convention and any head roll.
+            val axisSign = if (axis.x >= 0f) 1f else -1f
+            // Offsets from the eye center in units of this eye's own width.
+            // `eyeCenter` is the midpoint of the two corners and therefore lies
+            // ON the axis, so (along - 0.5) is exactly the along-axis offset from
+            // the center and `perpendicular` is already measured from it.
+            val viewerX = axisSign * (along - 0.5f)
+            val viewerY = -axisSign * perpendicular
+            if (!viewerX.isFinite() || !viewerY.isFinite() || !axisSign.isFinite()) return null
+
             val relativeX = (eye.x - faceCenter.x) / scale
             val relativeY = (eye.y - faceCenter.y) / scale
             val quality = geometry.quality
@@ -105,6 +148,9 @@ object EyeFeatureExtractor {
                 irisCenterY = geometry.irisCenter.y / frame.trackerHeightPx,
                 irisAlongAxis = along,
                 irisPerpendicular = perpendicular,
+                axisSign = axisSign,
+                irisViewerX = viewerX,
+                irisViewerY = viewerY,
                 irisDiameterOverEyeWidth = irisDiameter / eyeWidth,
                 eyeWidthPx = eyeWidth,
                 eyelidOpening = geometry.lidOpening,

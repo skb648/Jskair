@@ -711,7 +711,12 @@ class CameraService : LifecycleService() {
                     180 -> { m.postRotate(180f); m.postTranslate(sourceBitmap.width.toFloat(), sourceBitmap.height.toFloat()) }
                     270 -> { m.postRotate(270f); m.postTranslate(0f, sourceBitmap.width.toFloat()) }
                 }
-                m.postScale(-1f, 1f, targetW / 2f, targetH / 2f)
+                // The ONE mirror decision for the analysis stream; shared with the
+                // gaze pipeline through GazeCoordinateContract so the flag the
+                // tracker reports can never drift from the flip actually applied.
+                if (com.aircontrol.tracking.GazeCoordinateContract.ANALYSIS_MIRRORED_HORIZONTALLY) {
+                    m.postScale(-1f, 1f, targetW / 2f, targetH / 2f)
+                }
                 cachedMatrix = m; cachedRotationDegrees = rotationDegrees
             }
             val canvas = android.graphics.Canvas(targetBitmap)

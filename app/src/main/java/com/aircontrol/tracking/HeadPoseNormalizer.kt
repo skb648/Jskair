@@ -11,6 +11,10 @@ data class NormalizedEyeFeatures(
     val irisCenterY: Float,
     val irisAlongAxis: Float,
     val irisPerpendicular: Float,
+    /** Viewer-frame horizontal iris offset (see [EyeFeatures.irisViewerX]); scale-normalized, sign preserved. */
+    val irisViewerX: Float,
+    /** Viewer-frame vertical iris offset (see [EyeFeatures.irisViewerY]); scale-normalized, sign preserved. */
+    val irisViewerY: Float,
     val irisDiameterOverEyeWidth: Float,
     val eyelidOpening: Float,
     val ear: Float,
@@ -21,8 +25,9 @@ data class NormalizedEyeFeatures(
     val isValid: Boolean
         get() = listOf(
             eyeCenterX, eyeCenterY, irisCenterX, irisCenterY,
-            irisAlongAxis, irisPerpendicular, irisDiameterOverEyeWidth,
-            eyelidOpening, ear, eyeCenterFromFaceCenterX, eyeCenterFromFaceCenterY, quality,
+            irisAlongAxis, irisPerpendicular, irisViewerX, irisViewerY,
+            irisDiameterOverEyeWidth, eyelidOpening, ear,
+            eyeCenterFromFaceCenterX, eyeCenterFromFaceCenterY, quality,
         ).all { it.isFinite() }
 }
 
@@ -79,6 +84,8 @@ object HeadPoseNormalizer {
             irisCenterY = normalizedIrisY,
             irisAlongAxis = eye.irisAlongAxis,
             irisPerpendicular = eye.irisPerpendicular,
+            irisViewerX = eye.irisViewerX,
+            irisViewerY = eye.irisViewerY,
             irisDiameterOverEyeWidth = eye.irisDiameterOverEyeWidth,
             eyelidOpening = eye.eyelidOpening,
             ear = eye.ear,
