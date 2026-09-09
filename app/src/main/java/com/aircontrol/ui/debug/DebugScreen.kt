@@ -89,6 +89,9 @@ fun DebugScreen(
     val armingProgress by viewModel.armingProgress.collectAsState()
     val guardFailures by viewModel.guardFailures.collectAsState()
     val guardLog by viewModel.guardLog.collectAsState()
+    val swipeDebug by viewModel.swipeDebug.collectAsState()
+    val swipeRejections by viewModel.swipeRejections.collectAsState()
+    val swipeLog by viewModel.swipeLog.collectAsState()
 
     val context = LocalContext.current
     @Suppress("DEPRECATION")
@@ -142,6 +145,13 @@ fun DebugScreen(
                 currentPose = currentPose,
                 guardFailures = guardFailures,
                 guardLog = guardLog,
+            )
+
+            // Swipe intent telemetry (debug builds only - see GestureDetector.swipeDebug).
+            SwipeIntentStrip(
+                info = swipeDebug,
+                rejectionCounts = swipeRejections,
+                verdicts = swipeLog,
             )
 
             // Camera preview with skeleton overlay
@@ -614,6 +624,50 @@ private fun HandSkeletonOverlay(
                 color = wristColor,
                 center = Offset(wrist.x * canvasWidth, wrist.y * canvasHeight),
                 radius = 10f,
+            )
+        }
+    }
+}
+
+/**
+ * What the swipe state machine currently thinks, in its own words: phase, the intent
+ * score against the two thresholds it has to cross, how long the candidate has been
+ * held, what it is waiting for, and the onset counters for this session.
+ *
+ * Renders nothing until the first hand frame of a debug build: the source flow is
+ * never written when `BuildConfig.DEBUG` is false, so a release build pays one null
+ * check per frame in the detector path and shows no strip at all.
+ */
+@Composable
+private fun SwipeIntentStrip(
+    info: com.aircontrol.gesture.detection.DynamicGestureDetector.SwipeDebugInfo?,
+    rejectionCounts: Map<String, Int>,
+    verdicts: List<String>,
+) {
+    if (info == null && verdicts.isEmpty()) return
+    Column(modifier = Modifier.fillMaxWidth().padding(Dimens.paddingSmall)) {
+        Text(
+            text = info?.format() ?: "swipe: waiting for a hand",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+        )
+        if (rejectionCounts.isNotEmpty()) {
+            Text(
+                text = rejectionCounts.entries.joinToString(" · ") { "${it.key} x${it.value}" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        verdicts.take(3).forEach { line ->
+            Text(
+                text = line,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

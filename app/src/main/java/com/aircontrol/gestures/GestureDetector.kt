@@ -1,6 +1,7 @@
 package com.aircontrol.gestures
 
 import com.aircontrol.gesture.GestureEngine
+import com.aircontrol.gesture.detection.DynamicGestureDetector
 import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -64,6 +67,25 @@ interface GestureDetector : AutoCloseable {
      */
     fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float)
 
+    /**
+     * Debug-only visibility into the swipe state machine (phase, intent score against
+     * both thresholds, candidate age and the explicit hold reason). `null` until the
+     * first hand frame, and never updated in a release build, because the whole
+     * channel is attached only when `BuildConfig.DEBUG` is set.
+     */
+    val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?>
+
+    /**
+     * How many times each rejection has *begun* this session. Onset-counted on
+     * purpose: a hand held mid-sweep for forty frames is one rejection the user
+     * experienced, not forty, and a counter that tracks frames would make every
+     * ordinary gesture look like a systemic failure.
+     */
+    val swipeRejectionCounts: StateFlow<Map<String, Int>>
+
+    /** Most recent swipe verdicts that changed state, newest first, capped. */
+    val swipeDebugLog: StateFlow<List<String>>
+
     fun reset()
 
     override fun close() {
@@ -100,8 +122,81 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val _armingProgress = MutableStateFlow(0f)
     override val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
 
+    private val debugInstrumentation = com.aircontrol.BuildConfig.DEBUG
+
+    private val _swipeDebug = MutableStateFlow<DynamicGestureDetector.SwipeDebugInfo?>(null)
+    override val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?> = _swipeDebug.asStateFlow()
+
+    private val _swipeRejections = MutableStateFlow<Map<String, Int>>(emptyMap())
+    override val swipeRejectionCounts: StateFlow<Map<String, Int>> = _swipeRejections.asStateFlow()
+
+    private val _swipeLog = MutableStateFlow<List<String>>(emptyList())
+    override val swipeDebugLog: StateFlow<List<String>> = _swipeLog.asStateFlow()
+
+    private val swipeCounters = ConcurrentHashMap<String, AtomicInteger>()
+    private val swipeLog = ArrayDeque<String>()
+    private var lastRecordedHoldReason: String? = null
+
     init {
         collectEngineEvents()
+        if (debugInstrumentation) attachSwipeDecisionHook()
+    }
+
+    /**
+     * The engine's decision channel carries what the detector cannot know: a swipe
+     * that *was* committed, and a swipe the cross-modal arbiter took away because an
+     * active pinch or drag owns the same motion. Both are the answers users ask for
+     * ("it saw me and did nothing" vs "the pointer stole it"), so they go to the same
+     * capped log and counters. In a release build this hook is never assigned, which
+     * leaves `GestureEngine.onSwipeDecision` null and its three call sites a single
+     * null check - no allocation, no logcat, no per-frame work on the frame thread.
+     */
+    private fun attachSwipeDecisionHook() {
+        engine.onSwipeDecision = { detected, direction, confidence, reason, _, _, timestampMs ->
+            val outcome = if (detected) "COMMITTED ${direction?.name}" else "REJECTED ${reason ?: "UNCLAIMED"}"
+            recordSwipeVerdict(
+                "$outcome score=${(confidence * 100f).toInt() / 100f} at=$timestampMs",
+                countKey = if (detected) null else "ENGINE:$outcome",
+            )
+        }
+    }
+
+    /**
+     * Read the swipe machine's snapshot after the engine has consumed the frame, so the
+     * values shown are the state it ended the frame in. Only the *transition* into a
+     * hold reason is counted or logged; the latest snapshot itself is always published,
+     * and StateFlow's equality conflation means a held reason republishes nothing to the
+     * UI, so an uninteresting 40-frame sweep costs 40 field writes and zero emissions.
+     */
+    private fun publishSwipeDebug() {
+        val info = engine.swipeDebugInfo()
+        _swipeDebug.value = info
+        val key = info.holdReason?.name
+        if (key == lastRecordedHoldReason) return
+        lastRecordedHoldReason = key
+        if (key != null) recordSwipeVerdict(info.format(), countKey = key)
+    }
+
+    private fun recordSwipeVerdict(line: String, countKey: String?) {
+        if (countKey != null) {
+            val total = swipeCounters.computeIfAbsent(countKey) { AtomicInteger() }.incrementAndGet()
+            _swipeRejections.value = swipeCounters.entries
+                .associate { it.key to it.value.get() }
+                .toSortedMap()
+            recordSwipeLog("$line  x$total")
+        } else {
+            recordSwipeLog(line)
+        }
+    }
+
+    /** Fixed-capacity, newest first: a session of any length cannot grow this. */
+    private fun recordSwipeLog(line: String) {
+        synchronized(swipeLog) {
+            if (swipeLog.size == SWIPE_LOG_CAPACITY) swipeLog.removeLast()
+            swipeLog.addFirst(line)
+            _swipeLog.value = swipeLog.toList()
+        }
+        Timber.tag("SwipeIntent").d(line)
     }
 
     override fun processHandFrame(frame: HandFrame) {
@@ -112,6 +207,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         _engineState.value = engine.engineState.value
         _currentPose.value = engine.currentPose.value
         _armingProgress.value = engine.armingProgress.value
+        if (debugInstrumentation) publishSwipeDebug()
     }
 
     override fun updateSensitivity(sensitivity: Int) {
@@ -155,6 +251,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     override fun reset() {
         engine.reset()
         resetStateFlows()
+        if (debugInstrumentation) clearSwipeDebug()
         Timber.d("Gesture detector reset")
     }
 
@@ -163,6 +260,22 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             engine.gestureEvents.collect { event ->
                 _gestureEvents.tryEmit(event)
             }
+        }
+    }
+
+    /**
+     * Rejections and verdicts are per-session on purpose - the same convention as the
+     * gaze ring buffer in [com.aircontrol.tracking.GazeDiagnostics] - so a counter that
+     * says "4 NO_TRAVEL" describes the minutes the user just tried, not everything
+     * since install.
+     */
+    private fun clearSwipeDebug() {
+        lastRecordedHoldReason = null
+        swipeCounters.clear()
+        _swipeRejections.value = emptyMap()
+        synchronized(swipeLog) {
+            swipeLog.clear()
+            _swipeLog.value = emptyList()
         }
     }
 
@@ -200,5 +313,10 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             confidence = confidence,
             frameAspectRatio = frameAspectRatio,
         )
+    }
+
+    private companion object {
+        /** Debug verdict history: 12 lines is what fits above the overlay, and it bounds memory. */
+        const val SWIPE_LOG_CAPACITY = 12
     }
 }

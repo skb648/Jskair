@@ -88,6 +88,49 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         COOLDOWN,
     }
 
+    /**
+     * Debug-only view of the swipe state machine, sampled after each frame (spec §18:
+     * phase, intent score, both thresholds, candidate age, explicit rejection reason).
+     *
+     * Every value is the one the arbiter actually used for its last decision — the
+     * point of the snapshot is that a user can see why the motion they just made was
+     * held, so it deliberately does NOT recompute anything. Nothing in the dispatch
+     * path reads it; the app layer only renders it in debug builds.
+     */
+    data class SwipeDebugInfo(
+        val phase: SwipeIntentArbiter.Phase,
+        val direction: SwipeDirection?,
+        val holdReason: SwipeHoldReason?,
+        val intentScore: Float,
+        val candidateScore: Float,
+        val commitScore: Float,
+        val heldMs: Long,
+        val cooldownRemainingMs: Long,
+        val awaitingStillHand: Boolean,
+        val displacementInHandSpans: Float,
+        val peakVelocitySpansPerSecond: Float,
+        val sampleCount: Int,
+        val movingSteps: Int,
+        val reversingSteps: Int,
+        val timestampMs: Long,
+    ) {
+        /** One-line rendering for the debug overlay and the rate-limited logcat line. */
+        fun format(): String = buildString {
+            append("phase=").append(phase.name)
+            append(" score=").append((intentScore * 100f).toInt() / 100f)
+            append('/').append((commitScore * 100f).toInt() / 100f)
+            append(" cand=").append((candidateScore * 100f).toInt() / 100f)
+            append(" held=").append(heldMs).append("ms")
+            if (direction != null) append(" dir=").append(direction.name)
+            if (holdReason != null) append(" reason=").append(holdReason.name)
+            if (cooldownRemainingMs > 0L) append(" cooldown=").append(cooldownRemainingMs).append("ms")
+            if (awaitingStillHand) append(" awaitingStillHand")
+            append(" spans=").append((displacementInHandSpans * 100f).toInt() / 100f)
+            append(" steps=").append(movingSteps).append('+').append(reversingSteps).append('-')
+            append(" n=").append(sampleCount)
+        }
+    }
+
     // Track both wrist and index fingertip for more reliable swipe detection
     private val wristWindow = ArrayDeque<PositionSample>()
     private val indexTipWindow = ArrayDeque<PositionSample>()
@@ -118,6 +161,21 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
      * Fix S1: consecutive frames for which the pose gate has disallowed
      * swipes. The window is only wiped once this exceeds the grace period.
      */
+    /**
+     * Last decision/evidence pair, kept only so the debug snapshot can show what the
+     * machine saw. Written from the frame thread, read by the debug screen; a stale
+     * read shows one frame of lag, never a torn value (each field is independent and
+     * the whole object is published as a single reference).
+     */
+    @Volatile
+    private var lastDebugDecision: SwipeIntentArbiter.Decision? = null
+
+    @Volatile
+    private var lastDebugEvidence: SwipeEvidence? = null
+
+    @Volatile
+    private var lastDebugTimestampMs: Long = 0L
+
     private var disallowedFrames: Int = 0
 
     /** Set while the machine re-arms: the next incoming sample is a boundary, not motion. */
@@ -157,7 +215,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             // Feed the loss to the arbiter: a live candidate is abandoned, and the
             // cooldown keeps ticking, so dropping the hand for a frame cannot be used
             // to reset the machine into firing twice for one motion.
-            arbiter.decide(timestampMs, evidence = null)
+            swipeDebugRecord(timestampMs, arbiter.decide(timestampMs, evidence = null), null)
             return SwipeResult(detected = false, confidence = 0f, hadEvidence = false)
         }
 
@@ -174,7 +232,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 // The candidate is released (no evidence follows), but the cooldown and
                 // the re-arm keep running: resetting the whole machine here is what let a
                 // pose flicker after a swipe re-arm it instantly and fire a second time.
-                arbiter.decide(timestampMs, evidence = null)
+                swipeDebugRecord(timestampMs, arbiter.decide(timestampMs, evidence = null), null)
             }
             // Inside the grace window the arbiter is deliberately NOT fed. The
             // classifier flickers OPEN_PALM -> FOUR_FINGERS -> OPEN_PALM for a frame or
@@ -233,7 +291,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             clearWindows()
             wristShape.clear()
             indexTipShape.clear()
-            arbiter.decide(timestampMs, evidence = null)
+            swipeDebugRecord(timestampMs, arbiter.decide(timestampMs, evidence = null), null)
             return SwipeResult(detected = false, confidence = 0f, hadEvidence = false)
         }
         val windowMs = effectiveWindowMs()
@@ -286,7 +344,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             }
         }
 
-        val decision = arbiter.decide(timestampMs, evidence)
+        val decision = arbiter.decide(timestampMs, evidence).also { swipeDebugRecord(timestampMs, it, evidence) }
 
         if (decision.isCommit && decision.direction != null) {
             wristShape.clear()
@@ -314,6 +372,45 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
             confidence = decision.score,
             reason = decision.note?.let { mapHoldReason(it) },
             hadEvidence = evidence?.hasMeaningfulTravel(SwipeIntentArbiter.MIN_COMMIT_SPANS) == true,
+        )
+    }
+
+    /** Store the pair the debug snapshot renders. Kept in one place so no decide()
+     *  site can be added later without its snapshot being updated. */
+    private fun swipeDebugRecord(
+        nowMs: Long,
+        decision: SwipeIntentArbiter.Decision,
+        evidence: SwipeEvidence?,
+    ) {
+        lastDebugDecision = decision
+        lastDebugEvidence = evidence
+        lastDebugTimestampMs = nowMs
+    }
+
+    /**
+     * The swipe machine's own view of the current motion, for debug instrumentation.
+     * Safe to call from any thread (see the fields' `@Volatile`).
+     */
+    fun swipeDebugInfo(): SwipeDebugInfo {
+        val decision = lastDebugDecision
+        val evidence = lastDebugEvidence
+        val frameMs = lastDebugTimestampMs
+        return SwipeDebugInfo(
+            phase = arbiter.currentPhase,
+            direction = decision?.direction,
+            holdReason = decision?.note,
+            intentScore = decision?.score ?: 0f,
+            candidateScore = arbiter.candidateScore,
+            commitScore = arbiter.commitScore,
+            heldMs = decision?.heldMs ?: 0L,
+            cooldownRemainingMs = arbiter.cooldownRemainingMs(frameMs),
+            awaitingStillHand = arbiter.isAwaitingStillHand,
+            displacementInHandSpans = evidence?.displacementInHandSpans ?: 0f,
+            peakVelocitySpansPerSecond = evidence?.peakVelocitySpansPerSecond ?: 0f,
+            sampleCount = evidence?.sampleCount ?: 0,
+            movingSteps = evidence?.movingSteps ?: 0,
+            reversingSteps = evidence?.reversingSteps ?: 0,
+            timestampMs = frameMs,
         )
     }
 

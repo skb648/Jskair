@@ -7,6 +7,7 @@ import com.aircontrol.gesture.model.Landmark3D
 import com.aircontrol.gesture.model.SwipeDirection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,6 +73,102 @@ class SwipeIntentTest {
     ): List<Triple<Float, Float, Long>> = (0 until frames).map { i ->
         val t = i.toFloat() / (frames - 1)
         Triple(fromX + (toX - fromX) * t, y, startTs + (i * gapMs))
+    }
+
+    // ------------------------------------------------------- debug instrumentation
+
+    /**
+     * The debug snapshot (spec §18) has to report the numbers the machine actually
+     * used. If it recomputed or prettified them, the overlay would keep telling the
+     * user something comfortable while the detector did something else - which is the
+     * exact failure mode this recovery cycle exists to remove.
+     */
+    @Test
+    fun `the debug snapshot exposes the live thresholds and says why a drift is held`() {
+        val detector = DynamicGestureDetector(config)
+        var ts = 1000L
+        // Below the tremor line: pixels are moving, nothing about it claims intent.
+        repeat(4) {
+            detector.process(hand(0.5f + it * 0.004f, 0.5f, ts))
+            ts += 40L
+        }
+        val info = detector.swipeDebugInfo()
+        assertEquals(
+            "the overlay must show the sensitivity-scaled candidate level",
+            config.scaledSwipeCandidateScore(), info.candidateScore, 1e-6f,
+        )
+        assertEquals(
+            "and the commit level it compares the score against",
+            config.scaledSwipeCommitScore(), info.commitScore, 1e-6f,
+        )
+        // TRACKING, not NEUTRAL: NEUTRAL would say "there is nothing to look at",
+        // while the truth is "there is a hand, it was measured, and it is not yet
+        // worth a claim" - the distinction the overlay exists to show.
+        assertEquals(SwipeIntentArbiter.Phase.TRACKING, info.phase)
+        assertTrue("and the snapshot names what is missing: ${info.format()}", info.holdReason != null)
+        assertNull("with no direction to claim", info.direction)
+        assertTrue("evidence existed and was judged: n=${info.sampleCount}", info.sampleCount > 0)
+        assertTrue(info.format().contains("reason="))
+        assertFalse(info.format().contains("dir="))
+    }
+
+    /**
+     * Candidacy is deliberately cheap and committing is not: a nudge may become a
+     * candidate (which costs the user nothing) yet must never fire. The snapshot shows
+     * the pair of levels that make that true, which is the whole point of publishing
+     * them instead of only the score.
+     */
+    @Test
+    fun `a nudge may reach candidate but never commits`() {
+        val detector = DynamicGestureDetector(config)
+        var ts = 1000L
+        val results = (0..3).map {
+            val r = detector.process(hand(0.5f + it * 0.008f, 0.5f, ts))
+            ts += 40L
+            r
+        }
+        assertEquals("no commit from a nudge", 0, commits(results).size)
+        val info = detector.swipeDebugInfo()
+        assertEquals(SwipeIntentArbiter.Phase.CANDIDATE, info.phase)
+        assertNull("a live candidate is not a rejection, so nothing is blamed", info.holdReason)
+        assertTrue("and it sits at or under the commit level", info.intentScore < info.commitScore)
+    }
+
+    /**
+     * A commit and the wait that follows it are the two moments a user asks about:
+     * "did it see me" and "why not again yet". Both must be readable in one string.
+     */
+    @Test
+    fun `the debug snapshot names the commit and the wait that follows it`() {
+        val detector = DynamicGestureDetector(config)
+        var ts = 1000L
+        var atCommitFrame: DynamicGestureDetector.SwipeDebugInfo? = null
+        (0..7).forEach { i ->
+            val r = detector.process(hand(0.2f + i * 0.05f, 0.5f, ts))
+            ts += 40L
+            if (r.detected && atCommitFrame == null) atCommitFrame = detector.swipeDebugInfo()
+        }
+        val atCommit = requireNotNull(atCommitFrame) { "the fixture must commit for this test to mean anything" }
+        assertEquals(SwipeIntentArbiter.Phase.COMMITTED, atCommit.phase)
+        assertEquals(SwipeDirection.RIGHT, atCommit.direction)
+        assertNull("a commit has no rejection reason", atCommit.holdReason)
+        assertTrue(
+            "score ${atCommit.intentScore} must clear the commit level ${atCommit.commitScore}",
+            atCommit.intentScore >= atCommit.commitScore,
+        )
+        assertTrue(
+            "the stillness latch that stops the returning hand firing a second swipe is visible",
+            atCommit.awaitingStillHand,
+        )
+        assertTrue(atCommit.format().contains("dir=RIGHT"))
+
+        // One settling frame after the commit: the remaining wait is the story.
+        detector.process(hand(0.55f, 0.5f, ts))
+        val settling = detector.swipeDebugInfo()
+        assertTrue(
+            "the cooldown must be readable: ${settling.format()}",
+            settling.phase == SwipeIntentArbiter.Phase.COOLDOWN || settling.cooldownRemainingMs > 0L,
+        )
     }
 
     // ---------------------------------------------------------------- the four axes

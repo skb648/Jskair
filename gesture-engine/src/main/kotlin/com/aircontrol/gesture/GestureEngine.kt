@@ -100,6 +100,14 @@ class GestureEngine(
      */
     @Volatile var onSwipeDecision: ((detected: Boolean, direction: SwipeDirection?, confidence: Float, reason: String?, displacementX: Float, displacementY: Float, timestampMs: Long) -> Unit)? = null
 
+    /**
+     * Debug-only: the swipe state machine's view of the current motion (spec §18).
+     * Forwarded untouched — the engine adds nothing, so what the overlay shows is what
+     * the detector used. Callers that must not pay per frame (release builds) simply
+     * never call it.
+     */
+    fun swipeDebugInfo(): DynamicGestureDetector.SwipeDebugInfo = dynamicDetector.swipeDebugInfo()
+
     fun updateSensitivity(sensitivity: Int) {
         val newConfig = config.copy(sensitivity = sensitivity)
         config = newConfig

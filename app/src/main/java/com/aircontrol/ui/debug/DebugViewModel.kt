@@ -20,6 +20,7 @@ import com.aircontrol.camera.CameraService
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gesture.model.Pose
+import com.aircontrol.gesture.detection.DynamicGestureDetector
 import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.tracking.HandFrame
 import com.aircontrol.tracking.HandTracker
@@ -86,6 +87,23 @@ class DebugViewModel @Inject constructor(
     val armingProgress: StateFlow<Float> = _armingProgress
 
     // Crash-guard accounting: how often a collector died and was restarted, and what it was
+    /**
+     * Swipe state machine, verbatim from the detector (debug builds only). Surfaced as
+     * three plain flows in the same style as the guard counters above, because the
+     * point of this screen is to read what the machine saw without a debugger
+     * attached: phase, score against both thresholds, hold reason, and the onset
+     * counters that say whether the last minute of trying was "too strict" or
+     * "nothing was moving".
+     */
+    private val _swipeDebug = MutableStateFlow<DynamicGestureDetector.SwipeDebugInfo?>(null)
+    val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?> = _swipeDebug.asStateFlow()
+
+    private val _swipeRejections = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val swipeRejections: StateFlow<Map<String, Int>> = _swipeRejections.asStateFlow()
+
+    private val _swipeLog = MutableStateFlow<List<String>>(emptyList())
+    val swipeLog: StateFlow<List<String>> = _swipeLog.asStateFlow()
+
     private val _guardFailures = MutableStateFlow(0)
     val guardFailures: StateFlow<Int> = _guardFailures
 
@@ -215,6 +233,18 @@ class DebugViewModel @Inject constructor(
             gestureDetector.armingProgress.collect { progress ->
                 _armingProgress.value = progress
             }
+        })
+
+        trackingJobs.add(viewModelScope.launch {
+            gestureDetector.swipeDebug.collect { info -> _swipeDebug.value = info }
+        })
+
+        trackingJobs.add(viewModelScope.launch {
+            gestureDetector.swipeRejectionCounts.collect { counts -> _swipeRejections.value = counts }
+        })
+
+        trackingJobs.add(viewModelScope.launch {
+            gestureDetector.swipeDebugLog.collect { lines -> _swipeLog.value = lines }
         })
     }
 

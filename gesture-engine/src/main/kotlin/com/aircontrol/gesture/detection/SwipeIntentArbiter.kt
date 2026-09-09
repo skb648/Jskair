@@ -458,6 +458,22 @@ class SwipeIntentArbiter(
     /** Debug aid: the phase a consumer would render right now. */
     val currentPhase: Phase get() = phase
 
+    /**
+     * Milliseconds before the machine stops treating fresh motion as the tail of the
+     * throw that just committed. The *remaining* time is exposed rather than the
+     * deadline because the debug screen answers "how long until I can swipe again",
+     * and it reads 0 outside COOLDOWN so no caller has to know the phase to ask.
+     */
+    fun cooldownRemainingMs(nowMs: Long): Long =
+        if (phase == Phase.COOLDOWN) maxOf(0L, cooldownUntilMs - nowMs) else 0L
+
+    /**
+     * True while the machine is waiting for the hand to stop before it will accept a
+     * new candidate. Without this the COOLDOWN phase looks like a hang: the phase is
+     * the same whether the hand is still moving or has long since stopped.
+     */
+    val isAwaitingStillHand: Boolean get() = awaitingStillHand
+
     private data class CandidateState(
         val direction: SwipeDirection,
         val startedAtMs: Long,
