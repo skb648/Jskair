@@ -96,13 +96,13 @@ class DebugViewModel @Inject constructor(
      * "nothing was moving".
      */
     private val _swipeDebug = MutableStateFlow<DynamicGestureDetector.SwipeDebugInfo?>(null)
-    val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?> = _swipeDebug.asStateFlow()
+    val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?> = _swipeDebug
 
     private val _swipeRejections = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val swipeRejections: StateFlow<Map<String, Int>> = _swipeRejections.asStateFlow()
+    val swipeRejections: StateFlow<Map<String, Int>> = _swipeRejections
 
     private val _swipeLog = MutableStateFlow<List<String>>(emptyList())
-    val swipeLog: StateFlow<List<String>> = _swipeLog.asStateFlow()
+    val swipeLog: StateFlow<List<String>> = _swipeLog
 
     private val _guardFailures = MutableStateFlow(0)
     val guardFailures: StateFlow<Int> = _guardFailures
