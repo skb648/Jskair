@@ -38,6 +38,15 @@ class HandTrackerImpl @Inject constructor(
     private val closeLock = Any()
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
 
+    /**
+     * Width/height of the analysis image the last frame was built from, so the emitted
+     * [HandFrame] can say what its normalised coordinates are normalised AGAINST.
+     * MediaPipe divides x by the image width and y by its height, so the two axes are
+     * different physical distances and the gesture engine needs this ratio to compare
+     * them (see HandInput.frameAspectRatio).
+     */
+    @Volatile private var lastFrameAspectRatio = 1f
+
     private val _handFrames = MutableSharedFlow<HandFrame>(
         // Fix (audit #16): deeper buffer — a stalled collector must not eat the
         // frame that completed a pinch or swipe.
@@ -94,6 +103,10 @@ class HandTrackerImpl @Inject constructor(
                 timestampMs
             }
             lastSubmittedTimestampMs = mediaPipeTimestampMs
+            runCatching {
+                val h = mpImage.height
+                if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
+            }
 
             try {
                 landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
@@ -152,6 +165,7 @@ class HandTrackerImpl @Inject constructor(
                     handedness = Handedness.UNKNOWN,
                     timestampMs = timestampMs,
                     confidence = 0f,
+                    frameAspectRatio = lastFrameAspectRatio,
                 ),
             )
             return
@@ -192,6 +206,7 @@ class HandTrackerImpl @Inject constructor(
                 handedness = handednessCategory,
                 timestampMs = timestampMs,
                 confidence = confidence,
+                frameAspectRatio = lastFrameAspectRatio,
             ),
         )
     }

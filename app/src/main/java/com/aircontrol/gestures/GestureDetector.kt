@@ -198,6 +198,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             },
             timestampMs = timestampMs,
             confidence = confidence,
+            frameAspectRatio = frameAspectRatio,
         )
     }
 }

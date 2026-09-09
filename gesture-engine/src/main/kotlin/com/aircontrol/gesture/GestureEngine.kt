@@ -269,7 +269,19 @@ class GestureEngine(
             val pinchActive = wasPinching || currentPinchPhase != null
             val swipeSuppressed = pinchActive ||
                 (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < SWIPE_SUPPRESSION_AFTER_PINCH_MS)
-            if (swipeResult.detected && swipeResult.direction != null && !swipeSuppressed && !lowConfidence) {
+            // A swipe is the one gesture whose *motion* evidence is measured from the
+            // landmark trajectory itself, so it no longer inherits the low-confidence
+            // mute. That flag is MediaPipe's HANDEDNESS score (left/right ambiguity),
+            // and a fast flick depresses exactly that number — the previous code
+            // therefore muted the gesture precisely when it was most clearly made, and
+            // did so for three frames at a time through the latched lowConfidenceMode.
+            // The tracker's uncertainty is still respected where it belongs: the
+            // detector folds the same score into the intent evidence and refuses to
+            // commit below its own quality floor (SwipeIntentArbiter.TRACKING_UNCERTAIN,
+            // 0.30, i.e. "a hand is genuinely there"), which is far below the 0.70 that
+            // made valid swipes impossible. Pinch interference stays a veto, because
+            // that is cross-modal arbitration rather than a quality judgement.
+            if (swipeResult.detected && swipeResult.direction != null && !swipeSuppressed) {
                 _gestureEvents.tryEmit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
                 onSwipeDecision?.invoke(
                     true, swipeResult.direction, swipeResult.confidence, null,
@@ -278,7 +290,7 @@ class GestureEngine(
             } else if (swipeResult.detected) {
                 onSwipeDecision?.invoke(
                     false, swipeResult.direction, swipeResult.confidence,
-                    if (lowConfidence) "LOW_CONFIDENCE" else "PINCH_ACTIVE",
+                    "PINCH_ACTIVE",
                     swipeResult.displacementX, swipeResult.displacementY, timestampMs,
                 )
             } else if (swipeResult.hadEvidence) {

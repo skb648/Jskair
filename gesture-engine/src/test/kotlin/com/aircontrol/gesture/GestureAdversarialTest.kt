@@ -198,7 +198,17 @@ class GestureAdversarialTest {
         repeat(3) {
             var x = 0f
             repeat(6) { engine.processFrame(hand(ts, offsetX = x)); x += 0.0625f; ts += 40L }
-            ts = still(engine, ts, 12, x) // full neutral re-arm between swipes
+            // Bring the hand back the way a person does, over several frames, then let it
+            // settle. The fixture used to teleport it to the start of the next swipe; a
+            // one-frame jump across half the screen is not a hand movement and a detector
+            // that treats trajectories as continuous is right to refuse to read anything
+            // into it (it truncates at the discontinuity instead).
+            repeat(6) { i ->
+                engine.processFrame(hand(ts, offsetX = x - (i + 1) * 0.0625f))
+                ts += 40L
+            }
+            ts = still(engine, ts, 12, 0f) // full neutral re-arm between swipes
+            runCurrent() // drain the event flow between reps, as the other suites do
         }
         runCurrent()
         val swipes = events.filterIsInstance<GestureEvent.Swipe>()

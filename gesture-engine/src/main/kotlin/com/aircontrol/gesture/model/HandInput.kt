@@ -19,6 +19,16 @@ data class HandInput(
     val handedness: Handedness,
     val timestampMs: Long,
     val confidence: Float,
+    /**
+     * Width / height of the image the normalised landmark coordinates come from.
+     *
+     * MediaPipe normalises x by the image WIDTH and y by its HEIGHT, so a raw x and a
+     * raw y are not the same physical distance and must never be compared directly.
+     * Motion maths that wants a real-world ratio multiplies x by this value first.
+     * Defaults to 1.0 (square pixels, no correction) so callers that do not know the
+     * frame geometry behave exactly as before.
+     */
+    val frameAspectRatio: Float = 1f,
 ) {
     val isDetected: Boolean get() = landmarks.size == LANDMARK_COUNT && confidence > 0f
 

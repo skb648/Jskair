@@ -29,6 +29,12 @@ data class HandFrame(
     val handedness: Handedness,
     val timestampMs: Long,
     val confidence: Float,
+    /**
+     * Width / height of the analysis image these landmarks came from. Needed because
+     * MediaPipe normalises x and y by DIFFERENT dimensions; see
+     * [com.aircontrol.gesture.model.HandInput.frameAspectRatio].
+     */
+    val frameAspectRatio: Float = 1f,
 ) {
     /**
      * Fix C-5: "a hand is visible" must mean the same thing on both sides of the

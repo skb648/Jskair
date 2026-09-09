@@ -19,6 +19,19 @@ import org.junit.Test
  */
 class DynamicGestureDetectorTest {
 
+    private companion object {
+        /** Wrist-anchored offsets of an open right hand, palm = 0.11 of the frame. */
+        val PALM_OFFSETS: List<Pair<Float, Float>> = listOf(
+            0f to 0f, // 0 wrist
+            -0.05f to -0.03f, -0.07f to -0.06f, -0.08f to -0.09f, -0.09f to -0.12f, // thumb
+            0.02f to -0.08f, 0.02f to -0.12f, 0.02f to -0.145f, 0.02f to -0.17f, // index
+            0f to -0.11f, 0f to -0.15f, 0f to -0.175f, 0f to -0.20f, // middle
+            -0.02f to -0.10f, -0.02f to -0.14f, -0.02f to -0.165f, -0.02f to -0.19f, // ring
+            -0.04f to -0.08f, -0.04f to -0.11f, -0.04f to -0.13f, -0.04f to -0.15f, // pinky
+        )
+    }
+
+
     private lateinit var detector: DynamicGestureDetector
     private lateinit var config: GestureEngineConfig
 
@@ -35,12 +48,16 @@ class DynamicGestureDetectorTest {
         wristY: Float,
         timestampMs: Long,
     ): HandInput {
-        val wrist = Landmark3D(wristX, wristY, 0f)
+        // A rigid, measurable hand that translates with the wrist. The palm length is
+        // what the swipe detector measures travel against (see
+        // DynamicGestureDetector.handScaleOf), so the landmarks may no longer all
+        // coincide: a hand with no measurable palm has no ruler, and the detector is
+        // right to refuse to turn pixel noise into a gesture. Offsets are constant, so
+        // every measured delta - wrist or fingertip - is exactly the wrist motion the
+        // scenarios below describe.
         val landmarks = List(21) { index ->
-            when (index) {
-                0 -> wrist
-                else -> Landmark3D(wristX, wristY, 0f) // simplified
-            }
+            val (ox, oy) = PALM_OFFSETS[index]
+            Landmark3D(wristX + ox, wristY + oy, 0f)
         }
         return HandInput(
             landmarks = landmarks,
@@ -165,20 +182,44 @@ class DynamicGestureDetectorTest {
         }
     }
 
+    /**
+     * Axis dominance as a BAND, not a cone (recovery cycle, phase 12E).
+     *
+     * CHANGED: this used to assert that a 0.30 x 0.25 throw is rejected for lacking
+     * dominance. That fixture is ~40 degrees off horizontal, and the old rule demanded
+     * |dX| >= 2|dY| (~27 degrees) for every direction - a cone narrow enough that most
+     * natural swipes fell outside it, which is half of why swipes stopped working.
+     * The rule is now the one a trackpad uses: an exact 45-degree path is not resolved
+     * to any axis (there is nothing to guess with), while anything clearly favouring one
+     * axis is taken at its word.
+     */
     @Test
-    fun `diagonal motion with insufficient axis dominance rejected`() {
-        val frames = generateSwipeFrames(
+    fun `a true diagonal is not guessed and a dominant one is resolved`() {
+        val equalFrames = generateSwipeFrames(
             startX = 0.3f, startY = 0.3f,
-            endX = 0.6f, endY = 0.55f, // Roughly equal displacement on both axes
+            endX = 0.6f, endY = 0.6f, // equal travel on both axes
             durationMs = 300L,
             frameCount = 20,
         )
-        var anyDetected = false
-        for (frame in frames) {
-            val result = detector.process(frame)
-            if (result.detected) anyDetected = true
+        var equalDetected = false
+        for (frame in equalFrames) {
+            if (detector.process(frame).detected) equalDetected = true
         }
-        assertFalse("Diagonal motion with no clear axis should be rejected", anyDetected)
+        assertFalse("a 45-degree path must not be resolved to any axis", equalDetected)
+
+        val dominantDetector = DynamicGestureDetector(config)
+        val dominantFrames = generateSwipeFrames(
+            startX = 0.3f, startY = 0.3f,
+            endX = 0.6f, endY = 0.47f, // 40 degrees off horizontal
+            durationMs = 300L,
+            frameCount = 20,
+        )
+        var dominantDetected: SwipeDirection? = null
+        for (frame in dominantFrames) {
+            val result = dominantDetector.process(frame)
+            if (result.detected) dominantDetected = result.direction
+        }
+        assertEquals("a clearly horizontal throw is a horizontal swipe", SwipeDirection.RIGHT, dominantDetected)
     }
 
     @Test
@@ -403,25 +444,58 @@ class DynamicGestureDetectorTest {
         assertEquals(null, committed!!.reason)
         assertTrue(committed!!.hadEvidence)
 
-        // Slow motion → rejected as TOO_SLOW with evidence. 0.4 travel over
-        // 700ms: inside the 350ms window displacement ≈0.2 (well above the
-        // gate) but peak velocity ≈0.57 u/s (well below 1.2).
-        val slowDetector = DynamicGestureDetector(config)
-        var slowRejected: DynamicGestureDetector.SwipeResult? = null
-        generateSwipeFrames(0.3f, 0.5f, 0.7f, 0.5f, durationMs = 700L, frameCount = 20).forEach { f ->
-            val r = slowDetector.process(f)
-            if (r.hadEvidence && slowRejected == null) slowRejected = r
+        // CHANGED (swipe intent redesign): a slow sweep used to be reported here as
+        // TOO_SLOW and rejected, which is the single behaviour users described as
+        // "swiping does nothing". Slow directed travel is now evidence rather than a
+        // veto, so the same frames must produce a commit...
+        var slowCommits = 0
+        run {
+            val slowDetector = DynamicGestureDetector(config)
+            generateSwipeFrames(0.3f, 0.5f, 0.7f, 0.5f, durationMs = 700L, frameCount = 20).forEach { f ->
+                if (slowDetector.process(f).detected) slowCommits++
+            }
         }
-        assertTrue("slow sweep must reach the velocity gate", slowRejected != null)
-        assertEquals(DynamicGestureDetector.SwipeRejectReason.TOO_SLOW, slowRejected!!.reason)
-        assertFalse(slowRejected!!.detected)
+        assertEquals("a deliberate slow sweep commits, and commits once", 1, slowCommits)
+        // ...while a motion with no travel still reports WHY, which is what the reason
+        // vocabulary exists for. Two distinct no-gestures, two distinct names: a drift
+        // that never exceeds a twentieth of a palm per frame is tremor, and a drift that
+        // moves the hand but not far enough is below-displacement.
+        var tremorReason: DynamicGestureDetector.SwipeRejectReason? = null
+        run {
+            val tremor = DynamicGestureDetector(config)
+            (0..6).forEach { i ->
+                val r = tremor.process(handAtWristPosition(0.5f + i * 0.004f, 0.5f, 1000L + i * 40L))
+                if (r.reason != null) tremorReason = r.reason
+            }
+        }
+        assertEquals(
+            "sub-tremor motion is rejected for lack of any real step",
+            DynamicGestureDetector.SwipeRejectReason.TOO_FEW_MOVING_STEPS,
+            tremorReason,
+        )
+        var transportReason: DynamicGestureDetector.SwipeRejectReason? = null
+        run {
+            val transport = DynamicGestureDetector(config)
+            (0..6).forEach { i ->
+                val r = transport.process(handAtWristPosition(0.5f + i * 0.008f, 0.5f, 1000L + i * 40L))
+                if (r.reason != null) transportReason = r.reason
+            }
+        }
+        assertEquals(
+            "a transport is rejected with the reason that is actually missing",
+            DynamicGestureDetector.SwipeRejectReason.BELOW_DISPLACEMENT,
+            transportReason,
+        )
 
-        // Diagonal motion → rejected as DIAGONAL_AMBIGUOUS.
+        // Diagonal motion → rejected as DIAGONAL_AMBIGUOUS. Read from the last frame
+        // with evidence rather than the first: while the window is still filling, the
+        // missing sample count is the honest reason, and it is not what a diagonal is
+        // guilty of.
         val diagDetector = DynamicGestureDetector(config)
         var diagRejected: DynamicGestureDetector.SwipeResult? = null
         generateSwipeFrames(0.3f, 0.4f, 0.6f, 0.7f).forEach { f ->
             val r = diagDetector.process(f)
-            if (r.hadEvidence && diagRejected == null) diagRejected = r
+            if (r.hadEvidence) diagRejected = r
         }
         assertTrue("diagonal sweep must reach the dominance gate", diagRejected != null)
         assertEquals(DynamicGestureDetector.SwipeRejectReason.DIAGONAL_AMBIGUOUS, diagRejected!!.reason)

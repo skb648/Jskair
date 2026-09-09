@@ -96,9 +96,15 @@ data class GestureEngineConfig(
     // samples for every consistency check, and a 220ms cooldown still blocks
     // double-fires while feeling immediate.
     val swipeWindowMs: Long = 350L,
-    val swipeDisplacementRatio: Float = 0.08f,
-    val swipeVelocityThreshold: Float = 1.2f,
-    val swipeAxisDominanceRatio: Float = 2.0f,
+    /**
+     * The two hysteresis levels of the swipe intent score, in `0..1`. These replace
+     * `swipeDisplacementRatio`, `swipeVelocityThreshold` and `swipeAxisDominanceRatio`:
+     * three separate hard gates that each had to pass is what made the gesture
+     * unfixable by tuning, so the sensitivity slider now moves ONE number pair instead.
+     * Committing is always strictly harder than becoming a candidate (enforced below).
+     */
+    val swipeCandidateScore: Float = 0.45f,
+    val swipeCommitScore: Float = 0.62f,
     val swipeRequiresOpenHand: Boolean = true,
     val armingDurationMs: Long = 100L,
     val cooldownDurationMs: Long = 100L,
@@ -120,9 +126,8 @@ data class GestureEngineConfig(
         require(thumbExtensionAngleDeg > 0f) { "Thumb extension angle must be positive" }
         require(pinchDistanceRatio > 0f) { "Pinch distance ratio must be positive" }
         require(swipeWindowMs > 0) { "Swipe window must be positive" }
-        require(swipeDisplacementRatio > 0f) { "Swipe displacement ratio must be positive" }
-        require(swipeVelocityThreshold > 0f) { "Swipe velocity threshold must be positive" }
-        require(swipeAxisDominanceRatio > 1f) { "Swipe axis dominance ratio must be > 1" }
+        require(swipeCandidateScore in 0f..1f) { "Swipe candidate score must be 0-1" }
+        require(swipeCommitScore in 0f..1f) { "Swipe commit score must be 0-1" }
         require(armingDurationMs > 0) { "Arming duration must be positive" }
         require(cooldownDurationMs > 0) { "Cooldown duration must be positive" }
         require(autoDisarmTimeoutMs > 0) { "Auto-disarm timeout must be positive" }
@@ -142,10 +147,6 @@ data class GestureEngineConfig(
         get() = EASE_MIN + (sensitivity.coerceIn(0, 100) / 100f) * (EASE_MAX - EASE_MIN)
 
     /**
-     * Swipe displacement threshold, sensitivity-aware.
-     * Higher sensitivity → smaller required travel → easier to swipe.
-     */
-    /**
      * Swipe thresholds get a wider sensitivity band than pose thresholds
      * (0.60..1.40 vs 0.85..1.15). Reason: swipes are cheap to make more
      * forgiving — the false-positive risk is now handled structurally by
@@ -156,12 +157,32 @@ data class GestureEngineConfig(
         get() = SWIPE_EASE_MIN +
             (sensitivity.coerceIn(0, 100) / 100f) * (SWIPE_EASE_MAX - SWIPE_EASE_MIN)
 
-    fun scaledSwipeDisplacement(): Float =
-        (swipeDisplacementRatio / swipeEase).coerceIn(MIN_SWIPE_DISPLACEMENT, MAX_SWIPE_DISPLACEMENT)
+    /**
+     * Candidate level of the swipe intent score at the current sensitivity.
+     *
+     * Sensitivity used to divide raw thresholds, and each threshold was then
+     * hard-clamped back into a band so the slider could not go where it was
+     * documented to go: at sensitivity 0 the *displacement* gate still demanded
+     * 0.06 of a frame and the *velocity* gate still demanded 0.9, i.e. the bottom
+     * half of the slider was dead. A score is bounded by construction (0..1), so the
+     * whole slider is live: the shift here is derived from the same `swipeEase` but
+     * applied to the level, and it can never demand more evidence than a perfect
+     * swipe produces (see [MAX_ASKABLE_COMMIT_SCORE]).
+     */
+    fun scaledSwipeCandidateScore(): Float =
+        (swipeCandidateScore + sensitivityShift()).coerceIn(MIN_SWIPE_SCORE, MAX_SWIPE_SCORE)
 
-    /** Swipe peak-velocity threshold, sensitivity-aware. */
-    fun scaledSwipeVelocity(): Float =
-        (swipeVelocityThreshold / swipeEase).coerceIn(MIN_SWIPE_VELOCITY, MAX_SWIPE_VELOCITY)
+    /** Commit level of the swipe intent score, keeping the candidate level's gap. */
+    fun scaledSwipeCommitScore(): Float {
+        val candidate = scaledSwipeCandidateScore()
+        return maxOf(swipeCommitScore + sensitivityShift(), candidate + MIN_SWIPE_SCORE_HYSTERESIS)
+            .coerceIn(candidate, MAX_ASKABLE_COMMIT_SCORE)
+    }
+
+    /** How far one slider position moves both score levels; symmetric around 50. */
+    private fun sensitivityShift(): Float =
+        ((1f / swipeEase) - 1f) * SWIPE_SCORE_SENSITIVITY_GAIN
+
 
     /**
      * THE pinch threshold (Fix A-6): used by the pose classifier *and* the click
@@ -235,10 +256,21 @@ data class GestureEngineConfig(
         const val SWIPE_EASE_MIN = 0.60f
         const val SWIPE_EASE_MAX = 1.40f
 
-        const val MIN_SWIPE_DISPLACEMENT = 0.06f
-        const val MAX_SWIPE_DISPLACEMENT = 0.09f
-        const val MIN_SWIPE_VELOCITY = 0.9f
-        const val MAX_SWIPE_VELOCITY = 1.8f
+        /**
+         * A swipe score is only allowed to be asked for inside this band, so no
+         * slider position can make the gesture unreachable in either direction.
+         */
+        const val MIN_SWIPE_SCORE = 0.25f
+        const val MAX_SWIPE_SCORE = 0.80f
+
+        /** Worst-case candidate/commit gap after scaling. */
+        const val MIN_SWIPE_SCORE_HYSTERESIS = 0.12f
+
+        /** A commit may never demand more than this, whatever the slider says. */
+        const val MAX_ASKABLE_COMMIT_SCORE = 0.85f
+
+        /** Score units per unit of 1/ease; see [scaledSwipeCandidateScore]. */
+        const val SWIPE_SCORE_SENSITIVITY_GAIN = 0.20f
 
         const val PINCH_RELEASE_HYSTERESIS = 1.45f
         const val PINCH_HOVER_HYSTERESIS = 1.9f
