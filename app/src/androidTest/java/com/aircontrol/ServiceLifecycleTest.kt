@@ -113,5 +113,8 @@ class ServiceLifecycleTest {
         }
 
         override fun isInitialized(): Boolean = true
+
+        override fun inFlightStats(nowMs: Long): com.aircontrol.tracking.InFlightStats =
+            com.aircontrol.tracking.InFlightStats(busy = false, submitted = 0L, refused = 0L, expired = 0L)
     }
 }
