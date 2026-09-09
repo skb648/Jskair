@@ -76,16 +76,24 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         val hadEvidence: Boolean = false,
     )
 
-    /** Why a swipe candidate with real motion was rejected (spec §18 telemetry). */
+    /**
+     * Why a swipe candidate with real motion was rejected (spec §18 telemetry).
+     *
+     * Exactly the names `mapHoldReason` can return. The three that used to live here
+     * - `VERTICAL_TOO_DIAGONAL`, `VERTICAL_NON_MONOTONIC`, `COOLDOWN` - were the labels
+     * of the per-axis and vertical-monotonicity gates the recovery cycle deleted, and a
+     * grep over main + test showed nothing produced or read them, so keeping them would
+     * have left a reader hunting for a veto that no longer exists. A cooldown is still
+     * reportable; it is carried by the phase and by
+     * [SwipeDebugInfo.cooldownRemainingMs] instead of being flattened into a rejection.
+     */
     enum class SwipeRejectReason {
         BELOW_DISPLACEMENT,
         DIAGONAL_AMBIGUOUS,
         TOO_SLOW,
-        VERTICAL_TOO_DIAGONAL,
-        VERTICAL_NON_MONOTONIC,
         TOO_FEW_MOVING_STEPS,
         INCONSISTENT_DIRECTION,
-        COOLDOWN,
+        BELOW_INTENT_SCORE,
     }
 
     /**
@@ -163,9 +171,12 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
      */
     /**
      * Last decision/evidence pair, kept only so the debug snapshot can show what the
-     * machine saw. Written from the frame thread, read by the debug screen; a stale
-     * read shows one frame of lag, never a torn value (each field is independent and
-     * the whole object is published as a single reference).
+     * machine saw. Written from the frame thread at one call site, read by the debug
+     * screen. The three fields are separate references, so a concurrent reader can
+     * combine a decision from frame N with a timestamp from frame N-1 - one frame of
+     * skew in a debug overlay, and it cannot change a phase or a reason. Publishing one
+     * prebuilt immutable object instead would remove even that, but it would allocate on
+     * every frame in release builds where nobody reads it, which is the worse trade.
      */
     @Volatile
     private var lastDebugDecision: SwipeIntentArbiter.Decision? = null
@@ -675,6 +686,7 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         SwipeHoldReason.AMBIGUOUS_AXIS -> SwipeRejectReason.DIAGONAL_AMBIGUOUS
         SwipeHoldReason.INCONSISTENT_PATH -> SwipeRejectReason.INCONSISTENT_DIRECTION
         SwipeHoldReason.INSUFFICIENT_SAMPLES -> SwipeRejectReason.TOO_FEW_MOVING_STEPS
+        SwipeHoldReason.LOW_INTENT_SCORE -> SwipeRejectReason.BELOW_INTENT_SCORE
         // Not reportable as a rejection: these frames carry no candidate to reject.
         SwipeHoldReason.LOW_TRACKING_QUALITY,
         SwipeHoldReason.COOLDOWN,

@@ -102,6 +102,14 @@ enum class SwipeHoldReason {
 
     /** Tracking was lost with a live candidate. */
     LOST_MID_GESTURE,
+
+    /**
+     * Valid, measurable motion that simply does not add up to intent: every deficit is
+     * small, none of them is the story, and the honest answer is "the score was not
+     * there". It used to be reported as LOW_VELOCITY, which was wrong for exactly the
+     * frames that were moving fast and weak.
+     */
+    LOW_INTENT_SCORE,
 }
 
 /**
@@ -382,11 +390,9 @@ class SwipeIntentArbiter(
             evidence.displacementInHandSpans < MIN_COMMIT_SPANS -> SwipeHoldReason.NO_TRAVEL
             evidence.directionalConsistency < CONSISTENCY_AMBIGUOUS -> SwipeHoldReason.INCONSISTENT_PATH
             evidence.peakVelocitySpansPerSecond < VELOCITY_REPOSITION_SPANS_PER_S -> SwipeHoldReason.LOW_VELOCITY
-            else -> SwipeHoldReason.LOW_VELOCITY
+            else -> SwipeHoldReason.LOW_INTENT_SCORE
         }
     }
-
-    private fun heldForMs(nowMs: Long): Long = heldMsAt(nowMs)
 
     /**
      * Feeds the tracked point's position to the machine, in hand spans, on every frame

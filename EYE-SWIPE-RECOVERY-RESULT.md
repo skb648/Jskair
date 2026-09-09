@@ -122,3 +122,67 @@ the signature is checked in CI rather than assumed.
    `IntentEngine`/`SafetyPolicy` "over-rejection" chain that is never constructed; a
    `HandTrackingPipeline` that does not exist). Everything in this file is the output of a grep or
    a test run against this tree.
+
+## Phase 17 — static, concurrency and performance pass
+
+Run over the changed files only, with the questions the phase asks: is anything unreachable,
+is anything shared across threads without a reason, and does any of it cost the frame path.
+
+**Static / dead code.** `git grep` over `main` and both test sources, not a reading of names:
+
+- the legacy `SwipeRejectReason` constants `VERTICAL_TOO_DIAGONAL`, `VERTICAL_NON_MONOTONIC` and
+  `COOLDOWN` had zero references in production and tests (their gates were deleted in `7f9679f`) —
+  removed, with the enum's KDoc now stating that it contains exactly what `mapHoldReason` can
+  return and where the cooldown went instead (the phase plus `SwipeDebugInfo.cooldownRemainingMs`).
+- all eight `SwipeHoldReason` values *are* produced: `LOST_MID_GESTURE` at
+  `SwipeIntentArbiter.kt:209` (candidate released while a cooldown was still running) and
+  `COOLDOWN` at `:219`; the other six are produced by `holdReasonFor`. An earlier grep that counted
+  occurrences per file suggested both were dead — reading the two lines showed the opposite, which
+  is why this section cites line numbers.
+- deleted with the rebuild: `lastSwipeTimestampMs` (written, never read), `analyzeWindow()` ×2,
+  `signedThrowDirection`, `computeDirectionalConsistency`, `countDirectionalReversals`,
+  `countMovingSteps`, `requiredSampleCount`, the neutral-rearm latch fields, and the config knobs
+  `swipeDisplacementRatio` / `swipeVelocityThreshold` / `swipeAxisDominanceRatio`.
+- `SwipeIntentArbiter.heldForMs()` was a private one-line delegate to `heldMsAt()` with no call
+  sites — removed.
+- The `else` branch of the score-deficit arm in `holdReasonFor` returned `LOW_VELOCITY` for frames
+  that were moving fast (above `VELOCITY_REPOSITION_SPANS_PER_S = 1.5` spans/s) but scored weakly,
+  i.e. it named the wrong thing for the one case it could only reach by *not* being slow. That case
+  now has its own label, `LOW_INTENT_SCORE`, mapped to `SwipeRejectReason.BELOW_INTENT_SCORE`. No
+  test pins the new label: reaching it needs healthy travel, steps, quality, drift, consistency and
+  dominance with a score under the candidate level, and no fixture in this repo lands there — the
+  change exists so the reported reason is not a lie, not to alter behaviour, and the 291 tests that
+  do assert reasons are unchanged by it.
+- compilation is warning-clean for both modules' pure-Kotlin sources, which is what CI needs
+  (`allWarningsAsErrors` in `gesture-engine/build.gradle.kts`).
+
+**Concurrency.** The swipe machine is confined to the thread that calls
+`DynamicGestureDetector.process()` — one producer, no reordering to reason about. The only
+cross-thread reads are the debug ones: `lastDebugDecision` / `lastDebugEvidence` /
+`lastDebugTimestampMs` are each `@Volatile` and are written from the frame thread at one call site,
+so a reader on the UI thread can combine a decision from frame *N* with a timestamp from frame *N-1*
+(one frame of skew in an overlay; it cannot change a phase or a reason). That limitation is written
+into the field comment rather than claimed away — the alternative (publishing one prebuilt
+immutable snapshot) allocates on every frame in release builds where nobody reads it.
+`GestureEngine.onSwipeDecision` is `@Volatile` because it is assigned once after construction and
+read per frame; the only assignment in the app is `attachSwipeDecisionHook()` called from
+`GestureDetectorImpl`'s `init` block, which runs before the object is injectable and therefore
+before any frame can be fed. The app-side log is updated under a `synchronized` block, but only the frame thread
+ever enters it — the UI reads `_swipeLog.value`, a `StateFlow` value, not the buffer — so there is
+no contention to protect against, and no lock is held across anything that can block.
+`StateFlow`'s equality conflation is what keeps a held reason from republishing to Compose each
+frame.
+
+**Performance / memory bounds.** Per frame in a *release* build: the evidence and decision records
+the pipeline already needed (one `SwipeEvidence` per candidate window per channel, one `Decision`
+per frame), no string building, no logging — `swipeDebugInfo()` is reachable only behind
+`if (debugInstrumentation)`. No main-thread work is added, and nothing in the path does
+I/O. Windows are bounded twice over: shape windows by count
+(`MAX_SHAPE_SAMPLES = 24`, trimmed with `removeFirst`) and throw windows by time
+(`swipeWindowMs = 350`), so a stalled or hyperactive feed cannot grow them; the debug verdict log
+is capped at 12 lines; the rejection counter map is keyed by a closed set (5 reject reasons plus the
+engine's `COMMITTED`/`REJECTED` labels), so it cannot grow either. Counters and log are cleared by
+`reset()` — per session, matching the gaze ring buffer. The event flow keeps the pre-existing
+`extraBufferCapacity = 64` with `DROP_OLDEST`, i.e. a slow collector drops rather than backs up the
+frame thread. Nothing in the swipe path does I/O, allocation-free? no: allocation yes, I/O none —
+and nothing blocks the main thread: the debug screen only reads `StateFlow` values it is handed.
