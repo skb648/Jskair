@@ -508,3 +508,33 @@ HEAD).
 be *larger* than the host figure, not smaller — but that is inference, and the numbers on a real
 1–3 GB device (young-gen GC count, pause durations, `Perfetto` allocation flamegraph) are NOT TESTED.
 The `:app` compile of `FaceTracker`/`CameraService` also remains a CI-only check.
+
+## CI verdict — `:app` compile, unit tests and both APKs (Groups 1–4)
+
+The Android-side work that this sandbox cannot compile was verified in GitHub Actions on `main`.
+
+| what | result |
+|---|---|
+| `Build Android APK` run `34353176645` @ `7051169` | **success** — `testDebugUnitTest` + `:gesture-engine:test`, `assembleDebug`, `aapt` badging check (`targetSdkVersion:'37'`), artifact `AirControl-debug-apk` |
+| `Android APK CI` run `34353176617` @ `7051169` | **success** ×3 jobs — debug APK, and two `assembleRelease` jobs with `apksigner verify --print-certs` on the signed release APK |
+| release identity | V3.0 signer `CN=AirControl Release, OU=Mobile, O=AirControl, L=Udaipur, ST=Rajasthan, C=IN`, certificate SHA-256 `8bae93eb…0c7985c2` — unchanged from the pre-work baseline, so the fix ships under the same key |
+| artifacts | `app-debug.apk` 76 777 400 B sha256 `c86ef9b53a5aa2d2…8bb48090`; `app-release.apk` 55 165 199 B sha256 `d364892d85252804…bf1f19e1` |
+| unit tests executed by CI | `@Test` count in the executed source sets went **538 → 580** (358 in `app/src/test`, 222 in `gesture-engine/src/test`); all green |
+| instrumented tests | 45 `@Test` in `app/src/androidTest` are **compiled but never executed** — no emulator exists in CI or here. Their compilation is now enforced by a `:app:compileDebugAndroidTestKotlin` step, which the first green cycle did not have |
+
+**What CI caught that nothing else could.** The first two pushes failed with three defects in
+Android-only sources, all fixed in `7051169`: `FaceTrackerImpl` never received its `inFlight` /
+`pendingConsumed` fields (the anchor pattern differed from `HandTracker`'s and the edit checked
+nothing, so every gate reference was unresolved), the lease-releasing cleanup landed in `initialize()`
+instead of `close()` in *both* trackers (a frame in flight at teardown would have kept its buffer
+leased — the exact stranding the change exists to prevent), and `CameraService.onDestroy` still
+recycled the removed `reusableTransformBitmap` field. A stray `lastFrameAspectRatio` block, copied
+from the hand tracker into the face tracker where no such field exists, was the fourth. Lesson
+recorded: a two-space formatting difference silently skipped a patch with no assertion on it; the
+harness cannot see these files at all, so "the pure-Kotlin oracle is green" never meant "the app
+compiles", and this doc says so explicitly now.
+
+**Still NOT TESTED after a green CI:** everything that needs a phone. No device, emulator or `adb`
+exists in this environment, so CPU/RSS/GC-pause/allocation-rate/thermal/`Perfetto` figures, the
+1/2/3/4 GB matrix, sustained-load backpressure behaviour and the perceived cursor quality are
+unmeasured — the counters added in Groups 1–2 exist to produce exactly those numbers on hardware.

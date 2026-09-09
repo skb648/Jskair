@@ -37,6 +37,14 @@ jobs:
         run: chmod +x ./gradlew
       - name: Unit tests (app + gesture-engine)
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest :gesture-engine:test
+      # The unit tests and assembleDebug never compile androidTest sources, so a
+      # production interface change that leaves a test fake behind is invisible to
+      # CI. This happened in this branch's history: the hand-tracker fake did not
+      # follow a new abstract member. Compiling the instrumented sources costs
+      # seconds and catches that class of breakage at review time instead of in
+      # Android Studio weeks later.
+      - name: Compile instrumented test sources
+        run: ./gradlew --no-daemon --stacktrace :app:compileDebugAndroidTestKotlin
       - name: Build debug APK
         run: ./gradlew --no-daemon --stacktrace assembleDebug
       - name: Verify APK
