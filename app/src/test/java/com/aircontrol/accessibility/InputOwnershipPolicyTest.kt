@@ -21,8 +21,8 @@ class InputOwnershipPolicyTest {
     fun `different modality inside window is refused and counted`() {
         val p = InputOwnershipPolicy(serializationWindowMs = 350L)
         assertTrue(p.tryAcquire("hand_gesture", 1_000L))
-        assertFalse(p.tryAcquire("blink", 1_200L))
-        assertTrue(p.tryAcquire("dwell", 1_349L))
+        assertFalse(p.tryAcquire("blink", 1_200L)) // inside 350 ms window
+        assertFalse(p.tryAcquire("dwell", 1_349L)) // still inside the window
         assertEquals(2L, p.refusedCount())
         assertEquals("hand_gesture", p.lastSource()) // owner unchanged
     }
