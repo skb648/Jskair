@@ -285,3 +285,7 @@ files needing Robolectric/Android (`PersonalizedGazeCalibrationTest`, `AdaptiveF
 `ThermalGovernorTest`) run in CI. Everything Android/MediaPipe/Hilt-dependent is verified by the project's own CI
 (`.github/workflows/*.yml`), which runs `testDebugUnitTest`, `:gesture-engine:test`, `assembleDebug`
 and signed `assembleRelease` on push.
+
+---
+
+What happened after this audit: implementation, the before/after table, test counts, CI evidence, artifact hashes and the limits of what was verified are in `EYE-SWIPE-RECOVERY-RESULT.md`.
