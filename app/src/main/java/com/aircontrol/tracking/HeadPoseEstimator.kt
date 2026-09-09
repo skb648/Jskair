@@ -159,18 +159,23 @@ object HeadPoseEstimator {
     }
 
     private fun FaceLandmarkFrame.landmark3(index: Int): Point3? {
-        val landmark = landmark(index) ?: return null
-        if (!landmark.isFinite()) return null
+        // P0-5: primitive reads instead of allocating a FaceLandmark per lookup. Same validity
+        // contract: an absent or non-finite coordinate yields null and the pose becomes invalid.
+        if (!isLandmarkIndexValid(index)) return null
+        val landmarkX = xOf(index)
+        val landmarkY = yOf(index)
+        val landmarkZ = zOf(index)
+        if (!landmarkX.isFinite() || !landmarkY.isFinite() || !landmarkZ.isFinite()) return null
         // MediaPipe z is face-relative and width-normalized; place it in the
         // same scale basis as aspect-correct tracker x/y before 3D geometry use.
         // Fix (A5 wiring + tests): x is first flipped into the canonical
         // unmirrored person view, matching EyeFeatureExtractor, so mirrored and
         // unmirrored frames produce identical geometry.
-        val x = if (isFrontCameraMirrored) 1f - landmark.x else landmark.x
+        val x = if (isFrontCameraMirrored) 1f - landmarkX else landmarkX
         return Point3(
             x * trackerWidthPx,
-            landmark.y * trackerHeightPx,
-            landmark.z * trackerWidthPx,
+            landmarkY * trackerHeightPx,
+            landmarkZ * trackerWidthPx,
         )
     }
 

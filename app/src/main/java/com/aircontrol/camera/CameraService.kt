@@ -31,6 +31,7 @@ import com.aircontrol.runtime.PerfTelemetry
 import com.aircontrol.runtime.ResourceGovernor
 import com.aircontrol.tracking.AdaptiveFpsController
 import com.aircontrol.tracking.HandTracker
+import com.aircontrol.tracking.SlotPool
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
 import kotlinx.coroutines.CoroutineScope
@@ -73,6 +74,12 @@ import java.util.concurrent.TimeUnit
 class CameraService : LifecycleService() {
 
     companion object {
+        /**
+         * P0-2: how many frames may be in flight at once. Two per channel would be the theoretical
+         * minimum; three keeps the camera thread unblocked while a result is being delivered.
+         */
+        private const val FRAME_BUFFER_SLOTS = 3
+
         /** Analysis resolution; small on purpose, it is fed to a landmark model. */
         private const val ANALYSIS_WIDTH = 640
         private const val ANALYSIS_HEIGHT = 480
@@ -192,9 +199,30 @@ class CameraService : LifecycleService() {
     private var thermalRecoveryJob: Job? = null
     private var postRecoveryFps: Int = 0
 
-    private var reusableTransformBitmap: Bitmap? = null
-    private var reusableBitmapWidth: Int = 0
-    private var reusableBitmapHeight: Int = 0
+    /**
+     * P0-2: the pixel buffers the analysers draw into — one reusable bitmap per *in-flight* frame,
+     * leased until every channel that was handed the frame reports back, never recycled at the end
+     * of the camera callback while MediaPipe is still reading the same pixels on its own thread.
+     * Exhausting the pool drops a frame and counts it; it never blocks the camera thread and never
+     * queues work behind inference.
+     */
+    private val frameBitmaps = SlotPool<Bitmap>(
+        capacity = FRAME_BUFFER_SLOTS,
+        create = {
+            Bitmap.createBitmap(
+                conversionTargetWidth.coerceAtLeast(1),
+                conversionTargetHeight.coerceAtLeast(1),
+                Bitmap.Config.ARGB_8888,
+            )
+        },
+        destroy = { bitmap -> if (!bitmap.isRecycled) bitmap.recycle() },
+    )
+
+    @Volatile
+    private var conversionTargetWidth: Int = 0
+
+    @Volatile
+    private var conversionTargetHeight: Int = 0
 
     private var cachedRotationDegrees = -1
     private var cachedMatrix: android.graphics.Matrix? = null
@@ -643,6 +671,8 @@ class CameraService : LifecycleService() {
 
     private fun processImageFrame(imageProxy: ImageProxy) {
         val startMs = SystemClock.elapsedRealtime()
+        var leased: Bitmap? = null
+        var handedOff = false
         try {
             if (_state.value.isPaused) return
             val intervalMs = adaptiveFpsController.analysisIntervalMs
@@ -654,56 +684,87 @@ class CameraService : LifecycleService() {
             lastFrameTimestampMs = startMs
             lastProcessedFrameMs = startMs
 
-            val mpImage = imageProxyToMPImage(imageProxy)
-            if (mpImage != null) {
-                try {
-                    if (!handTracker.isInitialized()) PerfTelemetry.recordFrameDroppedNoTracker()
-                    handTracker.processFrame(mpImage, startMs)
-                    if (eyeTrackingEnabled && faceTracker.isInitialized()) {
-                        faceTracker.processFrame(mpImage, startMs)
-                    }
-                } finally {
-                    // MPImage owns reference-counted native storage. Explicit close
-                    // prevents native-memory growth during continuous tracking.
-                    mpImage.close()
-                }
-                PerfTelemetry.recordFrameProcessed(startMs)
-            } else {
-                PerfTelemetry.recordFrameDroppedNoTracker()
+            // P0-2: the reusable buffer is leased for as long as the trackers can still read it,
+            // not for the duration of this callback. Size it from the stream first — a resolution
+            // or rotation change invalidates every buffer in the pool, and draining here (a few
+            // times per session) replaces the re-allocation the old code did inside the frame path.
+            val rotation = imageProxy.imageInfo.rotationDegrees
+            val swapped = rotation == 90 || rotation == 270
+            val targetW = if (swapped) imageProxy.height else imageProxy.width
+            val targetH = if (swapped) imageProxy.width else imageProxy.height
+            if (targetW != conversionTargetWidth || targetH != conversionTargetHeight) {
+                conversionTargetWidth = targetW
+                conversionTargetHeight = targetH
+                frameBitmaps.drain()
             }
+            val bitmap = frameBitmaps.acquire()
+            if (bitmap == null) {
+                // Every buffer is still being read by inference. Dropping is the only correct
+                // response: waiting would block the camera thread and queue frames behind it.
+                PerfTelemetry.recordFrameDroppedBackpressure()
+                return
+            }
+            leased = bitmap
+
+            val conversionStart = SystemClock.elapsedRealtime()
+            val mpImage = convertIntoLeasedBitmap(bitmap, imageProxy)
+            PerfTelemetry.recordImageConversion(SystemClock.elapsedRealtime() - conversionStart)
+            if (mpImage == null) {
+                // Its own reason code: a frame whose pixels could not be prepared is a different
+                // fault from a channel that is not running, and conflating them hid P1-2.
+                PerfTelemetry.recordFrameDroppedConversion()
+                return
+            }
+
+            // One hook per channel that is asked to consume the frame, fired exactly once by that
+            // channel — immediately if it refuses the frame, otherwise when MediaPipe delivers the
+            // result. The slot therefore returns when the LAST reader is done, including the case
+            // where both channels refuse and no result will ever arrive.
+            if (!handTracker.isInitialized()) PerfTelemetry.recordFrameDroppedNoTracker()
+            val eyeChannelWanted = eyeTrackingEnabled && faceTracker.isInitialized()
+            val remaining = java.util.concurrent.atomic.AtomicInteger(if (eyeChannelWanted) 2 else 1)
+            val onConsumed: () -> Unit = {
+                if (remaining.decrementAndGet() <= 0) {
+                    // MPImage owns reference-counted native storage; close it once nobody reads it,
+                    // which is also the moment the buffer may be overwritten again.
+                    runCatching { mpImage.close() }
+                    frameBitmaps.release(bitmap)
+                }
+            }
+            handedOff = true
+            handTracker.processFrame(mpImage, startMs, onConsumed)
+            if (eyeChannelWanted) faceTracker.processFrame(mpImage, startMs, onConsumed)
+            PerfTelemetry.recordFrameProcessed(startMs)
         } catch (e: Exception) {
             Timber.e(e, "processImageFrame error")
         } finally {
+            // Anything that did not reach a tracker comes straight back; anything that did is
+            // returned by the channel's own onConsumed hook.
+            leased?.let { if (!handedOff) frameBitmaps.discard(it) }
             imageProxy.close()
             PerfTelemetry.recordAnalyzerDuration(SystemClock.elapsedRealtime() - startMs)
         }
     }
 
-    private fun imageProxyToMPImage(imageProxy: ImageProxy): MPImage? {
+    /**
+     * Draws the proxy's pixels, rotated and (once, deliberately) mirrored, into the leased
+     * [targetBitmap], and wraps it as a MediaPipe image that shares — does not own — those pixels.
+     */
+    private fun convertIntoLeasedBitmap(targetBitmap: Bitmap, imageProxy: ImageProxy): MPImage? {
         return try {
-            // Perf audit P6: with RGBA_8888 output (the default bind path)
-            // toBitmap() WRAPS the frame's existing buffer — there is nothing
-            // to allocate and, crucially, nothing to recycle: recycling a
-            // wrapper would free storage CameraX still owns. On the YUV
-            // fallback path toBitmap() allocates, but on API 26+ bitmap
-            // pixels are GC-managed native allocations, so skipping recycle()
-            // costs only promptness, not memory. One rule for both paths:
-            // never recycle the source bitmap here.
+            // Perf audit P6: with RGBA_8888 output (the default bind path) toBitmap() WRAPS the
+            // frame's existing buffer, so there is nothing to allocate here and nothing to
+            // recycle: recycling a wrapper would free storage CameraX still owns.
             val sourceBitmap = imageProxy.toBitmap()
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-            val targetW: Int
-            val targetH: Int
-            if (rotationDegrees == 90 || rotationDegrees == 270) {
-                targetW = sourceBitmap.height; targetH = sourceBitmap.width
-            } else { targetW = sourceBitmap.width; targetH = sourceBitmap.height }
-
-            if (reusableTransformBitmap == null || reusableBitmapWidth != targetW ||
-                reusableBitmapHeight != targetH || reusableTransformBitmap?.isRecycled == true) {
-                reusableTransformBitmap?.recycle()
-                reusableTransformBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-                reusableBitmapWidth = targetW; reusableBitmapHeight = targetH
+            val targetW = conversionTargetWidth
+            val targetH = conversionTargetHeight
+            if (targetBitmap.width != targetW || targetBitmap.height != targetH) {
+                // The stream changed between acquire() and here; drop the frame rather than draw
+                // a mis-sized image into a buffer the trackers would read out of bounds.
+                return null
             }
-            val targetBitmap = checkNotNull(reusableTransformBitmap)
+
             if (cachedRotationDegrees != rotationDegrees || cachedMatrix == null) {
                 val m = android.graphics.Matrix()
                 when (rotationDegrees) {
@@ -724,7 +785,7 @@ class CameraService : LifecycleService() {
             canvas.drawBitmap(sourceBitmap, checkNotNull(cachedMatrix), null)
             BitmapImageBuilder(targetBitmap).build()
         } catch (e: Exception) {
-            Timber.e(e, "imageProxyToMPImage failed")
+            Timber.e(e, "Frame conversion failed")
             null
         }
     }
@@ -809,6 +870,23 @@ class CameraService : LifecycleService() {
                 // emitted from this slow loop (never from the frame path) and
                 // only while PerfTelemetry.enableLogging (debug builds).
                 PerfTelemetry.maybeLogSummary(SystemClock.elapsedRealtime())
+                // P0-1: sample both in-flight gates once per watchdog tick. Saturation only means
+                // anything as a rate, and reading it here (every 5 s) keeps the cost off the frame
+                // path entirely. `faceTracker` is lateinit and injection races a very early
+                // watchdog tick, hence runCatching.
+                runCatching {
+                    val gateNow = SystemClock.elapsedRealtime()
+                    val handStats = handTracker.inFlightStats(gateNow)
+                    val faceStats =
+                        if (faceTracker.isInitialized()) faceTracker.inFlightStats(gateNow) else null
+                    PerfTelemetry.recordGateStats(
+                        handBusy = handStats.busy,
+                        faceBusy = faceStats?.busy ?: false,
+                        handRefused = handStats.refused,
+                        faceRefused = faceStats?.refused ?: 0L,
+                        expiredReservations = handStats.expired + (faceStats?.expired ?: 0L),
+                    )
+                }
                 val s = _state.value
                 if (!s.isRunning || thermalPaused) continue
                 if (s.isPaused || userPaused || systemPaused) {

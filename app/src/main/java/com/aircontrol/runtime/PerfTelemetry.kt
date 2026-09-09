@@ -57,10 +57,21 @@ object PerfTelemetry {
     private var faceInferSumMs = 0L
     private var faceInferMaxMs = 0L
 
+    private var conversionSamples = 0L
+    private var conversionSumMs = 0L
+    private var conversionMaxMs = 0L
+
     // ---- counters ----------------------------------------------------------
     private var framesProcessed = 0L
     private var framesDroppedThrottle = 0L
     private var framesDroppedNoTracker = 0L
+    private var framesDroppedBackpressure = 0L
+    private var framesDroppedConversion = 0L
+    private var handGateBusy = false
+    private var faceGateBusy = false
+    private var handRefusals = 0L
+    private var faceRefusals = 0L
+    private var expiredReservations = 0L
     private var watchdogActions = 0L
     private var configuredFps = 0
     private var lastActualFps = 0f
@@ -104,6 +115,55 @@ object PerfTelemetry {
     @Synchronized
     fun recordFrameDroppedNoTracker() {
         framesDroppedNoTracker++
+    }
+
+    /**
+     * A frame was dropped because no pixel buffer was free — every slot is still being read by
+     * inference. This is the intended overload response (drop, don't queue); a growing count means
+     * the trackers are slower than the camera, which is the governor's signal, not a bug here.
+     */
+    @Synchronized
+    fun recordFrameDroppedBackpressure() {
+        framesDroppedBackpressure++
+    }
+
+    /**
+     * The frame's pixels could not be drawn into a buffer (the proxy was invalidated, or the stream
+     * changed size between acquiring the buffer and drawing into it). Deliberately NOT folded into
+     * `framesDroppedNoTracker`: before, a conversion failure and a missing tracker produced the same
+     * number, so two very different faults were indistinguishable from the outside.
+     */
+    @Synchronized
+    fun recordFrameDroppedConversion() {
+        framesDroppedConversion++
+    }
+
+    /** YUV/rotation/mirror conversion of one frame, measured on the analysis executor. */
+    @Synchronized
+    fun recordImageConversion(durationMs: Long) {
+        conversionSamples++
+        conversionSumMs += durationMs
+        if (durationMs > conversionMaxMs) conversionMaxMs = durationMs
+    }
+
+    /**
+     * In-flight gate state of the two channels, sampled at watchdog cadence (never per frame —
+     * `busy` in particular is only meaningful as a rate, and a per-frame snapshot would be the
+     * kind of self-observing cost the audit flagged).
+     */
+    @Synchronized
+    fun recordGateStats(
+        handBusy: Boolean,
+        faceBusy: Boolean,
+        handRefused: Long,
+        faceRefused: Long,
+        expiredReservations: Long,
+    ) {
+        handGateBusy = handBusy
+        faceGateBusy = faceBusy
+        this.handRefusals = handRefused
+        this.faceRefusals = faceRefused
+        this.expiredReservations = expiredReservations
     }
 
     @Synchronized
@@ -184,6 +244,15 @@ object PerfTelemetry {
         val handInferMaxMs: Long,
         val faceInferAvgMs: Long,
         val faceInferMaxMs: Long,
+        val conversionAvgMs: Long,
+        val conversionMaxMs: Long,
+        val framesDroppedBackpressure: Long,
+        val framesDroppedConversion: Long,
+        val handGateBusy: Boolean,
+        val faceGateBusy: Boolean,
+        val handRefusals: Long,
+        val faceRefusals: Long,
+        val expiredReservations: Long,
         val watchdogActions: Long,
         val events: List<String>,
     )
@@ -213,6 +282,15 @@ object PerfTelemetry {
             handInferMaxMs = handInferMaxMs,
             faceInferAvgMs = if (faceInferSamples > 0) faceInferSumMs / faceInferSamples else 0L,
             faceInferMaxMs = faceInferMaxMs,
+            conversionAvgMs = if (conversionSamples > 0) conversionSumMs / conversionSamples else 0L,
+            conversionMaxMs = conversionMaxMs,
+            framesDroppedBackpressure = framesDroppedBackpressure,
+            framesDroppedConversion = framesDroppedConversion,
+            handGateBusy = handGateBusy,
+            faceGateBusy = faceGateBusy,
+            handRefusals = handRefusals,
+            faceRefusals = faceRefusals,
+            expiredReservations = expiredReservations,
             watchdogActions = watchdogActions,
             events = events.toList(),
         )
@@ -237,6 +315,10 @@ object PerfTelemetry {
                 "max=${s.intervalMaxMs}ms) analyzer(avg=${s.analyzerAvgMs}ms,max=${s.analyzerMaxMs}ms)" +
                 " hand(avg=${s.handInferAvgMs}ms,max=${s.handInferMaxMs}ms)" +
                 " face(avg=${s.faceInferAvgMs}ms,max=${s.faceInferMaxMs}ms)" +
+                " conv(avg=${s.conversionAvgMs}ms,max=${s.conversionMaxMs}ms)" +
+                " drop(backpressure=${s.framesDroppedBackpressure},conversion=${s.framesDroppedConversion})" +
+                " inFlight(hand=${if (s.handGateBusy) 1 else 0},face=${if (s.faceGateBusy) 1 else 0})" +
+                " refused(hand=${s.handRefusals},face=${s.faceRefusals},expired=${s.expiredReservations})" +
                 " watchdog=${s.watchdogActions}",
         )
         // Reset the accumulators so each window is fresh; the event ring and
@@ -244,7 +326,9 @@ object PerfTelemetry {
         analyzerSamples = 0; analyzerSumMs = 0; analyzerMaxMs = 0
         handInferSamples = 0; handInferSumMs = 0; handInferMaxMs = 0
         faceInferSamples = 0; faceInferSumMs = 0; faceInferMaxMs = 0
-        framesDroppedThrottle = 0; framesDroppedNoTracker = 0
+        conversionSamples = 0; conversionSumMs = 0; conversionMaxMs = 0
+        framesDroppedThrottle = 0; framesDroppedNoTracker = 0; framesDroppedBackpressure = 0
+        framesDroppedConversion = 0
         return true
     }
 
@@ -257,9 +341,14 @@ object PerfTelemetry {
         analyzerSamples = 0; analyzerSumMs = 0; analyzerMaxMs = 0
         handInferSamples = 0; handInferSumMs = 0; handInferMaxMs = 0
         faceInferSamples = 0; faceInferSumMs = 0; faceInferMaxMs = 0
+        conversionSamples = 0; conversionSumMs = 0; conversionMaxMs = 0
         framesProcessed = 0
         framesDroppedThrottle = 0
         framesDroppedNoTracker = 0
+        framesDroppedBackpressure = 0
+        framesDroppedConversion = 0
+        handGateBusy = false; faceGateBusy = false
+        handRefusals = 0; faceRefusals = 0; expiredReservations = 0
         watchdogActions = 0
         configuredFps = 0
         lastActualFps = 0f

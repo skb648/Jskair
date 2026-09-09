@@ -145,14 +145,71 @@ class PerfTelemetryTest {
     }
 
     @Test
+    fun `image conversion is averaged and maxed like the other stages`() {
+        PerfTelemetry.recordImageConversion(3L)
+        PerfTelemetry.recordImageConversion(9L)
+        val s = PerfTelemetry.snapshot()
+        assertEquals(6L, s.conversionAvgMs)
+        assertEquals(9L, s.conversionMaxMs)
+    }
+
+    @Test
+    fun `backpressure drops are counted separately from throttle drops`() {
+        PerfTelemetry.recordFrameDroppedThrottle()
+        PerfTelemetry.recordFrameDroppedBackpressure()
+        PerfTelemetry.recordFrameDroppedBackpressure()
+        val s = PerfTelemetry.snapshot()
+        assertEquals(1L, s.framesDroppedThrottle)
+        assertEquals(2L, s.framesDroppedBackpressure)
+
+        // A conversion failure must not be reported as "no tracker": that conflation is exactly
+        // what made the pre-recovery diagnostics unable to say why frames were dying.
+        PerfTelemetry.recordFrameDroppedConversion()
+        val t2 = PerfTelemetry.snapshot()
+        assertEquals(1L, t2.framesDroppedConversion)
+        assertEquals(0L, t2.framesDroppedNoTracker)
+    }
+
+    @Test
+    fun `gate stats expose saturation without per-frame logging`() {
+        val logged = mutableListOf<String>()
+        PerfTelemetry.enableLogging = true
+        PerfTelemetry.loggingSink = { logged += it }
+        PerfTelemetry.recordGateStats(
+            handBusy = true,
+            faceBusy = false,
+            handRefused = 12L,
+            faceRefused = 3L,
+            expiredReservations = 1L,
+        )
+        val s = PerfTelemetry.snapshot()
+        assertTrue("hand saturation must be visible", s.handGateBusy)
+        assertFalse(s.faceGateBusy)
+        assertEquals(12L, s.handRefusals)
+        assertEquals(3L, s.faceRefusals)
+        assertEquals(1L, s.expiredReservations)
+        assertTrue(PerfTelemetry.maybeLogSummary(0L))
+        assertTrue(logged.single().contains("refused(hand=12,face=3,expired=1)"))
+    }
+
+    @Test
     fun `reset clears everything`() {
         PerfTelemetry.recordFrameProcessed(0L)
         PerfTelemetry.recordFrameProcessed(40L)
         PerfTelemetry.recordWatchdogAction("revive", 0L)
         PerfTelemetry.recordConfiguredFps(24)
+        PerfTelemetry.recordImageConversion(5L)
+        PerfTelemetry.recordFrameDroppedBackpressure()
+        PerfTelemetry.recordGateStats(true, true, 4L, 5L, 6L)
         PerfTelemetry.reset()
         val s = PerfTelemetry.snapshot()
         assertEquals(0L, s.framesProcessed)
+        assertEquals(0L, s.conversionAvgMs)
+        assertEquals(0L, s.framesDroppedBackpressure)
+        assertFalse(s.handGateBusy)
+        assertFalse(s.faceGateBusy)
+        assertEquals(0L, s.handRefusals)
+        assertEquals(0L, s.expiredReservations)
         assertEquals(0, s.configuredFps)
         assertEquals(0L, s.watchdogActions)
         assertTrue(s.events.isEmpty())

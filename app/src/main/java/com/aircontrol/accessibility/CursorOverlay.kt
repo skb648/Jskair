@@ -70,6 +70,9 @@ class CursorOverlay(
 
     // 60fps cursor movement; throttled frames are coalesced (never dropped).
     private val updateThrottleMs = 16L
+
+    /** Whether a window position has ever been pushed to WindowManager (Rule 16 skip-guard). */
+    private var lastLayoutApplied = false
     private var lastUpdateTimeMs = 0L
 
     private var hasInitialized = false
@@ -255,6 +258,8 @@ class CursorOverlay(
         try {
             windowManager.addView(cursorView, params)
             isAdded = true
+            // Fresh LayoutParams: the no-op guard must compare against what is actually on screen.
+            lastLayoutApplied = false
         } catch (e: Exception) {
             Timber.e("Failed to add cursor overlay: %s", e.message)
         }
@@ -314,8 +319,16 @@ class CursorOverlay(
     }
 
     private fun applyLayout(view: View, params: WindowManager.LayoutParams) {
-        params.x = CursorGeometry.windowLeft(currentScreenX, density)
-        params.y = CursorGeometry.windowTop(currentScreenY, density)
+        val x = CursorGeometry.windowLeft(currentScreenX, density)
+        val y = CursorGeometry.windowTop(currentScreenY, density)
+        // Rule 16: a movement smaller than a pixel is not a movement. `updateViewLayout` is a
+        // binder round trip plus a full re-composition of the overlay window, so skipping the
+        // no-op is worth more than any smoothing knob — and it is exactly the case that used to
+        // dominate while the user was looking still at a target.
+        if (params.x == x && params.y == y && lastLayoutApplied) return
+        params.x = x
+        params.y = y
+        lastLayoutApplied = true
 
         try {
             windowManager.updateViewLayout(view, params)

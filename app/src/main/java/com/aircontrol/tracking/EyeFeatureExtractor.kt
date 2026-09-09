@@ -185,19 +185,31 @@ object EyeFeatureExtractor {
     )
 
     private fun eyeGeometry(frame: FaceLandmarkFrame, definition: EyeLandmarkDefinition): EyeGeometry? {
-        val points = definition.requiredIndices.associateWith { frame.landmark(it) }
-        if (points.values.any { it == null || !it.isFinite() }) return null
+        // P0-5: read the frame's primitive buffer directly. This used to build a
+        // `Map<Int, FaceLandmark?>` of 11 boxed lookups per eye and then re-read it per call to
+        // `p(index)` — allocation whose only purpose was to move three floats into an object.
+        // Validity is checked up front exactly as before (present AND finite), so a corrupt frame
+        // still yields a null geometry rather than a partial one.
+        val required = definition.requiredIndices
+        var i = 0
+        while (i < required.size) {
+            val index = required[i]
+            if (!frame.isLandmarkIndexValid(index)) return null
+            if (!frame.xOf(index).isFinite() || !frame.yOf(index).isFinite() || !frame.zOf(index).isFinite()) {
+                return null
+            }
+            i++
+        }
 
         fun p(index: Int): PointPx {
-            val landmark = points.getValue(index)!!
             // Fix (A5 wiring + tests): normalized coordinates are converted into a
             // canonical unmirrored "person view" — for a mirrored front-camera
             // frame the x axis is flipped back so anatomical identity and all
             // downstream features are frame-convention independent.
-            val x = if (frame.isFrontCameraMirrored) 1f - landmark.x else landmark.x
+            val x = if (frame.isFrontCameraMirrored) 1f - frame.xOf(index) else frame.xOf(index)
             return PointPx(
                 x * frame.trackerWidthPx,
-                landmark.y * frame.trackerHeightPx,
+                frame.yOf(index) * frame.trackerHeightPx,
             )
         }
 
@@ -218,10 +230,24 @@ object EyeFeatureExtractor {
         val perp = PointPx(-axis.y, axis.x)
         val eyeCenter = midpoint(inner, outer)
 
-        val ringPoints = definition.irisRing.map(::p)
-        val irisRadii = ringPoints.map { distance(it, iris) }
-        if (irisRadii.any { !it.isFinite() } || irisRadii.isEmpty()) return null
-        val irisDiameter = irisRadii.average().toFloat() * 2f
+        // The iris ring is four points, always. Walking it in place (and accumulating
+        // max/min/sum) removes two intermediate Lists and their boxed floats per eye per frame,
+        // while keeping the arithmetic bit-identical: average() over a List<Float> is a Double sum
+        // divided by the size, which is exactly what is computed here.
+        val ring = definition.irisRing
+        if (ring.isEmpty()) return null
+        var radiusSum = 0.0
+        var radiusMin = Float.POSITIVE_INFINITY
+        var radiusMax = Float.NEGATIVE_INFINITY
+        for (ringIndex in ring.indices) {
+            val radius = distance(p(ring[ringIndex]), iris)
+            if (!radius.isFinite()) return null
+            radiusSum += radius.toDouble()
+            if (radius < radiusMin) radiusMin = radius
+            if (radius > radiusMax) radiusMax = radius
+        }
+        val irisRadiusAverage = (radiusSum / ring.size).toFloat()
+        val irisDiameter = irisRadiusAverage * 2f
 
         val upperMid = midpoint(upperOuter, upperInner)
         val lowerMid = midpoint(lowerInner, lowerOuter)
@@ -234,8 +260,7 @@ object EyeFeatureExtractor {
         if (!lidOpening.isFinite() || !ear.isFinite() || !irisDiameter.isFinite()) return null
 
         val geometryConsistency = 1f - abs(vertical1 - vertical2) / max(vertical1 + vertical2, EPSILON)
-        val irisConsistency = 1f - ((irisRadii.maxOrNull() ?: 0f) - (irisRadii.minOrNull() ?: 0f)) /
-            max(irisRadii.average().toFloat(), EPSILON)
+        val irisConsistency = 1f - (radiusMax - radiusMin) / max(irisRadiusAverage, EPSILON)
         // Fix (audit #31): geometry consistency alone calls a far-away, tiny face
         // "high quality" even though the iris is a handful of pixels. Derate
         // quality when the eye is small in frame (< 6% of the tracker width):

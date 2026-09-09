@@ -20,10 +20,36 @@ import kotlin.concurrent.Volatile
 interface HandTracker {
     val handFrames: SharedFlow<HandFrame>
     fun initialize()
-    fun processFrame(mpImage: MPImage, timestampMs: Long)
+
+    /**
+     * Submits [mpImage] to the graph, **only if no submission is outstanding**.
+     *
+     * [onConsumed] is invoked exactly once per call: immediately when the frame is refused or the
+     * submission fails, otherwise when MediaPipe delivers the result. That callback is the
+     * buffer's lifetime signal — the caller may not redraw or release the pixels behind
+     * [mpImage] before it runs, because `LIVE_STREAM` inference reads them on its own thread after
+     * this function has already returned.
+     *
+     * @return true when the graph accepted the frame. A false return is not an error: it means
+     * "this channel is saturated, drop this frame", which is what keeps a slow device from
+     * accumulating an ever-older queue instead of just running at a lower rate.
+     */
+    fun processFrame(mpImage: MPImage, timestampMs: Long, onConsumed: (() -> Unit)? = null): Boolean
+
     fun close()
     fun isInitialized(): Boolean
+
+    /** Backpressure counters for telemetry: outstanding submission, refusals, reclaimed wedges. */
+    fun inFlightStats(nowMs: Long): InFlightStats
 }
+
+/** What one channel's [InFlightGate] currently looks like. Values, not a live reference. */
+data class InFlightStats(
+    val busy: Boolean,
+    val submitted: Long,
+    val refused: Long,
+    val expired: Long,
+)
 
 @Singleton
 class HandTrackerImpl @Inject constructor(
@@ -33,6 +59,10 @@ class HandTrackerImpl @Inject constructor(
     private var handLandmarker: HandLandmarker? = null
     @Volatile private var _isInitialized = false
     @Volatile private var isClosing = false
+
+    /** One outstanding submission, and its caller's completion hook (see processFrame). */
+    private val inFlight = InFlightGate()
+    private val pendingConsumed = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
 
     // Perf audit P7: guards detectAsync submission against close().
     private val closeLock = Any()
@@ -78,6 +108,12 @@ class HandTrackerImpl @Inject constructor(
 
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
+        // P0-2: a close while a frame is in flight must not strand its lease. No result callback
+        // is coming for that frame, and the graph is already torn down, so the gate is cleared and
+        // the caller's buffer is handed back here instead.
+        inFlight.reset()
+        pendingConsumed.getAndSet(null)?.invoke()
+
         Timber.i("HandTracker initialized successfully")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "hand-initialized",
@@ -85,35 +121,67 @@ class HandTrackerImpl @Inject constructor(
         )
     }
 
-    override fun processFrame(mpImage: MPImage, timestampMs: Long) {
-        if (isClosing || !_isInitialized) return
-        // Perf audit P7: submission and close share one lock. Before, a
-        // detectAsync submission could interleave with landmarker.close() on
-        // another thread — a native use-after-close window.
-        synchronized(closeLock) {
-            if (isClosing) return
-            val landmarker = handLandmarker ?: return
-
-            // MediaPipe LIVE_STREAM timestamps must be monotonically increasing.
-            // Use the camera pipeline's elapsedRealtime timestamp as the authoritative
-            // value instead of generating another clock value here.
-            val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
-                lastSubmittedTimestampMs + 1L
-            } else {
-                timestampMs
-            }
-            lastSubmittedTimestampMs = mediaPipeTimestampMs
-            runCatching {
-                val h = mpImage.height
-                if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
-            }
-
-            try {
-                landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
-            } catch (e: Exception) {
-                Timber.e(e, "Error processing hand frame at timestamp %d", mediaPipeTimestampMs)
-            }
+    override fun processFrame(mpImage: MPImage, timestampMs: Long, onConsumed: (() -> Unit)?): Boolean {
+        // Saturation check FIRST, before the lock: a device that cannot keep up must shed frames
+        // instead of queueing them, and the shed has to be as cheap as possible.
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        if (!inFlight.tryReserve(nowMs)) {
+            onConsumed?.invoke()
+            return false
         }
+        if (isClosing || !_isInitialized) {
+            inFlight.release()
+            onConsumed?.invoke()
+            return false
+        }
+        // Perf audit P7: submission and close share one lock, so a submission can never interleave
+        // with landmarker.close() on another thread (a native use-after-close window).
+        var accepted = false
+        try {
+            synchronized(closeLock) {
+                if (!isClosing) {
+                    val landmarker = handLandmarker ?: null
+                    if (landmarker != null) {
+                        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+                            lastSubmittedTimestampMs + 1L
+                        } else {
+                            timestampMs
+                        }
+                        lastSubmittedTimestampMs = mediaPipeTimestampMs
+                        runCatching {
+                            val h = mpImage.height
+                            if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
+                        }
+                        // Store ours, fire the previous one: if the reservation above was reclaimed
+                        // from a wedged graph, that owner must not be left holding its buffer.
+                        // Storing BEFORE submitting is what lets a result that arrives immediately
+                        // consume this callback instead of losing it.
+                        pendingConsumed.getAndSet(onConsumed)?.invoke()
+                        landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
+                        accepted = true
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Error processing hand frame: submission failed")
+            }
+        if (!accepted) {
+            inFlight.release()
+            // Exactly-once, whatever happened above: if our hook was already stored it is handed
+            // back here; if the failure happened before the store, the caller's hook runs directly.
+            (pendingConsumed.getAndSet(null) ?: onConsumed)?.invoke()
+        }
+        return accepted
+    }
+
+    override fun inFlightStats(nowMs: Long): InFlightStats {
+        val stats = inFlight.stats()
+        return InFlightStats(
+            busy = inFlight.isBusy(nowMs),
+            submitted = stats.submitted,
+            refused = stats.refused,
+            expired = stats.expired,
+        )
     }
 
     override fun close() {
@@ -147,6 +215,11 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
+        // Release the frame before doing any work: the buffer's owner is waiting on this, and the
+        // queue must drain at inference speed rather than at "inference + everything the result
+        // handler does" speed. Also fires on the isClosing path below, deliberately.
+        inFlight.release()
+        pendingConsumed.getAndSet(null)?.invoke()
         if (isClosing) {
             return
         }

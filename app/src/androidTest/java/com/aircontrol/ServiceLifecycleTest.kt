@@ -100,8 +100,12 @@ class ServiceLifecycleTest {
         override fun processFrame(
             mpImage: com.google.mediapipe.framework.image.MPImage,
             timestampMs: Long,
-        ) {
-            // No-op for testing
+            onConsumed: (() -> Unit)?,
+        ): Boolean {
+            // No-op for testing. The frame is refused, and a refusal must still hand the buffer
+            // back, so the callback contract is honoured here too.
+            onConsumed?.invoke()
+            return false
         }
 
         override fun close() {

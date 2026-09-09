@@ -157,6 +157,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // smoother re-converges, so the cursor reappears IN PLACE, not mid-jump).
     @Volatile private var gazeReacquireFrames: Int = 0
 
+    /**
+     * P0-3 (audit): the gaze cursor is now *published*, not pushed. The tracker emits faster than a
+     * low-end device can repaint, and awaiting a main-thread hop per sample made the inference
+     * coroutine pay for the UI's schedule — and left the UI replaying a queue of positions that
+     * were already obsolete. One slot, one frame callback, newest wins.
+     */
+    private val gazeTransport =
+        com.aircontrol.accessibility.LatestWinsTransport<Pair<Float, Float>>(schedule = { scheduleGazeFrame() })
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     // Fix (audit #6): last time the smoothed gaze moved meaningfully — the
     // blink-intent gate reads this (natural blinks happen mid-movement).
     @Volatile private var lastGazeMoveMs: Long = 0L
@@ -698,6 +708,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     if (!currentPreferences.gesturesEnabled || !currentPreferences.eyeTrackingEnabled ||
                         (!currentPreferences.cursorEnabled && !currentPreferences.blinkClickEnabled)
                     ) {
+                        cancelPendingGazeMove()
                         setGazeTracking(false)
                         return@gaze
                     }
@@ -714,6 +725,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             // consecutive misses crossed the hysteresis bound.
                             gazeMissCount = 0
                             faceStableSinceMs = 0L
+                            // P0-3: a queued gaze move must die with the transition, or the frame
+                            // callback would re-show the cursor the frame after it was hidden.
+                            cancelPendingGazeMove()
                             setGazeTracking(false)
                             withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                             cursorController?.hide()
@@ -850,15 +864,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // already at the face, no visible teleport.
                     if (gazeReacquireFrames > 0) {
                         gazeReacquireFrames--
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            if (currentPreferences.cursorEnabled) {
-                                cursorOverlay?.show()
-                                // Fix A2: direct mapping — gaze coords are screen-space
-                                // and must not pass through the hand dead-zone mapping.
-                                cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight, directMapping = true)
-                            }
-                        }
+                    } else if (currentPreferences.cursorEnabled) {
+                        // Fix A2 preserved: gaze coordinates are already screen-space, so the
+                        // overlay maps them directly (never through the hand dead-zone mapping).
+                        gazeTransport.publish(smoothX to smoothY)
                     }
                     // Fix A1: keep the shared cursor state truthful for this path.
                     cursorController?.updatePosition(smoothX, smoothY)
@@ -936,6 +945,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     private fun stopTrackingPipeline() {
+        // P0-3: dropping the transport here also covers pause/trim/screen-off, because no
+        // collector survives this call to publish a new target.
+        cancelPendingGazeMove()
         synchronized(pipelineJobs) {
             pipelineJobs.forEach { it.cancel() }
             pipelineJobs.clear()
@@ -1338,6 +1350,37 @@ class GestureControlAccessibilityService : AccessibilityService() {
      * null most frames (the diagnostics object rate-limits internally), so calling
      * this from the per-frame path costs a comparison.
      */
+    /**
+     * Requests one UI-frame application of the latest gaze target. Called from the tracker's
+     * coroutine, so it only posts to the main handler and never waits for it (Rule 14).
+     */
+    private fun scheduleGazeFrame() {
+        mainHandler.post {
+            android.view.Choreographer.getInstance().postFrameCallback { applyLatestGazeTarget() }
+        }
+    }
+
+    /** Runs on the UI thread, once per frame at most. */
+    private fun applyLatestGazeTarget() {
+        if (!currentPreferences.cursorEnabled) {
+            gazeTransport.reset()
+            return
+        }
+        val target = gazeTransport.consume() ?: return
+        val overlay = cursorOverlay ?: return
+        overlay.show()
+        overlay.updatePosition(target.first, target.second, screenWidth, screenHeight, directMapping = true)
+    }
+
+    /**
+     * Drops a queued gaze move when the cursor must stop moving (tracking lost, pause, overlay
+     * hidden, pipeline stopped). The already-scheduled frame callback then finds nothing to apply.
+     */
+    private fun cancelPendingGazeMove() {
+        gazeTransport.reset()
+        mainHandler.removeCallbacksAndMessages(null)
+    }
+
     private fun gazeDiagnosticsSnapshot(): String? =
         if (BuildConfig.DEBUG) {
             faceTracker?.diagnostics?.maybeSnapshot(SystemClock.elapsedRealtime())

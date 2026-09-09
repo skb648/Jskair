@@ -129,9 +129,20 @@ interface FaceTracker {
     val gazeObservations: SharedFlow<GazeObservation>
 
     fun initialize()
-    fun processFrame(mpImage: MPImage, timestampMs: Long)
+
+    /**
+     * Submits [mpImage] to the face graph only when no submission is outstanding; see
+     * [HandTracker.processFrame] for the contract, which is identical and exists for the same
+     * reason — the eye channel is the one where an unbounded queue is felt as the cursor lagging
+     * further and further behind the face.
+     */
+    fun processFrame(mpImage: MPImage, timestampMs: Long, onConsumed: (() -> Unit)? = null): Boolean
+
     fun close()
     fun isInitialized(): Boolean
+
+    /** Backpressure counters for telemetry. */
+    fun inFlightStats(nowMs: Long): InFlightStats
 
     /**
      * Fix A5: installs (or clears, with null) the personalized gaze model.
@@ -207,7 +218,12 @@ class FaceTrackerImpl @Inject constructor(
     @Volatile private var lastImageHeightPx: Int = 0
 
     private val _gazePoints = MutableSharedFlow<GazePoint>(
-        extraBufferCapacity = 64,
+        // P0-3: the cursor channel is latest-wins, not a queue. A 64-slot buffer is >3 s of eye
+        // frames, and a collector that is even slightly behind replays them in order — which is
+        // what made the pointer walk through the recent past instead of pointing where the eyes are
+        // now. One slot means the consumer paints the newest sample and skips whatever piled up;
+        // overflow dropping is then a no-op rather than a policy.
+        extraBufferCapacity = 1,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val gazePoints: SharedFlow<GazePoint> = _gazePoints.asSharedFlow()
@@ -242,6 +258,12 @@ class FaceTrackerImpl @Inject constructor(
             }
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
+        // P0-2: a close while a frame is in flight must not strand its lease. No result callback
+        // is coming for that frame, and the graph is already torn down, so the gate is cleared and
+        // the caller's buffer is handed back here instead.
+        inFlight.reset()
+        pendingConsumed.getAndSet(null)?.invoke()
+
         Timber.i("FaceTracker initialized successfully")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "face-initialized",
@@ -265,26 +287,69 @@ class FaceTrackerImpl @Inject constructor(
         )
     }
 
-    override fun processFrame(mpImage: MPImage, timestampMs: Long) {
-        if (isClosing || !_isInitialized) return
-        // Perf audit P7: submission and close share one lock (see HandTracker).
-        synchronized(closeLock) {
-            if (isClosing) return
-            val landmarker = faceLandmarker ?: return
-            lastImageWidthPx = mpImage.width
-            lastImageHeightPx = mpImage.height
-            val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
-                lastSubmittedTimestampMs + 1L
-            } else {
-                timestampMs
-            }
-            lastSubmittedTimestampMs = mediaPipeTimestampMs
-            try {
-                landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
-            } catch (e: Exception) {
-                Timber.e(e, "Error processing face frame at timestamp %d", mediaPipeTimestampMs)
-            }
+    override fun processFrame(mpImage: MPImage, timestampMs: Long, onConsumed: (() -> Unit)?): Boolean {
+        // Saturation check FIRST, before the lock: a device that cannot keep up must shed frames
+        // instead of queueing them, and the shed has to be as cheap as possible.
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        if (!inFlight.tryReserve(nowMs)) {
+            onConsumed?.invoke()
+            return false
         }
+        if (isClosing || !_isInitialized) {
+            inFlight.release()
+            onConsumed?.invoke()
+            return false
+        }
+        // Perf audit P7: submission and close share one lock, so a submission can never interleave
+        // with landmarker.close() on another thread (a native use-after-close window).
+        var accepted = false
+        try {
+            synchronized(closeLock) {
+                if (!isClosing) {
+                    val landmarker = faceLandmarker ?: null
+                    if (landmarker != null) {
+                        lastImageWidthPx = mpImage.width
+                        lastImageHeightPx = mpImage.height
+                        val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
+                            lastSubmittedTimestampMs + 1L
+                        } else {
+                            timestampMs
+                        }
+                        lastSubmittedTimestampMs = mediaPipeTimestampMs
+                        runCatching {
+                            val h = mpImage.height
+                            if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
+                        }
+                        // Store ours, fire the previous one: if the reservation above was reclaimed
+                        // from a wedged graph, that owner must not be left holding its buffer.
+                        // Storing BEFORE submitting is what lets a result that arrives immediately
+                        // consume this callback instead of losing it.
+                        pendingConsumed.getAndSet(onConsumed)?.invoke()
+                        landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
+                        accepted = true
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Error processing face frame: submission failed")
+            }
+        if (!accepted) {
+            inFlight.release()
+            // Exactly-once, whatever happened above: if our hook was already stored it is handed
+            // back here; if the failure happened before the store, the caller's hook runs directly.
+            (pendingConsumed.getAndSet(null) ?: onConsumed)?.invoke()
+        }
+        return accepted
+    }
+
+    override fun inFlightStats(nowMs: Long): InFlightStats {
+        val stats = inFlight.stats()
+        return InFlightStats(
+            busy = inFlight.isBusy(nowMs),
+            submitted = stats.submitted,
+            refused = stats.refused,
+            expired = stats.expired,
+        )
     }
 
     override fun close() {
@@ -320,6 +385,9 @@ class FaceTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: FaceLandmarkerResult, resultTimestampMs: Long) {
+        // Buffer lifetime first, before any early return (see HandTracker for the reasoning).
+        inFlight.release()
+        pendingConsumed.getAndSet(null)?.invoke()
         if (isClosing) {
             return
         }
@@ -444,6 +512,11 @@ class FaceTrackerImpl @Inject constructor(
                     predictedY = prediction.second.coerceIn(0f, 1f),
                     irisX = raw.signedTravelX,
                     irisY = raw.signedTravelY,
+                    // P0-4: the hold is bounded in pipeline time, so the freeze a user feels no
+                    // longer depends on how many frames per second this device manages. The sample's
+                    // own timestamp is the clock (never SystemClock here: the policy must stay
+                    // deterministic, and this is the timestamp the frame was captured with).
+                    timestampMs = ts,
                 )
                 screenX = decision.x
                 screenY = decision.y
@@ -580,21 +653,29 @@ class FaceTrackerImpl @Inject constructor(
         timestampMs: Long,
         widthPx: Int,
         heightPx: Int,
-    ): FaceLandmarkFrame = FaceLandmarkFrame(
+    ): FaceLandmarkFrame = checkNotNull(
+        FaceLandmarkFrame.fromReader(
         frameId = timestampMs,
         timestampNs = timestampMs * 1_000_000L,
         timestampMs = timestampMs,
         trackerWidthPx = widthPx,
         trackerHeightPx = heightPx,
         isFrontCameraMirrored = GazeCoordinateContract.ANALYSIS_MIRRORED_HORIZONTALLY,
-        landmarks = landmarks.map { FaceLandmark(it.x(), it.y(), it.z()) },
-        // Fix (compile): the facialTransformationMatrixes() accessor shape varies
-        // across tasks-vision builds and did not resolve here; the matrix was an
-        // optional acceleration for head pose anyway. Pass null —
-        // HeadPoseEstimator then uses its fully functional landmark fallback
-        // (confidence 0.75, valid up to ±70° yaw/pitch).
+        // Fix (compile): the facialTransformationMatrixes() accessor shape varies across
+        // tasks-vision builds and did not resolve here; the matrix was an optional acceleration for
+        // head pose anyway. Null means HeadPoseEstimator uses its landmark fallback (confidence
+        // 0.75, valid up to ±70° yaw/pitch). Restoring it is P1-3 / Group 8.
         facialTransformationMatrix = null,
-    )
+        // P0-5: 25 reads through this adapter instead of 478 `map { FaceLandmark(...) }` copies.
+        reader = object : LandmarkReader {
+            override val size: Int get() = landmarks.size
+            override fun x(index: Int): Float = landmarks[index].x()
+            override fun y(index: Int): Float = landmarks[index].y()
+            override fun z(index: Int): Float = landmarks[index].z()
+        },
+        // The only caller gates on CanonicalEyes.MIN_LANDMARK_COUNT, so a short list is a
+        // programming error rather than a runtime condition to route around.
+    )) { "face landmark frame requires >= ${CanonicalEyes.MIN_LANDMARK_COUNT} landmarks" }
 
     private fun validateModelFile(): Boolean {
         return try {
