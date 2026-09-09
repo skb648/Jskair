@@ -178,6 +178,10 @@ class FaceTrackerImpl @Inject constructor(
     @Volatile private var _isInitialized = false
     @Volatile private var isClosing = false
 
+    /** One outstanding submission for the eye channel, plus its caller's completion hook. */
+    private val inFlight = InFlightGate()
+    private val pendingConsumed = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+
     // Perf audit P7: guards detectAsync submission against close().
     private val closeLock = Any()
     @Volatile private var lastSubmittedTimestampMs = Long.MIN_VALUE
@@ -258,12 +262,6 @@ class FaceTrackerImpl @Inject constructor(
             }
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
-        // P0-2: a close while a frame is in flight must not strand its lease. No result callback
-        // is coming for that frame, and the graph is already torn down, so the gate is cleared and
-        // the caller's buffer is handed back here instead.
-        inFlight.reset()
-        pendingConsumed.getAndSet(null)?.invoke()
-
         Timber.i("FaceTracker initialized successfully")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "face-initialized",
@@ -316,10 +314,6 @@ class FaceTrackerImpl @Inject constructor(
                             timestampMs
                         }
                         lastSubmittedTimestampMs = mediaPipeTimestampMs
-                        runCatching {
-                            val h = mpImage.height
-                            if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
-                        }
                         // Store ours, fire the previous one: if the reservation above was reclaimed
                         // from a wedged graph, that owner must not be left holding its buffer.
                         // Storing BEFORE submitting is what lets a result that arrives immediately
@@ -368,6 +362,12 @@ class FaceTrackerImpl @Inject constructor(
             isClosing = false
             lastSubmittedTimestampMs = Long.MIN_VALUE
         }
+        // P0-2: a close while a frame is in flight must not strand its lease. No result callback
+        // is coming for that frame, and the graph is already torn down, so the gate is cleared and
+        // the caller's buffer is handed back here instead.
+        inFlight.reset()
+        pendingConsumed.getAndSet(null)?.invoke()
+
         Timber.i("FaceTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "face-closed",

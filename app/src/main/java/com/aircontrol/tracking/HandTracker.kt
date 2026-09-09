@@ -108,12 +108,6 @@ class HandTrackerImpl @Inject constructor(
 
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
-        // P0-2: a close while a frame is in flight must not strand its lease. No result callback
-        // is coming for that frame, and the graph is already torn down, so the gate is cleared and
-        // the caller's buffer is handed back here instead.
-        inFlight.reset()
-        pendingConsumed.getAndSet(null)?.invoke()
-
         Timber.i("HandTracker initialized successfully")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "hand-initialized",
@@ -204,6 +198,12 @@ class HandTrackerImpl @Inject constructor(
             isClosing = false
             lastSubmittedTimestampMs = Long.MIN_VALUE
         }
+        // P0-2: a close while a frame is in flight must not strand its lease. No result callback is
+        // coming for that frame, and the graph is already torn down, so the gate is cleared and the
+        // caller's buffer is handed back here instead.
+        inFlight.reset()
+        pendingConsumed.getAndSet(null)?.invoke()
+
         Timber.i("HandTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "hand-closed",
@@ -254,7 +254,7 @@ class HandTrackerImpl @Inject constructor(
         // assumption that MediaPipe reports anatomy for an unmirrored image. It
         // does not: the Hand landmarker defines handedness for a *selfie* (already
         // mirrored) input, and CameraService mirrors the frame before handing it
-        // over (postScale(-1, 1) in imageProxyToMPImage). The double flip made
+        // over (postScale(-1, 1) in CameraService.convertIntoLeasedBitmap). The double flip made
         // "use my left hand only" accept the right hand and reject the left, which
         // is exactly what users hit when they set a hand preference.
         val handednessCategory = if (handedness.isNotEmpty() && handedness[0].isNotEmpty()) {

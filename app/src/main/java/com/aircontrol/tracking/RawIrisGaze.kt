@@ -28,7 +28,7 @@ import kotlin.math.min
  * | [GazePoint] | **screen-normalized** | left→right edge | top→bottom edge | screen fraction | [0,1] |
  * | cursor pixel position | display | — | — | px | [0,width) |
  *
- * Mirroring happens exactly once, in `CameraService.imageProxyToMPImage`
+ * Mirroring happens exactly once, in `CameraService.convertIntoLeasedBitmap`
  * (`m.postScale(-1f, 1f, ...)`), and is undone exactly once, in
  * [EyeFeatureExtractor]/[HeadPoseEstimator] via [FaceLandmarkFrame.isFrontCameraMirrored].
  * No other stage may flip an axis. The `gazeInvertX` preference compensates for

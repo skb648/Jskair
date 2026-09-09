@@ -338,8 +338,11 @@ class CameraService : LifecycleService() {
             } catch (_: InterruptedException) {
                 executor?.shutdownNow()
             }
-            reusableTransformBitmap?.recycle()
-            reusableTransformBitmap = null
+            // P0-2: the frame-buffer pool replaces the single reusable bitmap. Draining recycles
+            // every buffer, including any still leased by a tracker that has not reported yet -
+            // at teardown nothing may outlive the service, and a lease that never returns is
+            // harmless here because the pool itself goes away with it.
+            frameBitmaps.drain()
             cachedMatrix = null
         }
         super.onDestroy()
