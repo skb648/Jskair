@@ -334,7 +334,7 @@ class GestureEngineFixesTest {
         // Same still hold, but a small (distant) hand — e.g. the phone lying on a
         // table with the user's hand resting in frame.
         repeat(70) { i ->
-            engine.processFrame(hand(ts, scale = 0.18f))
+            engine.processFrame(hand(ts, scale = 0.12f))
             ts += 100L
             if (i % 3 == 0) runCurrent()
         }
