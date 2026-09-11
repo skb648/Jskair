@@ -108,7 +108,7 @@ data class GestureEngineConfig(
     val swipeRequiresOpenHand: Boolean = true,
     val armingDurationMs: Long = 100L,
     val cooldownDurationMs: Long = 100L,
-    val autoDisarmTimeoutMs: Long = 10_000L,
+    val autoDisarmTimeoutMs: Long = 3_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 220L,
     val palmHomeHoldMs: Long = 2500L,

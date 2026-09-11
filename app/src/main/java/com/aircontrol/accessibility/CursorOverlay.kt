@@ -281,15 +281,22 @@ class CursorOverlay(
             WindowManager.LayoutParams.TYPE_SYSTEM_ALERT
         }
 
+        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
         return WindowManager.LayoutParams(
             CursorGeometry.viewSizePx(density),
             CursorGeometry.viewSizePx(density),
             type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            flags,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
             // Anchor the window so the HOTSPOT pixel (not the window centre)
             // sits on the logical cursor position.
             x = CursorGeometry.windowLeft(currentScreenX, density)

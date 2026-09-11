@@ -1,0 +1,8 @@
+{
+  "name": "AirControl",
+  "description": "Touch-free gesture and eye-tracking control for Android using computer vision.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

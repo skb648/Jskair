@@ -82,8 +82,12 @@ class CursorControllerImpl @Inject constructor() : CursorController {
         val anchorX = (palmX * (1f - INDEX_TIP_BLEND) + indexTip.x * INDEX_TIP_BLEND).coerceIn(0f, 1f)
         val anchorY = (palmY * (1f - INDEX_TIP_BLEND) + indexTip.y * INDEX_TIP_BLEND).coerceIn(0f, 1f)
 
+        val pinned = pinnedClickPosition()
+        val finalX = pinned?.first ?: anchorX
+        val finalY = pinned?.second ?: anchorY
+
         _cursorState.update {
-            it.copy(x = anchorX, y = anchorY, isVisible = true)
+            it.copy(x = finalX, y = finalY, isVisible = true)
         }
     }
 

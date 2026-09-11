@@ -23,8 +23,14 @@ class GazeCalibration(
 
     fun map(gx: Float, gy: Float): Pair<Float, Float> {
         if (!isCalibrated) return gx.coerceIn(0f, 1f) to gy.coerceIn(0f, 1f)
-        val sx = coeffs[0] * gx + coeffs[1] * gy + coeffs[2]
-        val sy = coeffs[3] * gx + coeffs[4] * gy + coeffs[5]
+        var sx = coeffs[0] * gx + coeffs[1] * gy + coeffs[2]
+        var sy = coeffs[3] * gx + coeffs[4] * gy + coeffs[5]
+        val cx = sx - 0.5f
+        val cy = sy - 0.5f
+        val r2 = cx * cx + cy * cy
+        val boost = 1.0f + 0.22f * r2
+        sx = 0.5f + cx * boost
+        sy = 0.5f + cy * boost
         return sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
     }
 

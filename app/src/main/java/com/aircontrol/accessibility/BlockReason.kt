@@ -56,4 +56,7 @@ enum class BlockReason(val stableId: String) {
 
     /** The accessibility service is not available to dispatch. */
     ACCESSIBILITY_SERVICE_UNAVAILABLE("accessibility_service_unavailable"),
+
+    /** The target surface is protected by Android security (system dialog, secure app). */
+    PROTECTED_SCREEN_BLOCKED("protected_screen_blocked"),
 }

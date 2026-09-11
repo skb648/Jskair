@@ -138,6 +138,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var stationarySinceMs: Long = 0L
     @Volatile private var dwellFired: Boolean = false
     @Volatile private var hoverActive: Boolean = false
+    @Volatile private var dwellMidHapticFired: Boolean = false
+
+    private fun performDwellHaptic(isClick: Boolean) {
+        if (!currentPreferences.hapticFeedback) return
+        runCatching {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+                vm?.defaultVibrator ?: (getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator)
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            }
+            if (vibrator?.hasVibrator() == true) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val effect = if (isClick) {
+                        android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_CLICK)
+                    } else {
+                        android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_TICK)
+                    }
+                    vibrator.vibrate(effect)
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(if (isClick) 25L else 10L)
+                }
+            }
+        }
+    }
 
     // Fix A8 (full): dwell intent detection. A dwell click now requires a
     // *deliberate arrival*: the travel accumulated while the cursor was moving
@@ -196,6 +223,24 @@ class GestureControlAccessibilityService : AccessibilityService() {
     // by debug surfaces at a sane rate.
     private val gazeSmoothingMetrics = com.aircontrol.tracking.GazeSmoothingMetrics()
     @Volatile private var gazeWasLost: Boolean = false
+
+    // Issue 5: Fixation Lock state to clamp micro-saccadic involuntary tremor
+    @Volatile private var fixationAnchorX: Float = -1f
+    @Volatile private var fixationAnchorY: Float = -1f
+
+    // Issue 7: Gaze history ring buffer for pre-blink position rollback
+    private data class GazeHistoryEntry(val x: Float, val y: Float, val timeMs: Long)
+    private val gazeHistoryBuffer = java.util.concurrent.CopyOnWriteArrayList<GazeHistoryEntry>()
+
+    private fun recordGazeHistory(x: Float, y: Float, timeMs: Long) {
+        if (gazeHistoryBuffer.size >= 25) gazeHistoryBuffer.removeAt(0)
+        gazeHistoryBuffer.add(GazeHistoryEntry(x, y, timeMs))
+    }
+
+    private fun getGazeBefore(referenceTimeMs: Long, lookbackMs: Long): Pair<Float, Float>? {
+        val targetTime = referenceTimeMs - lookbackMs
+        return gazeHistoryBuffer.minByOrNull { kotlin.math.abs(it.timeMs - targetTime) }?.let { it.x to it.y }
+    }
 
     // HID POC (experimental, isolated): Bluetooth HID mouse path. Disabled by
     // default; the adapter no-ops unless the pref is on AND a host is connected.
@@ -732,6 +777,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             withContext(Dispatchers.Main) { cursorOverlay?.hide() }
                             cursorController?.hide()
                             gazeCursorSmoother.reset()
+                            fixationAnchorX = -1f
+                            fixationAnchorY = -1f
+                            gazeHistoryBuffer.clear()
                             // Issue 4: abort (never complete into a click) any blink
                             // that was in progress when tracking was lost — a closure
                             // interrupted by a tracking gap is not a continuous
@@ -794,12 +842,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
                                 resetDwellState()
                                 return@gaze
                             }
-                            // Fix A1: click where the eye cursor actually is.
-                            // The old code read cursorState, which was never
-                            // updated by the gaze path (its synthetic hand frame
-                            // failed isDetected), so every blink tapped (0.5,
-                            // 0.5) — dead centre of the screen.
-                            actionDispatcher?.dispatchBlinkTap(gazeCursorX, gazeCursorY, screenWidth, screenHeight)
+                            // Issue 7: Pre-blink position rollback. Irises drop as eyelids close,
+                            // causing cursor distortion in the last frame before complete closure.
+                            // Dispatch tap at the rock-solid gaze coordinate from right before closure began.
+                            val closureStart = blinkDetector.lastBlinkClosureStartMs
+                            val tapTarget = if (closureStart > 0L) {
+                                getGazeBefore(closureStart, PRE_BLINK_LOOKBACK_MS) ?: (gazeCursorX to gazeCursorY)
+                            } else {
+                                gazeCursorX to gazeCursorY
+                            }
+                            actionDispatcher?.dispatchBlinkTap(tapTarget.first, tapTarget.second, screenWidth, screenHeight)
                             resetDwellState()
                             return@gaze
                         } else if (blinkResult != com.aircontrol.tracking.BlinkResult.NONE) {
@@ -820,8 +872,40 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     // Fix E1: velocity-adaptive One Euro smoothing — no fixed-alpha
                     // lag on saccades, no quantization "teleports" when still.
                     val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
-                    gazeCursorX = smoothX
-                    gazeCursorY = smoothY
+
+                    // Issue 5: Fixation Lock — suppresses involuntary micro-saccadic tremor
+                    // by pinning cursor to target until intentional saccadic breakout occurs.
+                    val finalGazeX: Float
+                    val finalGazeY: Float
+                    if (fixationAnchorX < 0f) {
+                        fixationAnchorX = smoothX
+                        fixationAnchorY = smoothY
+                        finalGazeX = smoothX
+                        finalGazeY = smoothY
+                    } else {
+                        val dist = kotlin.math.hypot(smoothX - fixationAnchorX, smoothY - fixationAnchorY)
+                        if (dist < FIXATION_LOCK_RADIUS) {
+                            finalGazeX = fixationAnchorX
+                            finalGazeY = fixationAnchorY
+                        } else if (dist < SACCADE_BREAKOUT_RADIUS) {
+                            val blend = (dist - FIXATION_LOCK_RADIUS) / (SACCADE_BREAKOUT_RADIUS - FIXATION_LOCK_RADIUS)
+                            finalGazeX = fixationAnchorX * (1f - blend) + smoothX * blend
+                            finalGazeY = fixationAnchorY * (1f - blend) + smoothY * blend
+                            if (blend > 0.75f) {
+                                fixationAnchorX = smoothX
+                                fixationAnchorY = smoothY
+                            }
+                        } else {
+                            fixationAnchorX = smoothX
+                            fixationAnchorY = smoothY
+                            finalGazeX = smoothX
+                            finalGazeY = smoothY
+                        }
+                    }
+
+                    gazeCursorX = finalGazeX
+                    gazeCursorY = finalGazeY
+                    recordGazeHistory(finalGazeX, finalGazeY, SystemClock.elapsedRealtime())
 
                     // Issue 5: debug-only telemetry of the RAW signal vs the
                     // FILTERED cursor (raw velocity, filter lag, rest jitter).
@@ -1420,6 +1504,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun resetDwellState() {
         dwellFired = false
+        dwellMidHapticFired = false
         stationarySinceMs = 0L
         dwellMovingTravel = 0f
         fixationDwellAllowed = false
@@ -1449,6 +1534,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.resetHover() }
             }
             stationarySinceMs = timestampMs
+            dwellMidHapticFired = false
             dwellMovingTravel += dist
             // Fix A8: after a dwell fires it stays latched until the cursor
             // leaves the re-arm radius — micro-drift around the clicked spot
@@ -1464,7 +1550,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (stationarySinceMs == 0L) stationarySinceMs = timestampMs
+        if (stationarySinceMs == 0L) {
+            stationarySinceMs = timestampMs
+            dwellMidHapticFired = false
+        }
 
         // Fix A8: the first still frame after a movement decides whether this
         // fixation may ever dwell. Gaze mode requires a deliberate, saccade-
@@ -1493,6 +1582,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
             dwellFired = true
             dwellFireX = x
             dwellFireY = y
+            performDwellHaptic(isClick = true)
+            dwellMidHapticFired = false
             actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight, fromGaze = isGaze)
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
         } else if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired &&
@@ -1500,6 +1591,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         ) {
             val progress = (stillMs.toFloat() / currentPreferences.dwellDurationMs)
                 .coerceIn(0f, 1f)
+            if (progress >= 0.5f && !dwellMidHapticFired) {
+                dwellMidHapticFired = true
+                performDwellHaptic(isClick = false)
+            }
             // Throttle dwell ring updates to ~30fps to avoid main-thread spam (fix #62).
             // Fix (audit #10): the throttle was only a comment — every qualifying
             // frame still hopped to the main thread. Time-gate it for real.
@@ -1619,8 +1714,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Fix (audit #5/#6): re-acquisition priming + blink-intent stillness window.
         private const val GAZE_REACQUIRE_PRIME_FRAMES = 2
-        private const val BLINK_INTENT_STILLNESS_MS = 200L
+        private const val BLINK_INTENT_STILLNESS_MS = 140L
         private const val GAZE_MOVE_EPSILON = 0.008f
+        private const val FIXATION_LOCK_RADIUS = 0.040f
+        private const val SACCADE_BREAKOUT_RADIUS = 0.075f
+        private const val PRE_BLINK_LOOKBACK_MS = 130L
 
         // Fix A8: the face must be continuously visible this long before gaze
         // dwell can accumulate (post-(re)acquisition settling grace).

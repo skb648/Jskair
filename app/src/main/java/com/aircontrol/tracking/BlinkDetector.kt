@@ -42,6 +42,8 @@ class BlinkDetector(
 
     private var closedStartMs: Long = -1L
     private var wasClosed = false
+    var lastBlinkClosureStartMs: Long = -1L
+        private set
 
     /**
      * Feeds the current average EAR. Returns the blink outcome exactly once, when
@@ -59,6 +61,7 @@ class BlinkDetector(
 
         if (closed && !wasClosed) {
             closedStartMs = timestampMs
+            lastBlinkClosureStartMs = timestampMs
         }
         if (!closed && wasClosed) {
             val start = closedStartMs
@@ -80,6 +83,7 @@ class BlinkDetector(
     fun reset() {
         closedStartMs = -1L
         wasClosed = false
+        lastBlinkClosureStartMs = -1L
     }
 
     /** True while a blink (eye closure) is in progress and not yet completed. */

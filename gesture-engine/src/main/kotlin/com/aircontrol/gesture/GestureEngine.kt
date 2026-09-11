@@ -64,6 +64,7 @@ class GestureEngine(
     @Volatile private var pinchStartY = 0f
     @Volatile private var pinchAnchoredX = 0f
     @Volatile private var pinchAnchoredY = 0f
+    @Volatile private var pinchDragUnlocked = false
     @Volatile private var currentPinchPhase: PinchPhase? = null
     @Volatile private var lastPinchEndMs = 0L
     @Volatile private var lastCustomGestureId: String? = null
@@ -327,8 +328,9 @@ class GestureEngine(
             }
         }
 
-        val effectiveCursorX = if (currentPinchPhase == PinchPhase.START) pinchAnchoredX else lastPalmX
-        val effectiveCursorY = if (currentPinchPhase == PinchPhase.START) pinchAnchoredY else lastPalmY
+        val isPinchAnchored = wasPinching && !pinchDragUnlocked
+        val effectiveCursorX = if (isPinchAnchored) pinchAnchoredX else lastPalmX
+        val effectiveCursorY = if (isPinchAnchored) pinchAnchoredY else lastPalmY
         if (input.isDetected && hasPalmPosition && (transition.newState == GestureEngineState.ARMING || transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN)) {
             // Fix B4: EXECUTING is included so the dot keeps following the palm
             // while a triggered action is in flight. Previously the dot froze
@@ -354,13 +356,13 @@ class GestureEngine(
     private fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
         val currentState = _engineState.value
         if (currentState != GestureEngineState.ARMED && currentState != GestureEngineState.EXECUTING && currentState != GestureEngineState.COOLDOWN) {
-            if (wasPinching) { wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE }
+            if (wasPinching) { wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false }
             return
         }
         if (!input.isDetected) {
             if (wasPinching) {
                 _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
-                wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE
+                wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false
             } else if (pinchState != PinchState.IDLE) {
                 // Stress-audit bug #10 (§12): an UNCONFIRMED candidate (HOVER /
                 // PINCH_START) used to survive hand loss — when the hand
@@ -406,6 +408,7 @@ class GestureEngine(
             PinchState.PINCH_START -> {
                 if (timeInState >= TIME_DEBOUNCE_MS && allowEntry) {
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
+                    pinchDragUnlocked = false
                     val palm = if (hasPalmPosition) lastPalmX to lastPalmY else 0.5f to 0.5f
                     pinchStartX = palm.first; pinchStartY = palm.second; pinchAnchoredX = pinchStartX; pinchAnchoredY = pinchStartY
                     _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
@@ -414,15 +417,24 @@ class GestureEngine(
             PinchState.PINCH_HOLD -> {
                 if (thumbIndexDistance > exitThreshold) { pinchState = PinchState.PINCH_RELEASE; pinchStateEntryTimeMs = timestampMs }
                 else {
+                    val dragDist = kotlin.math.hypot(lastPalmX - pinchAnchoredX, lastPalmY - pinchAnchoredY)
+                    if (dragDist >= PINCH_DRAG_UNLOCK_THRESHOLD) {
+                        pinchDragUnlocked = true
+                    }
+                    val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
+                    val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
                     currentPinchPhase = PinchPhase.MOVE
-                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.MOVE, lastPalmX, lastPalmY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.MOVE, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 }
             }
             PinchState.PINCH_RELEASE -> {
                 if (timeInState >= TIME_DEBOUNCE_MS) {
                     pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs; wasPinching = false; currentPinchPhase = PinchPhase.END; lastPinchEndMs = timestampMs
-                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, lastPalmX, lastPalmY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
+                    val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
+                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                     currentPinchPhase = null
+                    pinchDragUnlocked = false
                 } else if (thumbIndexDistance < enterThreshold) { pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs }
             }
         }
@@ -454,7 +466,7 @@ class GestureEngine(
 
     fun reset() {
         poseClassifier.reset(); poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames; dynamicDetector.reset(); stateMachine.reset()
-        pinchState = PinchState.IDLE; pinchStateEntryTimeMs = 0L; wasPinching = false; currentPinchPhase = null
+        pinchState = PinchState.IDLE; pinchStateEntryTimeMs = 0L; wasPinching = false; currentPinchPhase = null; pinchDragUnlocked = false
         pinchStartX = 0f; pinchStartY = 0f; pinchAnchoredX = 0f; pinchAnchoredY = 0f; lastPinchEndMs = 0L; lastCustomGestureId = null
         lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
         resetPalmTracking(); handStillSinceMs = 0L; thumbPoseSinceMs = 0L; measuredFrameIntervalMs = 0L; prevFrameTimestampMs = 0L; armedSinceMs = 0L
@@ -463,6 +475,7 @@ class GestureEngine(
     }
 
     companion object {
+        private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.035f
         private const val PINCH_COOLDOWN_MS = 80L
         private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 60L
         private const val CONFIDENCE_THRESHOLD = 0.7f

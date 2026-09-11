@@ -499,8 +499,11 @@ class FaceTrackerImpl @Inject constructor(
         var jumpFactor = 1f
         var jumpHeld = false
         if (raw != null) {
-            screenX = raw.h
-            screenY = raw.v
+            // Head-pose continuous compensation: cancels head rotation/tilt drift
+            val headCompX = if (pose != null && pose.isValid) pose.yawDeg * HEAD_POSE_COMPENSATION_FACTOR else 0f
+            val headCompY = if (pose != null && pose.isValid) pose.pitchDeg * HEAD_POSE_COMPENSATION_FACTOR else 0f
+            screenX = (raw.h + headCompX).coerceIn(0f, 1f)
+            screenY = (raw.v + headCompY).coerceIn(0f, 1f)
             val prediction = if (model != null && featureVector != null) {
                 runCatching { model.predict(featureVector!!) }.getOrNull()
             } else {
@@ -725,6 +728,7 @@ class FaceTrackerImpl @Inject constructor(
         private const val MIN_PRESENCE_CONFIDENCE = 0.5f
         private const val MIN_TRACKING_CONFIDENCE = 0.5f
         private const val EPSILON = 1e-6f
+        private const val HEAD_POSE_COMPENSATION_FACTOR = 0.0035f
 
         /** `PersonalizedGazeCalibrationFitter.WORST_TARGET_MAX_NORMALIZED_ERROR`, in words. */
         private const val WORST_ACCEPTED_P95_ERROR = 0.10

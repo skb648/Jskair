@@ -106,7 +106,7 @@ class ActionDispatcher @Inject constructor(
     companion object {
         private const val MAX_RETRIES = 1
         private const val SCROLL_DURATION_MS = 250L
-        private const val TAP_DURATION_MS = 90L
+        private const val TAP_DURATION_MS = 25L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
         private const val DOUBLE_TAP_WINDOW_MS = 350L
@@ -177,28 +177,38 @@ class ActionDispatcher @Inject constructor(
         fun normalizeDirect(norm: Float, screenDim: Int): Float =
             if (screenDim <= 0) 0f else norm.coerceIn(0f, 1f) * screenDim
 
+        /**
+         * Non-linear edge acceleration: 1:1 linear in center for precision pointing,
+         * with cubic acceleration near boundaries so corners and edges are reached
+         * effortlessly without arm strain or camera boundary clipping.
+         */
+        private fun applyEdgeAcceleration(norm: Float): Float {
+            val u = ((norm - 0.5f) * 2f).coerceIn(-1f, 1f)
+            val absU = kotlin.math.abs(u)
+            val accelerated = absU + 0.38f * absU * absU * absU
+            val res = kotlin.math.sign(u) * accelerated
+            return (0.5f + res * 0.5f).coerceIn(0f, 1f)
+        }
+
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             if (screenWidth <= 0) return 0f
-            val margin = 0.10f
+            val margin = 0.08f
             val active = 1.0f - 2f * margin
             val clamped = normX.coerceIn(0f, 1f)
             val mapped = ((clamped - margin) / active).coerceIn(0f, 1f)
-            // Fix B1: apply the user's pointer gain (default 1.0× at 50%).
-            val amplified = 0.5f + (mapped - 0.5f) * pointerGainFactor()
+            val accelerated = applyEdgeAcceleration(mapped)
+            val amplified = 0.5f + (accelerated - 0.5f) * pointerGainFactor()
             return amplified.coerceIn(0f, 1f) * screenWidth
         }
 
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
             if (screenHeight <= 0) return 0f
-            // Fix B2: 0.30 top dead-zone meant the hand had to be pushed very
-            // low in the camera frame to reach the bottom of the screen. 0.20
-            // (and 0.10 in sit-back mode) keeps the whole screen reachable with
-            // comfortable hand heights.
-            val topDeadZone = if (sitBackModeEnabled) 0.10f else 0.20f
+            val topDeadZone = if (sitBackModeEnabled) 0.08f else 0.20f
             val active = 1.0f - topDeadZone
             val clamped = normY.coerceIn(0f, 1f)
             val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
-            val amplified = 0.5f + (mapped - 0.5f) * pointerGainFactor()
+            val accelerated = applyEdgeAcceleration(mapped)
+            val amplified = 0.5f + (accelerated - 0.5f) * pointerGainFactor()
             return amplified.coerceIn(0f, 1f) * screenHeight
         }
 
@@ -780,6 +790,12 @@ class ActionDispatcher @Inject constructor(
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
                     Timber.w("Gesture cancelled: %s", action)
+                    // Protected screen or permission dialog blocked accessibility touch injection.
+                    // DRAG continuations can be cancelled by framework queue congestion during fast
+                    // sweeps; do not report false-alarm security blockage for normal drag resets.
+                    if (action != GestureAction.DRAG) {
+                        reportBlocked(BlockReason.PROTECTED_SCREEN_BLOCKED)
+                    }
                     // Fix (audit #16): a cancelled Android stroke while the user
                     // is STILL pinching is recovered on the next move —
                     // resetDragState() clears isDragging, and dispatchDrag's
@@ -820,9 +836,9 @@ class ActionDispatcher @Inject constructor(
         val audio = audioManager ?: return false
         return try {
             val action = if (up) GestureAction.VOLUME_UP else GestureAction.VOLUME_DOWN
-            audio.adjustSuggestedStreamVolume(
+            audio.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
                 if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-                AudioManager.USE_DEFAULT_STREAM_TYPE,
                 AudioManager.FLAG_SHOW_UI
             )
             _dispatchedEvents.tryEmit(action.name)

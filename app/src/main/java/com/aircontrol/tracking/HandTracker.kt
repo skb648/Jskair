@@ -305,6 +305,7 @@ class HandTrackerImpl @Inject constructor(
                 .setNumHands(NUM_HANDS)
                 .setMinHandDetectionConfidence(MIN_DETECTION_CONFIDENCE)
                 .setMinTrackingConfidence(MIN_TRACKING_CONFIDENCE)
+                .setMinHandPresenceConfidence(MIN_PRESENCE_CONFIDENCE)
                 .setResultListener { result, _ ->
                     handleResult(result, result.timestampMs())
                 }
@@ -324,7 +325,8 @@ class HandTrackerImpl @Inject constructor(
     companion object {
         private const val MODEL_FILE = "hand_landmarker.task"
         private const val NUM_HANDS = 1
-        private const val MIN_DETECTION_CONFIDENCE = 0.6f
-        private const val MIN_TRACKING_CONFIDENCE = 0.5f
+        private const val MIN_DETECTION_CONFIDENCE = 0.40f
+        private const val MIN_TRACKING_CONFIDENCE = 0.35f
+        private const val MIN_PRESENCE_CONFIDENCE = 0.38f
     }
 }

@@ -1,13 +1,16 @@
 package com.aircontrol.accessibility
 
-import com.aircontrol.data.model.UserPreferences
+import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.GestureMapConfig
+import com.aircontrol.data.model.HandPreference
+import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
 import com.aircontrol.gesture.model.PinchPhase
 import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
@@ -18,7 +21,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.mockito.kotlin.mock
 
 class ActionDispatcherTest {
 
@@ -26,10 +28,52 @@ class ActionDispatcherTest {
     private lateinit var mockSettingsRepository: SettingsRepository
     private lateinit var userPreferencesFlow: MutableStateFlow<UserPreferences>
 
+    private class FakeSettingsRepository(
+        override val userPreferences: Flow<UserPreferences>,
+        override val gestureMapConfig: Flow<GestureMapConfig> = MutableStateFlow(GestureMapConfig()),
+        override val customGestures: Flow<List<CustomGesture>> = MutableStateFlow(emptyList()),
+    ) : SettingsRepository {
+        override suspend fun updateGesturesEnabled(enabled: Boolean) {}
+        override suspend fun updateSensitivity(sensitivity: Int) {}
+        override suspend fun updateHandPreference(preference: HandPreference) {}
+        override suspend fun updateAnalysisFps(fps: Int) {}
+        override suspend fun updateCursorEnabled(enabled: Boolean) {}
+        override suspend fun updateHapticFeedback(enabled: Boolean) {}
+        override suspend fun updateOnboardingCompleted(completed: Boolean) {}
+        override suspend fun updateCursorSpeed(speed: Int) {}
+        override suspend fun updateHoldDuration(durationMs: Int) {}
+        override suspend fun updateBatterySaver(enabled: Boolean) {}
+        override suspend fun updateStartOnBoot(enabled: Boolean) {}
+        override suspend fun updateStatusPillEnabled(enabled: Boolean) {}
+        override suspend fun updateCalibrationData(handSizeMm: Float, pinchDistanceMm: Float) {}
+        override suspend fun updateDwellEnabled(enabled: Boolean) {}
+        override suspend fun updateDwellDuration(durationMs: Int) {}
+        override suspend fun updateStationaryClickEnabled(enabled: Boolean) {}
+        override suspend fun updatePalmHomeEnabled(enabled: Boolean) {}
+        override suspend fun updateSwipeRequiresOpenHand(enabled: Boolean) {}
+        override suspend fun updateSitBackMode(enabled: Boolean) {}
+        override suspend fun updateReducedMotion(enabled: Boolean) {}
+        override suspend fun updateCursorGain(gain: Int) {}
+        override suspend fun updateEyeTrackingEnabled(enabled: Boolean) {}
+        override suspend fun updateGazeSensitivity(sensitivity: Int) {}
+        override suspend fun updateGazeInvertX(invert: Boolean) {}
+        override suspend fun updateBlinkClickEnabled(enabled: Boolean) {}
+        override suspend fun updateBlinkWindowMs(durationMs: Int) {}
+        override suspend fun updateNativeHidMouseEnabled(enabled: Boolean) {}
+        override suspend fun updateGazeCalibration(coeffs: String) {}
+        override suspend fun updatePersonalizedGazeCalibration(json: String) {}
+        override suspend fun updateGestureAction(key: String, action: String) {}
+        override suspend fun resetGestureMapToDefaults() {}
+        override suspend fun addCustomGesture(gesture: CustomGesture) {}
+        override suspend fun updateCustomGesture(gesture: CustomGesture) {}
+        override suspend fun deleteCustomGesture(gestureId: String) {}
+        override suspend fun enableCustomGesture(gestureId: String, enabled: Boolean) {}
+    }
+
     @Before
     fun setup() {
-        mockSettingsRepository = mock()
         userPreferencesFlow = MutableStateFlow(UserPreferences())
+        mockSettingsRepository = FakeSettingsRepository(userPreferencesFlow)
 
         // We'll use the real ActionDispatcher but with a mock repository
         actionDispatcher = ActionDispatcher(mockSettingsRepository)

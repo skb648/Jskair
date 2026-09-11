@@ -14,6 +14,12 @@ android {
     compileSdk = 37
 
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             val ksFile = file("release.keystore")
             if (ksFile.exists()) storeFile = ksFile
@@ -50,6 +56,7 @@ android {
             }
         }
         debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
             isMinifyEnabled = false
             isDebuggable = true
             applicationIdSuffix = ".debug"
@@ -93,6 +100,9 @@ android {
         unitTests {
             isIncludeAndroidResources = true
             isReturnDefaultValues = false
+            all {
+                it.jvmArgs("-XX:+EnableDynamicAgentLoading")
+            }
         }
     }
 }

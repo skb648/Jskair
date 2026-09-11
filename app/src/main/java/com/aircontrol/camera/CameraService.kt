@@ -12,10 +12,13 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.view.OrientationEventListener
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -247,6 +250,59 @@ class CameraService : LifecycleService() {
     // Perf audit P9: the mode-configured FPS before the power-save cap.
     @Volatile private var baseConfiguredFps = 24
 
+    private var orientationEventListener: OrientationEventListener? = null
+    private var cameraManager: CameraManager? = null
+    @Volatile private var isCameraConflictPaused = false
+
+    private val cameraAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraUnavailable(cameraId: String) {
+            if (_state.value.isRunning && !_state.value.isPaused) {
+                Timber.w("Camera %s became unavailable (in use by another app); pausing tracking gracefully", cameraId)
+                isCameraConflictPaused = true
+                serviceScope.launch {
+                    lifecycleMutex.withLock {
+                        pauseTrackingLocked(userInitiated = false)
+                    }
+                }
+            }
+        }
+
+        override fun onCameraAvailable(cameraId: String) {
+            if (isCameraConflictPaused && _state.value.isPaused && !userPaused) {
+                Timber.i("Camera %s available again; resuming tracking", cameraId)
+                isCameraConflictPaused = false
+                serviceScope.launch {
+                    lifecycleMutex.withLock {
+                        resumeTrackingLocked()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startOrientationListener() {
+        if (orientationEventListener != null) return
+        orientationEventListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                val rotation = when (orientation) {
+                    in 45..134 -> Surface.ROTATION_270
+                    in 135..224 -> Surface.ROTATION_180
+                    in 225..314 -> Surface.ROTATION_90
+                    else -> Surface.ROTATION_0
+                }
+                imageAnalysis?.targetRotation = rotation
+            }
+        }.also {
+            if (it.canDetectOrientation()) it.enable()
+        }
+    }
+
+    private fun stopOrientationListener() {
+        orientationEventListener?.disable()
+        orientationEventListener = null
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -273,6 +329,11 @@ class CameraService : LifecycleService() {
         createNotificationChannel()
         analysisExecutor = Executors.newSingleThreadExecutor { r ->
             Thread(r, "aircontrol-analysis").apply { isDaemon = true }
+        }
+        val cm = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+        if (cm != null) {
+            cameraManager = cm
+            runCatching { cm.registerAvailabilityCallback(cameraAvailabilityCallback, null) }
         }
         Timber.i("CameraService created")
     }
@@ -325,6 +386,8 @@ class CameraService : LifecycleService() {
         // here. Trackers survive by design (P2) and are reclaimed under
         // memory pressure (AirControlApp.onTrimMemory) or explicit disable.
         PerfTelemetry.recordCameraLifecycle("service-destroyed", SystemClock.elapsedRealtime())
+        stopOrientationListener()
+        runCatching { cameraManager?.unregisterAvailabilityCallback(cameraAvailabilityCallback) }
         runCatching { unregisterPowerSaveReceiver() }
             .onFailure { Timber.e(it, "Power-save receiver unregister on destroy failed") }
         serviceScope.launch(Dispatchers.IO) {
@@ -528,6 +591,7 @@ class CameraService : LifecycleService() {
                     imageAnalysis = fallback
                 }
                 cameraBound = true
+                startOrientationListener()
             }
             true
         } catch (e: Exception) {
@@ -582,6 +646,7 @@ class CameraService : LifecycleService() {
         }
         stopThermalMonitoring()
         unregisterPowerSaveReceiver()
+        stopOrientationListener()
         runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
             .onFailure { Timber.e(it, "unbindAll failed") }
         cameraProvider = null
@@ -1144,7 +1209,7 @@ class CameraService : LifecycleService() {
                 thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
                 postRecoveryFps = 0
                 adaptiveFpsController.updateConfiguredFps(throttledFps)
-                updateNotification(isPaused = false)
+                updateNotification(isPaused = false, isThermal = true)
             }
             com.aircontrol.tracking.ThermalStatus.SEVERE -> {
                 if (thermalPaused) {

@@ -36,7 +36,8 @@ class OneEuroFilter(
         prevValue = value
 
         val filteredDerivative = dValueFilter.filter(derivative, alpha(dt, dCutoff))
-        val cutoff = (minCutoff + beta * abs(filteredDerivative)).coerceAtLeast(0.01f)
+        val speed = abs(filteredDerivative)
+        val cutoff = (minCutoff + beta * speed).coerceAtLeast(0.01f)
         return valueFilter.filter(value, alpha(dt, cutoff))
     }
 
@@ -84,33 +85,65 @@ class OneEuroFilter(
 
 /**
  * Cursor-specific filter. It suppresses micro jitter while preserving intentional
- * movement and avoids an additional UI-layer smoothing stage.
+ * movement, eliminates rubber-band lag via velocity-adaptive ballistic cutoff opening,
+ * and uses a continuous blend to exit the dead-zone without threshold step artifacts.
  */
 class CursorSmoother(
     minCutoff: Float = 1.1f,
     beta: Float = 0.9f,
 ) {
-    private val xFilter = OneEuroFilter(minCutoff, beta)
-    private val yFilter = OneEuroFilter(minCutoff, beta)
+    private var baseMinCutoff: Float = minCutoff
+    private var baseBeta: Float = beta
+    private val xFilter = OneEuroFilter(baseMinCutoff, baseBeta)
+    private val yFilter = OneEuroFilter(baseMinCutoff, baseBeta)
     private var lastOutputX: Float? = null
     private var lastOutputY: Float? = null
+    private var lastTimestampMs: Long? = null
 
     fun filter(x: Float, y: Float, timestampMs: Long): Pair<Float, Float> {
         val inputX = x.coerceIn(0f, 1f)
         val inputY = y.coerceIn(0f, 1f)
+
+        // Ballistic boost: dynamically scale cutoff during rapid sweeps to eliminate lag
+        val prevTime = lastTimestampMs
+        val oldX = lastOutputX
+        val oldY = lastOutputY
+        if (prevTime != null && oldX != null && oldY != null) {
+            val dt = ((timestampMs - prevTime).coerceAtLeast(1L) / 1000f).coerceIn(0.001f, 0.1f)
+            val dx = inputX - oldX
+            val dy = inputY - oldY
+            val rawDist = sqrt(dx * dx + dy * dy)
+            val speed = rawDist / dt
+            if (speed > FAST_SPEED_THRESHOLD) {
+                val boost = (speed - FAST_SPEED_THRESHOLD) * BALLISTIC_BOOST_FACTOR
+                xFilter.updateParams(baseMinCutoff + boost, baseBeta)
+                yFilter.updateParams(baseMinCutoff + boost, baseBeta)
+            } else {
+                xFilter.updateParams(baseMinCutoff, baseBeta)
+                yFilter.updateParams(baseMinCutoff, baseBeta)
+            }
+        }
+        lastTimestampMs = timestampMs
+
         val fx = xFilter.filter(inputX, timestampMs)
         val fy = yFilter.filter(inputY, timestampMs)
 
-        val oldX = lastOutputX
-        val oldY = lastOutputY
         if (oldX != null && oldY != null) {
             val dx = fx - oldX
             val dy = fy - oldY
             val distance = sqrt(dx * dx + dy * dy)
 
-            // A tiny stationary band prevents hand tremor from becoming visible,
-            // while larger motion is never clipped to the dead-zone boundary.
+            // Strict dead zone prevents residual micro-tremor when aiming at a button
             if (distance < DEAD_ZONE_NORMALIZED) return oldX to oldY
+
+            // Smooth continuous blend when breaking out of deadband (no snapping or step artifact)
+            val excess = distance - DEAD_ZONE_NORMALIZED
+            val blend = (excess / (DEAD_ZONE_NORMALIZED * 2.0f)).coerceIn(0.25f, 1.0f)
+            val smoothX = oldX + dx * blend
+            val smoothY = oldY + dy * blend
+            lastOutputX = smoothX
+            lastOutputY = smoothY
+            return smoothX to smoothY
         }
 
         lastOutputX = fx
@@ -126,16 +159,21 @@ class CursorSmoother(
         yFilter.reset()
         lastOutputX = null
         lastOutputY = null
+        lastTimestampMs = null
     }
 
     fun updateParams(minCutoff: Float, beta: Float) {
+        this.baseMinCutoff = minCutoff
+        this.baseBeta = beta
         xFilter.updateParams(minCutoff, beta)
         yFilter.updateParams(minCutoff, beta)
     }
 
     companion object {
-        // ~1.6 px on a 1080p display. Small enough for precision pointing,
-        // large enough to reject residual tremor from a steady hand.
-        private const val DEAD_ZONE_NORMALIZED = 0.0015f
+        // ~3.5 px on a 1080p display. Eliminates hand physiological micro-tremor
+        // while the blend ensures zero threshold stutter.
+        private const val DEAD_ZONE_NORMALIZED = 0.0032f
+        private const val FAST_SPEED_THRESHOLD = 0.7f
+        private const val BALLISTIC_BOOST_FACTOR = 12.0f
     }
 }
