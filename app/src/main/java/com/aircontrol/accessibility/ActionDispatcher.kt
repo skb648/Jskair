@@ -135,6 +135,7 @@ class ActionDispatcher @Inject constructor(
         // "pinch registers visually but nothing clicks" complaint.
         private const val DRAG_START_SLOP_FRACTION = 0.025f
         private const val MIN_DRAG_START_SLOP_PX = 12f
+        private const val MIN_DRAG_VELOCITY_PX_MS = 0.10f
 
         const val KEY_SWIPE_LEFT = "swipe_left"
         const val KEY_SWIPE_RIGHT = "swipe_right"
@@ -422,7 +423,14 @@ class ActionDispatcher @Inject constructor(
                             val slop = maxOf(MIN_DRAG_START_SLOP_PX, screenWidth * DRAG_START_SLOP_FRACTION)
                             val dx = targetX - pinchStartPixelX
                             val dy = targetY - pinchStartPixelY
-                            if (kotlin.math.sqrt(dx * dx + dy * dy) < slop) return true
+                            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                            if (dist < slop) return true
+                            // Fix #3: Long-press vs Drag protection: If the displacement is slow/small tremor while holding,
+                            // don't prematurely break into a drag stroke.
+                            val elapsedMs = nowMonotonicMs() - pinchStartTimeMs
+                            if (elapsedMs > 200L && (dist / elapsedMs) < MIN_DRAG_VELOCITY_PX_MS) {
+                                return true
+                            }
                         }
                         return dispatchDrag(service, targetX, targetY, screenWidth, screenHeight)
                     }
@@ -440,7 +448,14 @@ class ActionDispatcher @Inject constructor(
                         return false
                     }
                     val customPinchAction = matchCustomGesture(Pose.PINCH)
-                    val action = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                    val baseAction = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
+                    // Fix #3: If the user deliberately held a motionless pinch for >= LONG_PRESS_DURATION_MS,
+                    // dispatch LONG_PRESS rather than an accidental quick tap
+                    val action = if (baseAction == GestureAction.TAP && holdDurationMs >= LONG_PRESS_DURATION_MS) {
+                        GestureAction.LONG_PRESS
+                    } else {
+                        baseAction
+                    }
                     if (!actionAllowed(action)) {
                         maybeReportSuppressed()
                         return false

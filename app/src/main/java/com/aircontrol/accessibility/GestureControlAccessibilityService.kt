@@ -1528,7 +1528,23 @@ class GestureControlAccessibilityService : AccessibilityService() {
         lastCursorX = x
         lastCursorY = y
 
-        if (dist > STATIONARY_THRESHOLD) {
+        val effectiveThreshold = if (isGaze) {
+            // Fix #8: Gaze physiological micro-saccade tolerance: human eyes have natural tremor.
+            // When dwell is already underway, give soft anchor tolerance (0.026f) so 90% progress isn't instantly broken.
+            val isUnderway = stationarySinceMs > 0L && (timestampMs - stationarySinceMs) > 150L
+            if (isUnderway) 0.026f else 0.016f
+        } else {
+            STATIONARY_THRESHOLD
+        }
+
+        if (dist > effectiveThreshold) {
+            // In gaze mode, if the micro-drift is minor (under 0.045f) and dwell was active,
+            // decay stationary time gracefully rather than wiping progress instantly to 0.
+            if (isGaze && stationarySinceMs > 0L && dist < 0.045f) {
+                stationarySinceMs = (stationarySinceMs + 70L).coerceAtMost(timestampMs)
+                return
+            }
+
             if (hoverActive) {
                 hoverActive = false
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.resetHover() }

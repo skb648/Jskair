@@ -142,6 +142,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
     // Track both wrist and index fingertip for more reliable swipe detection
     private val wristWindow = ArrayDeque<PositionSample>()
     private val indexTipWindow = ArrayDeque<PositionSample>()
+    private var lastCommittedDirection: SwipeDirection? = null
+    private var lastCommittedTimestampMs: Long = 0L
 
     /**
      * The same points over a LONGER horizon, used only to judge the SHAPE of what is
@@ -358,6 +360,24 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         val decision = arbiter.decide(timestampMs, evidence).also { swipeDebugRecord(timestampMs, it, evidence) }
 
         if (decision.isCommit && decision.direction != null) {
+            // Fix #4: Check if this is a natural return-stroke / recoil in the opposite direction
+            val isOpposite = lastCommittedDirection?.let { prev ->
+                (prev == SwipeDirection.LEFT && decision.direction == SwipeDirection.RIGHT) ||
+                (prev == SwipeDirection.RIGHT && decision.direction == SwipeDirection.LEFT) ||
+                (prev == SwipeDirection.UP && decision.direction == SwipeDirection.DOWN) ||
+                (prev == SwipeDirection.DOWN && decision.direction == SwipeDirection.UP)
+            } ?: false
+
+            if (isOpposite && (timestampMs - lastCommittedTimestampMs < 400L) && decision.score < 0.85f) {
+                // Suppress accidental recoil stroke
+                clearWindows()
+                wristShape.clear()
+                indexTipShape.clear()
+                return SwipeResult(detected = false, confidence = 0f, hadEvidence = false)
+            }
+
+            lastCommittedDirection = decision.direction
+            lastCommittedTimestampMs = timestampMs
             wristShape.clear()
             indexTipShape.clear()
             // The returning/settling hand after a commit must not read as a new swipe:
@@ -772,6 +792,8 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         measuredFrameIntervalMs = 0L
         disallowedFrames = 0
         dropNextSample = false
+        lastCommittedDirection = null
+        lastCommittedTimestampMs = 0L
         arbiter.reset()
     }
 

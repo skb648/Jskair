@@ -136,9 +136,10 @@ class CursorSmoother(
             // Strict dead zone prevents residual micro-tremor when aiming at a button
             if (distance < DEAD_ZONE_NORMALIZED) return oldX to oldY
 
-            // Smooth continuous blend when breaking out of deadband (no snapping or step artifact)
+            // Smooth continuous Hermite smoothstep when breaking out of deadband (zero derivative at t=0, no snapping or step artifact)
             val excess = distance - DEAD_ZONE_NORMALIZED
-            val blend = (excess / (DEAD_ZONE_NORMALIZED * 2.0f)).coerceIn(0.25f, 1.0f)
+            val t = (excess / (DEAD_ZONE_NORMALIZED * 2.0f)).coerceIn(0.0f, 1.0f)
+            val blend = t * t * (3.0f - 2.0f * t)
             val smoothX = oldX + dx * blend
             val smoothY = oldY + dy * blend
             lastOutputX = smoothX

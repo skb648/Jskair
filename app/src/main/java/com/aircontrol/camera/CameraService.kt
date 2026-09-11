@@ -413,6 +413,16 @@ class CameraService : LifecycleService() {
         Timber.i("CameraService destroyed")
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            Timber.w("CameraService onTrimMemory (level=%d) — draining intermediate frame pool", level)
+            serviceScope.launch(Dispatchers.IO) {
+                frameBitmaps.drain()
+            }
+        }
+    }
+
     // ------------------- start/stop/pause/resume -------------------
 
     private suspend fun startTrackingLocked() {

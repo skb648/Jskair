@@ -107,7 +107,9 @@ object HeadPoseNormalizer {
         val py = normalizedY * pose.frameHeightPx - faceCenterY
         if (!px.isFinite() || !py.isFinite()) return null
 
-        val angle = Math.toRadians((-pose.rollDeg).toDouble())
+        // Fix #10: Clamp roll angle to realistic operational bounds to prevent extreme divergence when lying down
+        val clampedRoll = pose.rollDeg.coerceIn(-45f, 45f)
+        val angle = Math.toRadians((-clampedRoll).toDouble())
         val c = cos(angle).toFloat()
         val s = sin(angle).toFloat()
         return Pair(

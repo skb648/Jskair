@@ -112,7 +112,9 @@ data class GestureEngineConfig(
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 220L,
     val palmHomeHoldMs: Long = 2500L,
-    val palmHomeMinHandSizeNormalized: Float = 0.26f,
+    // Fix #5: Reduced from 0.26f to 0.18f so user can rest forearm/elbow on table or lap
+    // without forcing elevated "gorilla arm" hand posture right up against the lens.
+    val palmHomeMinHandSizeNormalized: Float = 0.18f,
     val palmHomeMaxCursorMovement: Float = 0.05f,
     val thumbGestureMaxVelocity: Float = 0.35f,
     val thumbGestureHoldMs: Long = 600L,

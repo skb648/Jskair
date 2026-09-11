@@ -110,21 +110,27 @@ object RawIrisGazeExtractor {
         }
         if (eyes.isEmpty()) return null
 
-        var sumX = 0f
-        var sumY = 0f
+        var weightedX = 0f
+        var weightedY = 0f
+        var totalWeight = 0f
         var sumQuality = 0f
         var sumEar = 0f
         for (eye in eyes) {
             val horizontalHalf = HORIZONTAL_HALF_APERTURE
             val verticalHalf = max(eye.eyelidOpening * 0.5f, MIN_VERTICAL_HALF_APERTURE)
-            sumX += eye.irisViewerX / horizontalHalf
-            sumY += eye.irisViewerY / verticalHalf
+            val posX = eye.irisViewerX / horizontalHalf
+            val posY = eye.irisViewerY / verticalHalf
+            // Fix #9: Quality-weighted blending: a well-lit eye dominates an eye in shadow/glare
+            val weight = eye.quality.coerceAtLeast(0.01f)
+            weightedX += posX * weight
+            weightedY += posY * weight
+            totalWeight += weight
             sumQuality += eye.quality
             sumEar += eye.ear
         }
         val n = eyes.size
-        val meanX = sumX / n
-        val meanY = sumY / n
+        val meanX = if (totalWeight > 0f) weightedX / totalWeight else 0f
+        val meanY = if (totalWeight > 0f) weightedY / totalWeight else 0f
 
         // Binocular agreement: both eyes rotate together during a version, so a
         // disagreement approaching one half-aperture means one iris was mislocated.
