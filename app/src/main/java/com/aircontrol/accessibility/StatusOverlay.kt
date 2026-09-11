@@ -386,6 +386,7 @@ class StatusOverlay(
             BlockReason.ANOTHER_MODALITY_ACTED -> context.getString(R.string.block_reason_another_modality_acted)
             BlockReason.ACTION_UNSUPPORTED -> context.getString(R.string.block_reason_action_unsupported)
             BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE -> context.getString(R.string.block_reason_service_unavailable)
+            BlockReason.PINCH_MOVED_TOO_FAST -> context.getString(R.string.block_reason_pinch_moved_too_fast)
             BlockReason.PROTECTED_SCREEN_BLOCKED -> context.getString(R.string.block_reason_protected_screen_blocked)
         }
     }

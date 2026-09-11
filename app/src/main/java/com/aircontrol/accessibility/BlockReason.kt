@@ -57,6 +57,9 @@ enum class BlockReason(val stableId: String) {
     /** The accessibility service is not available to dispatch. */
     ACCESSIBILITY_SERVICE_UNAVAILABLE("accessibility_service_unavailable"),
 
+    /** A pinch was refused because the hand was moving too fast at that moment. */
+    PINCH_MOVED_TOO_FAST("pinch_moved_too_fast"),
+
     /** The target surface is protected by Android security (system dialog, secure app). */
     PROTECTED_SCREEN_BLOCKED("protected_screen_blocked"),
 }

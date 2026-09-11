@@ -108,7 +108,12 @@ data class GestureEngineConfig(
     val swipeRequiresOpenHand: Boolean = true,
     val armingDurationMs: Long = 100L,
     val cooldownDurationMs: Long = 100L,
-    val autoDisarmTimeoutMs: Long = 3_000L,
+    // Fix U-1 ("app so jata hai"): a 3s no-hand timeout disarmed the engine every
+    // time the user put their hand down to drink water or answer a call, forcing
+    // a fresh open-palm arming ritual ~20x/day. Real idle behaviour needs a much
+    // longer grace window; 15s keeps the engine warm across normal hand-down
+    // pauses while still releasing control when the user actually walks away.
+    val autoDisarmTimeoutMs: Long = 15_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 220L,
     val palmHomeHoldMs: Long = 2500L,
@@ -117,7 +122,23 @@ data class GestureEngineConfig(
     val palmHomeMinHandSizeNormalized: Float = 0.18f,
     val palmHomeMaxCursorMovement: Float = 0.05f,
     val thumbGestureMaxVelocity: Float = 0.35f,
-    val thumbGestureHoldMs: Long = 600L,
+    // Fix U-11 ("volume 5 steps = 6 seconds"): 600ms of perfectly still hand per
+    // single volume step made repeated adjustment physically tiring. 260ms is
+    // still far longer than the ~80ms a closing hand spends passing through
+    // "thumb out" (the false-positive this gate exists for), but it turns a
+    // 5-step volume change from ~6s into ~1.6s.
+    val thumbGestureHoldMs: Long = 260L,
+    /**
+     * Fix U-6 (pinch latency): how long fingers must stay together after the
+     * pinch threshold is crossed before the click is committed. This used to be a
+     * hard-coded 80ms inside the engine, and a second 80ms was charged again on
+     * release — ~0.5s of felt latency per tap, which is what made users pinch a
+     * second time and get a double-click. 28ms is under one camera frame at 30fps,
+     * so a real pinch still needs a confirming frame but the tap feels immediate.
+     */
+    val pinchConfirmMs: Long = 28L,
+    /** Release-side counterpart of [pinchConfirmMs] (Fix U-6). */
+    val pinchReleaseConfirmMs: Long = 28L,
     val calibratedPinchRatio: Float? = null,
 ) {
     init {
@@ -138,6 +159,8 @@ data class GestureEngineConfig(
         require(palmHomeHoldMs > 0) { "Palm home hold must be positive" }
         require(thumbGestureMaxVelocity > 0f) { "Thumb gesture velocity must be positive" }
         require(thumbGestureHoldMs >= 0) { "Thumb gesture hold must not be negative" }
+        require(pinchConfirmMs >= 0) { "Pinch confirm must not be negative" }
+        require(pinchReleaseConfirmMs >= 0) { "Pinch release confirm must not be negative" }
     }
 
     /**

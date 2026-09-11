@@ -408,6 +408,7 @@
     <string name="block_reason_another_modality_acted">Another input just acted</string>
     <string name="block_reason_action_unsupported">Not supported on this device</string>
     <string name="block_reason_service_unavailable">Accessibility service unavailable</string>
+    <string name="block_reason_pinch_moved_too_fast">Hand moved while pinching — hold a bit steadier</string>
     <string name="block_reason_protected_screen_blocked">Protected screen: gestures blocked by system security</string>
     <string name="block_reason_generic">Action blocked</string>
 </resources>

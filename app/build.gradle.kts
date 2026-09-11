@@ -14,11 +14,19 @@ android {
     compileSdk = 37
 
     signingConfigs {
+        // CI fix: debug.keystore is developer-local (gitignored), so a hard
+        // reference made `:app:validateSigningDebug` FAIL on every clean
+        // checkout — the debug APK could not be built by CI at all. The config
+        // is now only wired up when the file is actually present; otherwise the
+        // build falls back to Android's own auto-generated debug key.
         create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            val debugKs = file("${rootDir}/debug.keystore")
+            if (debugKs.exists()) {
+                storeFile = debugKs
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
         create("release") {
             val ksFile = file("release.keystore")
@@ -56,7 +64,10 @@ android {
             }
         }
         debug {
-            signingConfig = signingConfigs.getByName("debugConfig")
+            // Only use the custom debug key when it exists on this machine.
+            if (file("${rootDir}/debug.keystore").exists()) {
+                signingConfig = signingConfigs.getByName("debugConfig")
+            }
             isMinifyEnabled = false
             isDebuggable = true
             applicationIdSuffix = ".debug"

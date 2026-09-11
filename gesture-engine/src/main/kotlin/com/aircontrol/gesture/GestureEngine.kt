@@ -58,7 +58,6 @@ class GestureEngine(
 
     private var pinchState = PinchState.IDLE
     private var pinchStateEntryTimeMs = 0L
-    private val TIME_DEBOUNCE_MS = 80L
     @Volatile private var wasPinching = false
     @Volatile private var pinchStartX = 0f
     @Volatile private var pinchStartY = 0f
@@ -406,7 +405,7 @@ class GestureEngine(
                 else if (thumbIndexDistance > hoverThreshold * 1.5f) { pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs }
             }
             PinchState.PINCH_START -> {
-                if (timeInState >= TIME_DEBOUNCE_MS && allowEntry) {
+                if (timeInState >= config.pinchConfirmMs && allowEntry) {
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     pinchDragUnlocked = false
                     val palm = if (hasPalmPosition) lastPalmX to lastPalmY else 0.5f to 0.5f
@@ -428,7 +427,7 @@ class GestureEngine(
                 }
             }
             PinchState.PINCH_RELEASE -> {
-                if (timeInState >= TIME_DEBOUNCE_MS) {
+                if (timeInState >= config.pinchReleaseConfirmMs) {
                     pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs; wasPinching = false; currentPinchPhase = PinchPhase.END; lastPinchEndMs = timestampMs
                     val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
                     val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
@@ -476,7 +475,10 @@ class GestureEngine(
 
     companion object {
         private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.035f
-        private const val PINCH_COOLDOWN_MS = 80L
+        // Fix U-6: an 80ms post-release lockout added to the felt tap latency on
+        // every second tap of a fast double-tap. 40ms still blocks a single
+        // physical pinch from re-entering as two clicks.
+        private const val PINCH_COOLDOWN_MS = 40L
         private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 60L
         private const val CONFIDENCE_THRESHOLD = 0.7f
         private const val LOW_CONFIDENCE_MIN_FRAMES = 3

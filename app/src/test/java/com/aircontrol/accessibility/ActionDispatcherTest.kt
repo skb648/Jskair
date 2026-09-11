@@ -136,8 +136,11 @@ class ActionDispatcherTest {
     @Test
     fun `normalizeToScreenY maps active zone center to screen center`() {
         val screenHeight = 2400
-        val result = ActionDispatcher.normalizeToScreenY(0.6f, screenHeight)
-        // (0.6 - 0.20) / 0.80 = 0.5 -> 1200
+        // Fix U-13a: the top dead zone is now a named constant (6%, was 20%), so
+        // the test derives the active-zone centre instead of hardcoding 0.6.
+        val activeCenter = ActionDispatcher.TOP_DEAD_ZONE +
+            (1f - ActionDispatcher.TOP_DEAD_ZONE) / 2f
+        val result = ActionDispatcher.normalizeToScreenY(activeCenter, screenHeight)
         assertEquals(1200f, result, 1f)
     }
 
@@ -145,9 +148,19 @@ class ActionDispatcherTest {
     fun `normalizeToScreenY clamps top dead zone to top of screen`() {
         val screenHeight = 2400
         val top = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
-        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(0.2f, screenHeight)
+        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(ActionDispatcher.TOP_DEAD_ZONE, screenHeight)
         assertEquals(0f, top, 0.01f)
         assertEquals(0f, deadZoneEdge, 0.01f)
+    }
+
+    @Test
+    fun `top dead zone leaves the notification shade reachable`() {
+        // Fix U-13a: with the old 20% dead zone the whole upper strip of the
+        // screen sat behind the worst part of the camera frame. A hand at 12% of
+        // the frame height must now already map into the top 10% of the screen.
+        val screenHeight = 2400
+        val y = ActionDispatcher.normalizeToScreenY(0.12f, screenHeight)
+        assertTrue("Y=$y should be inside the top 10% of the screen", y <= screenHeight * 0.10f)
     }
 
     @Test
@@ -189,10 +202,11 @@ class ActionDispatcherTest {
     }
 
     @Test
-    fun `normalizeToScreenY 0,6 on 2400 screen gives 1200`() {
-        // Fix B2: (0.6 - 0.2) / 0.8 = 0.5 -> 1200 (gain 1.0x at the default 50%)
-        val result = ActionDispatcher.normalizeToScreenY(0.6f, 2400)
-        assertEquals(1200f, result, 0.01f)
+    fun `normalizeToScreenY active zone center on 2400 screen gives 1200`() {
+        val activeCenter = ActionDispatcher.TOP_DEAD_ZONE +
+            (1f - ActionDispatcher.TOP_DEAD_ZONE) / 2f
+        val result = ActionDispatcher.normalizeToScreenY(activeCenter, 2400)
+        assertEquals(1200f, result, 1f)
     }
 
     @Test

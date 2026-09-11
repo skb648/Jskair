@@ -110,7 +110,7 @@ class ActionDispatcher @Inject constructor(
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
         private const val DOUBLE_TAP_WINDOW_MS = 350L
-        private const val INTENTIONAL_PINCH_HOLD_MS = 180L
+        private const val INTENTIONAL_PINCH_HOLD_MS = 120L
         private const val MIN_MOVING_PINCH_VELOCITY = 0.35f
         private const val MAX_MOVING_PINCH_VELOCITY = 0.95f
         private const val TAP_PATH_DISPLACEMENT_PX = 3f
@@ -159,6 +159,25 @@ class ActionDispatcher @Inject constructor(
         @Volatile private var cursorGain = 0.5f
         @Volatile private var sitBackModeEnabled = false
 
+        /** Fix U-13b: mild edge acceleration — see [applyEdgeAcceleration]. */
+        const val EDGE_ACCEL_COEFF = 0.16f
+
+        /** Horizontal camera margin folded away before mapping to the screen. */
+        const val SIDE_MARGIN = 0.08f
+
+        /**
+         * Fix U-13a ("notification bar tak pahunchna mushkil"): the top 20% of the
+         * camera frame was a dead zone, so the whole upper strip of the screen —
+         * including the notification shade handle — could only be reached by
+         * pushing the hand towards the top edge of the frame, where tracking is
+         * worst. 6% is enough to absorb the tracker's noisy top border while
+         * leaving the shade comfortably reachable.
+         */
+        const val TOP_DEAD_ZONE = 0.06f
+
+        /** Sit-back (TV) mode variant of [TOP_DEAD_ZONE]. */
+        const val TOP_DEAD_ZONE_SIT_BACK = 0.03f
+
         /**
          * Fix B1: the pointer-gain factor derived from the "Cursor Speed"
          * setting. 0 → 0.5× (slow, precise), 50 (default) → 1.0× (unchanged
@@ -180,20 +199,25 @@ class ActionDispatcher @Inject constructor(
 
         /**
          * Non-linear edge acceleration: 1:1 linear in center for precision pointing,
-         * with cubic acceleration near boundaries so corners and edges are reached
-         * effortlessly without arm strain or camera boundary clipping.
+         * with mild cubic acceleration near boundaries so corners and edges are
+         * reached without arm strain.
+         *
+         * Fix U-13b: the coefficient was 0.38, which made the cursor visibly
+         * sprint in the outer third — the user reached the corner but could not
+         * land on a small button there ("aim kharab kar deta hai"). 0.16 keeps the
+         * reachability benefit while roughly halving the aim error near the edges.
          */
         private fun applyEdgeAcceleration(norm: Float): Float {
             val u = ((norm - 0.5f) * 2f).coerceIn(-1f, 1f)
             val absU = kotlin.math.abs(u)
-            val accelerated = absU + 0.38f * absU * absU * absU
+            val accelerated = absU + EDGE_ACCEL_COEFF * absU * absU * absU
             val res = kotlin.math.sign(u) * accelerated
             return (0.5f + res * 0.5f).coerceIn(0f, 1f)
         }
 
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
             if (screenWidth <= 0) return 0f
-            val margin = 0.08f
+            val margin = SIDE_MARGIN
             val active = 1.0f - 2f * margin
             val clamped = normX.coerceIn(0f, 1f)
             val mapped = ((clamped - margin) / active).coerceIn(0f, 1f)
@@ -204,7 +228,7 @@ class ActionDispatcher @Inject constructor(
 
         fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
             if (screenHeight <= 0) return 0f
-            val topDeadZone = if (sitBackModeEnabled) 0.08f else 0.20f
+            val topDeadZone = if (sitBackModeEnabled) TOP_DEAD_ZONE_SIT_BACK else TOP_DEAD_ZONE
             val active = 1.0f - topDeadZone
             val clamped = normY.coerceIn(0f, 1f)
             val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
@@ -445,6 +469,11 @@ class ActionDispatcher @Inject constructor(
                     val now = nowMonotonicMs()
                     val holdDurationMs = now - pinchStartTimeMs
                     if (isAccidentalMovingPinch(pinchStartVelocity, holdDurationMs)) {
+                        // Fix U-6b: this rejection used to be completely silent —
+                        // the user pinched, nothing happened, and nothing told them
+                        // why ("kabhi chalta hai kabhi nahi"). It now reports a
+                        // readable reason to the status pill like every other block.
+                        reportBlocked(BlockReason.PINCH_MOVED_TOO_FAST)
                         return false
                     }
                     val customPinchAction = matchCustomGesture(Pose.PINCH)
