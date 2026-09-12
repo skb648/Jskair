@@ -550,6 +550,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 // labelled "Cursor speed" changed smoothing and nothing else, so
                 // "speed does nothing" was literally true.
                 ActionDispatcher.setCursorMapping(prefs.effectiveCursorGain, prefs.sitBackMode)
+                ActionDispatcher.setInvertScrollDirection(prefs.invertScrollDirection)
                 gestureDetector?.updateSwipeRequiresOpenHand(prefs.swipeRequiresOpenHand)
                 gazeCalibration = com.aircontrol.tracking.GazeCalibration.fromString(prefs.gazeCalibration)
 
@@ -864,11 +865,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
                     // Fix A5: personalized predictions are already screen-space;
                     // only the legacy ratio path needs gain/invert/affine.
-                    val (nx, ny) = if (gaze.personalized) {
+                    val (rawNx, rawNy) = if (gaze.personalized) {
                         gaze.x.coerceIn(0f, 1f) to gaze.y.coerceIn(0f, 1f)
                     } else {
                         mapGazeToDisplay(gaze.x, gaze.y)
                     }
+                    // Apply ergonomic vertical parallax correction for front camera geometry
+                    val (nx, ny) = applyGazeParallaxCorrection(rawNx, rawNy)
                     // Fix E1: velocity-adaptive One Euro smoothing — no fixed-alpha
                     // lag on saccades, no quantization "teleports" when still.
                     val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
@@ -891,7 +894,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             val blend = (dist - FIXATION_LOCK_RADIUS) / (SACCADE_BREAKOUT_RADIUS - FIXATION_LOCK_RADIUS)
                             finalGazeX = fixationAnchorX * (1f - blend) + smoothX * blend
                             finalGazeY = fixationAnchorY * (1f - blend) + smoothY * blend
-                            if (blend > 0.75f) {
+                            if (blend > 0.50f) {
                                 fixationAnchorX = smoothX
                                 fixationAnchorY = smoothY
                             }
@@ -951,10 +954,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     } else if (currentPreferences.cursorEnabled) {
                         // Fix A2 preserved: gaze coordinates are already screen-space, so the
                         // overlay maps them directly (never through the hand dead-zone mapping).
-                        gazeTransport.publish(smoothX to smoothY)
+                        gazeTransport.publish(finalGazeX to finalGazeY)
                     }
                     // Fix A1: keep the shared cursor state truthful for this path.
-                    cursorController?.updatePosition(smoothX, smoothY)
+                    cursorController?.updatePosition(finalGazeX, finalGazeY)
 
                     // Fix A8: after (re)acquiring the face, saccade settling and
                     // re-detection jumps used to count as "still" gaze — a dwell
@@ -975,7 +978,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // must not reset a deliberate fixation, Phase 11), but the
                         // tap only lands while the position is trusted.
                         if (gazeActionable) {
-                            handleCursorStillness(smoothX, smoothY, nowMs, isGaze = true)
+                            handleCursorStillness(finalGazeX, finalGazeY, nowMs, isGaze = true)
                         }
                     }
                 } catch (e: Exception) {
@@ -1151,14 +1154,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
                     handleCursorStillness(smoothX, smoothY, event.timestampMs)
 
-                    // Main-thread hop is only for the overlay setPosition (UI draw).
-                    withContext(Dispatchers.Main) {
+                    // Non-blocking UI post keeps the gesture pipeline running smoothly without thread stall.
+                    mainHandler.post {
                         cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
                     }
-                    // Fix A1 (hand path): the synthetic 1-landmark HandFrame below
-                    // failed HandFrame.isDetected, so CursorController.hide() ran
-                    // instead of ever updating the position. Use the direct
-                    // normalized update so the shared cursor state is truthful.
                     cursorController?.updatePosition(smoothX, smoothY)
                 }
                 return
@@ -1440,7 +1439,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun scheduleGazeFrame() {
         mainHandler.post {
-            android.view.Choreographer.getInstance().postFrameCallback { applyLatestGazeTarget() }
+            applyLatestGazeTarget()
         }
     }
 
@@ -1495,6 +1494,25 @@ class GestureControlAccessibilityService : AccessibilityService() {
         if (currentPreferences.gazeInvertX) screenX = 1f - screenX
         val screenY = 0.5f + (gy - 0.5f) * gain
         return screenX.coerceIn(0f, 1f) to screenY.coerceIn(0f, 1f)
+    }
+
+    /**
+     * Vertical parallax compensation for handheld mobile usage:
+     * The front-facing camera sits at the top bezel. Looking at the lower half of the screen
+     * (>0.45) creates a steep downward angle of incidence where iris movement compresses.
+     * Non-linear expansion ensures effortless reach to keyboard, docks, and bottom sheets
+     * without neck strain or downward squinting.
+     */
+    private fun applyGazeParallaxCorrection(x: Float, y: Float): Pair<Float, Float> {
+        val correctedY = if (y > 0.45f) {
+            val t = ((y - 0.45f) / 0.55f).coerceIn(0f, 1f)
+            0.45f + (y - 0.45f) * (1.0f + 0.35f * t)
+        } else if (y < 0.15f) {
+            y * 0.92f
+        } else {
+            y
+        }
+        return x.coerceIn(0f, 1f) to correctedY.coerceIn(0f, 1f)
     }
 
     /**
@@ -1722,8 +1740,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // cursor's (1.1 / 0.9) because gaze targets are small and saccades are
         // the fastest human movement; the dead-zone inside CursorSmoother
         // handles the sub-threshold jitter.
-        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.6f
-        private const val GAZE_SMOOTHER_BETA = 1.1f
+        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.8f
+        private const val GAZE_SMOOTHER_BETA = 1.4f
 
         // Fix A6: consecutive missed gaze frames tolerated before the dot hides.
         private const val GAZE_HIDE_MISS_FRAMES = 4
@@ -1732,8 +1750,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val GAZE_REACQUIRE_PRIME_FRAMES = 2
         private const val BLINK_INTENT_STILLNESS_MS = 140L
         private const val GAZE_MOVE_EPSILON = 0.008f
-        private const val FIXATION_LOCK_RADIUS = 0.040f
-        private const val SACCADE_BREAKOUT_RADIUS = 0.075f
+        private const val FIXATION_LOCK_RADIUS = 0.022f
+        private const val SACCADE_BREAKOUT_RADIUS = 0.045f
         private const val PRE_BLINK_LOOKBACK_MS = 130L
 
         // Fix A8: the face must be continuously visible this long before gaze

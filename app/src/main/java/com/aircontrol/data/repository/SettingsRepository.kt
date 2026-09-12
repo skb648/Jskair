@@ -47,6 +47,8 @@ interface SettingsRepository {
     /** Fix A-11: swipes only register while an open palm is held. */
     suspend fun updateSwipeRequiresOpenHand(enabled: Boolean)
 
+    suspend fun updateInvertScrollDirection(invert: Boolean)
+
     suspend fun updateSitBackMode(enabled: Boolean)
 
     suspend fun updateReducedMotion(enabled: Boolean)

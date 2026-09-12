@@ -168,6 +168,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun updateInvertScrollDirection(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateInvertScrollDirection(enabled)
+        }
+    }
+
     fun updateSitBackMode(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.updateSitBackMode(enabled)

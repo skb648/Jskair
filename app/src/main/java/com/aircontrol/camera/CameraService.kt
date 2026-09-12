@@ -524,8 +524,8 @@ class CameraService : LifecycleService() {
             // where the face is the active input.
             pipelineJobs.add(serviceScope.launchGuarded("face fps", restart = true) {
                 faceTracker.gazeObservations.collectGuarded("face fps") { obs ->
-                    if (obs.faceDetected) adaptiveFpsController.onHandDetected(obs.timestampMs)
-                    else adaptiveFpsController.onHandLost(obs.timestampMs)
+                    if (obs.faceDetected) adaptiveFpsController.onFaceDetected(obs.timestampMs)
+                    else adaptiveFpsController.onFaceLost(obs.timestampMs)
                 }
             })
         }

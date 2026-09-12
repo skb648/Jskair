@@ -136,9 +136,9 @@ class CursorSmoother(
             // Strict dead zone prevents residual micro-tremor when aiming at a button
             if (distance < DEAD_ZONE_NORMALIZED) return oldX to oldY
 
-            // Smooth continuous Hermite smoothstep when breaking out of deadband (zero derivative at t=0, no snapping or step artifact)
+            // Instant and responsive breakout from deadband with smooth Hermite transition
             val excess = distance - DEAD_ZONE_NORMALIZED
-            val t = (excess / (DEAD_ZONE_NORMALIZED * 2.0f)).coerceIn(0.0f, 1.0f)
+            val t = (excess / DEAD_ZONE_NORMALIZED).coerceIn(0.0f, 1.0f)
             val blend = t * t * (3.0f - 2.0f * t)
             val smoothX = oldX + dx * blend
             val smoothY = oldY + dy * blend
@@ -171,10 +171,10 @@ class CursorSmoother(
     }
 
     companion object {
-        // ~3.5 px on a 1080p display. Eliminates hand physiological micro-tremor
-        // while the blend ensures zero threshold stutter.
-        private const val DEAD_ZONE_NORMALIZED = 0.0032f
-        private const val FAST_SPEED_THRESHOLD = 0.7f
-        private const val BALLISTIC_BOOST_FACTOR = 12.0f
+        // ~2 px on a 1080p display. Suppresses involuntary micro-tremor while
+        // ensuring instant responsiveness to deliberate finger movement.
+        private const val DEAD_ZONE_NORMALIZED = 0.0018f
+        private const val FAST_SPEED_THRESHOLD = 0.20f
+        private const val BALLISTIC_BOOST_FACTOR = 16.0f
     }
 }

@@ -44,6 +44,8 @@ data class UserPreferences(
     // Fix A-11: only an open-palm sweep counts as a swipe, so moving the pointer
     // across the screen can never scroll the page. Turn off for swipe-while-pointing.
     val swipeRequiresOpenHand: Boolean = true,
+    // Invert scroll direction (natural vs traditional swipe-to-scroll)
+    val invertScrollDirection: Boolean = false,
     // F6: Sit-back mode — reduce how high the user must raise their hand
     val sitBackMode: Boolean = false,
     // F9: Reduced motion — disable pulse/glow/ripple animations

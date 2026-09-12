@@ -320,6 +320,15 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(Dimens.spacing8))
 
             SettingSwitchRow(
+                title = stringResource(R.string.settings_invert_scroll),
+                subtitle = stringResource(R.string.settings_invert_scroll_subtitle),
+                checked = preferences.invertScrollDirection,
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateInvertScrollDirection(it) },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing8))
+
+            SettingSwitchRow(
                 title = stringResource(R.string.settings_sit_back_mode),
                 subtitle = stringResource(R.string.settings_sit_back_mode_subtitle),
                 checked = preferences.sitBackMode,

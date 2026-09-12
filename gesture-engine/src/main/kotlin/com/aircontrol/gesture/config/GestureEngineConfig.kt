@@ -136,9 +136,9 @@ data class GestureEngineConfig(
      * second time and get a double-click. 28ms is under one camera frame at 30fps,
      * so a real pinch still needs a confirming frame but the tap feels immediate.
      */
-    val pinchConfirmMs: Long = 28L,
+    val pinchConfirmMs: Long = 80L,
     /** Release-side counterpart of [pinchConfirmMs] (Fix U-6). */
-    val pinchReleaseConfirmMs: Long = 28L,
+    val pinchReleaseConfirmMs: Long = 80L,
     val calibratedPinchRatio: Float? = null,
 ) {
     init {

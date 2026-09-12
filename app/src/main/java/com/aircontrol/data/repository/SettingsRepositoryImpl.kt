@@ -56,6 +56,7 @@ private object PreferencesKeys {
     val STATIONARY_CLICK_ENABLED = booleanPreferencesKey("stationary_click_enabled")
     val PALM_HOME_ENABLED = booleanPreferencesKey("palm_home_enabled")
     val SWIPE_REQUIRES_OPEN_HAND = booleanPreferencesKey("swipe_requires_open_hand")
+    val INVERT_SCROLL_DIRECTION = booleanPreferencesKey("invert_scroll_direction")
     val SIT_BACK_MODE = booleanPreferencesKey("sit_back_mode")
     val REDUCED_MOTION = booleanPreferencesKey("reduced_motion")
     val CURSOR_GAIN = intPreferencesKey("cursor_gain")
@@ -234,6 +235,13 @@ class SettingsRepositoryImpl @Inject constructor(
             preferences[PreferencesKeys.PALM_HOME_ENABLED] = enabled
         }
         Timber.d("Updated palmHomeEnabled: %s", enabled)
+    }
+
+    override suspend fun updateInvertScrollDirection(invert: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.INVERT_SCROLL_DIRECTION] = invert
+        }
+        Timber.d("Updated invertScrollDirection: %s", invert)
     }
 
     override suspend fun updateSitBackMode(enabled: Boolean) {
@@ -453,6 +461,7 @@ class SettingsRepositoryImpl @Inject constructor(
         // Fix A-11: on by default. "The page scrolled when I only moved the
         // pointer" was the most common accidental action.
         swipeRequiresOpenHand = preferences[PreferencesKeys.SWIPE_REQUIRES_OPEN_HAND] ?: true,
+        invertScrollDirection = preferences[PreferencesKeys.INVERT_SCROLL_DIRECTION] ?: false,
         sitBackMode = preferences[PreferencesKeys.SIT_BACK_MODE] ?: false,
         reducedMotion = preferences[PreferencesKeys.REDUCED_MOTION] ?: false,
         cursorGain = preferences[PreferencesKeys.CURSOR_GAIN] ?: 50,

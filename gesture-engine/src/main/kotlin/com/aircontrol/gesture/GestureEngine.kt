@@ -327,7 +327,7 @@ class GestureEngine(
             }
         }
 
-        val isPinchAnchored = wasPinching && !pinchDragUnlocked
+        val isPinchAnchored = (wasPinching || pinchState == PinchState.PINCH_START) && !pinchDragUnlocked
         val effectiveCursorX = if (isPinchAnchored) pinchAnchoredX else lastPalmX
         val effectiveCursorY = if (isPinchAnchored) pinchAnchoredY else lastPalmY
         if (input.isDetected && hasPalmPosition && (transition.newState == GestureEngineState.ARMING || transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN)) {
@@ -401,15 +401,20 @@ class GestureEngine(
             PinchState.IDLE -> if (allowEntry && thumbIndexDistance < hoverThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
             PinchState.HOVER -> {
                 val inCooldown = lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < PINCH_COOLDOWN_MS
-                if (allowEntry && thumbIndexDistance < enterThreshold && !inCooldown) { pinchState = PinchState.PINCH_START; pinchStateEntryTimeMs = timestampMs }
+                if (allowEntry && thumbIndexDistance < enterThreshold && !inCooldown) {
+                    pinchState = PinchState.PINCH_START
+                    pinchStateEntryTimeMs = timestampMs
+                    val palm = if (hasPalmPosition) lastPalmX to lastPalmY else 0.5f to 0.5f
+                    pinchAnchoredX = palm.first
+                    pinchAnchoredY = palm.second
+                }
                 else if (thumbIndexDistance > hoverThreshold * 1.5f) { pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs }
             }
             PinchState.PINCH_START -> {
                 if (timeInState >= config.pinchConfirmMs && allowEntry) {
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     pinchDragUnlocked = false
-                    val palm = if (hasPalmPosition) lastPalmX to lastPalmY else 0.5f to 0.5f
-                    pinchStartX = palm.first; pinchStartY = palm.second; pinchAnchoredX = pinchStartX; pinchAnchoredY = pinchStartY
+                    pinchStartX = pinchAnchoredX; pinchStartY = pinchAnchoredY
                     _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 } else if (thumbIndexDistance > exitThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
             }

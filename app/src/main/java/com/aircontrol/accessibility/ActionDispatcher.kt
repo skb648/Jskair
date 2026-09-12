@@ -158,6 +158,11 @@ class ActionDispatcher @Inject constructor(
 
         @Volatile private var cursorGain = 0.5f
         @Volatile private var sitBackModeEnabled = false
+        @Volatile private var invertScrollDirection = false
+
+        fun setInvertScrollDirection(invert: Boolean) {
+            invertScrollDirection = invert
+        }
 
         /** Fix U-13b: mild edge acceleration — see [applyEdgeAcceleration]. */
         const val EDGE_ACCEL_COEFF = 0.16f
@@ -226,14 +231,23 @@ class ActionDispatcher @Inject constructor(
             return amplified.coerceIn(0f, 1f) * screenWidth
         }
 
-        fun normalizeToScreenY(normY: Float, screenHeight: Int): Float {
+        fun normalizeToScreenY(normY: Float, screenHeight: Int, screenWidth: Int = 0): Float {
             if (screenHeight <= 0) return 0f
             val topDeadZone = if (sitBackModeEnabled) TOP_DEAD_ZONE_SIT_BACK else TOP_DEAD_ZONE
             val active = 1.0f - topDeadZone
             val clamped = normY.coerceIn(0f, 1f)
             val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
             val accelerated = applyEdgeAcceleration(mapped)
-            val amplified = 0.5f + (accelerated - 0.5f) * pointerGainFactor()
+            // Aspect ratio parity adjustment:
+            // Tall screens (19:9 to 21:9) make raw vertical movement >2x faster than horizontal travel.
+            // Balance vertical acceleration so physical hand travel feels natural and isotropic.
+            val aspectCorrection = if (screenWidth > 0 && screenHeight > screenWidth) {
+                val aspect = screenHeight.toFloat() / screenWidth.toFloat()
+                (1.5f / aspect).coerceIn(0.72f, 1.0f)
+            } else {
+                1.0f
+            }
+            val amplified = 0.5f + (accelerated - 0.5f) * pointerGainFactor() * aspectCorrection
             return amplified.coerceIn(0f, 1f) * screenHeight
         }
 
@@ -300,6 +314,8 @@ class ActionDispatcher @Inject constructor(
 
     private var lastDragStroke: GestureDescription.StrokeDescription? = null
     @Volatile private var isDragging = false
+    @Volatile private var wasEverDraggingThisPinch = false
+    @Volatile private var lastDragEndMs = 0L
     @Volatile private var dragCurrentX = 0f
     @Volatile private var dragCurrentY = 0f
 
@@ -425,8 +441,9 @@ class ActionDispatcher @Inject constructor(
                     pinchStartY = cursorY
                     pinchStartVelocity = event.velocity
                     pinchIsDrag = false
+                    wasEverDraggingThisPinch = false
                     pinchStartPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
-                    pinchStartPixelY = mapCursorY(cursorY, screenHeight, fromGaze)
+                    pinchStartPixelY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
                     return true
                 }
                 PinchPhase.MOVE -> {
@@ -438,7 +455,7 @@ class ActionDispatcher @Inject constructor(
                         return false
                     }
                     val targetX = mapCursorX(cursorX, screenWidth, fromGaze)
-                    val targetY = mapCursorY(cursorY, screenHeight, fromGaze)
+                    val targetY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
                     if (action == GestureAction.DRAG) {
                         // Fix P1: while the pinch has not moved beyond the slop
                         // radius, this is still a pending TAP — do not start a
@@ -461,12 +478,13 @@ class ActionDispatcher @Inject constructor(
                     return false
                 }
                 PinchPhase.END -> {
-                    if (isDragging) {
+                    val now = nowMonotonicMs()
+                    if (isDragging || wasEverDraggingThisPinch || (now - lastDragEndMs < 250L)) {
+                        wasEverDraggingThisPinch = false
                         resetDragState()
                         return true
                     }
                     if (service == null) return false
-                    val now = nowMonotonicMs()
                     val holdDurationMs = now - pinchStartTimeMs
                     if (isAccidentalMovingPinch(pinchStartVelocity, holdDurationMs)) {
                         // Fix U-6b: this rejection used to be completely silent —
@@ -536,9 +554,9 @@ class ActionDispatcher @Inject constructor(
         if (fromGaze) normalizeDirect(cursorX, screenWidth)
         else normalizeToScreenX(cursorX, screenWidth)
 
-    private fun mapCursorY(cursorY: Float, screenHeight: Int, fromGaze: Boolean): Float =
+    private fun mapCursorY(cursorY: Float, screenHeight: Int, fromGaze: Boolean, screenWidth: Int = 0): Float =
         if (fromGaze) normalizeDirect(cursorY, screenHeight)
-        else normalizeToScreenY(cursorY, screenHeight)
+        else normalizeToScreenY(cursorY, screenHeight, screenWidth)
 
     private fun executeAction(
         action: GestureAction,
@@ -550,7 +568,7 @@ class ActionDispatcher @Inject constructor(
     ): Boolean {
         val service = accessibilityServiceRef.get() ?: return false
         val targetPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
-        val targetPixelY = mapCursorY(cursorY, screenHeight, fromGaze)
+        val targetPixelY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
 
         return when (action) {
             GestureAction.NONE -> false
@@ -665,7 +683,7 @@ class ActionDispatcher @Inject constructor(
         // Fix D6: coordinates are always screen-normalized — no pixel/normalized
         // range guessing.
         val pxX = if (fromGaze) normalizeDirect(normX, screenWidth) else normalizeToScreenX(normX, screenWidth)
-        val pxY = if (fromGaze) normalizeDirect(normY, screenHeight) else normalizeToScreenY(normY, screenHeight)
+        val pxY = if (fromGaze) normalizeDirect(normY, screenHeight) else normalizeToScreenY(normY, screenHeight, screenWidth)
         return dispatchTap(service, pxX, pxY)
     }
 
@@ -757,29 +775,29 @@ class ActionDispatcher @Inject constructor(
     }
 
     private fun dispatchScroll(service: AccessibilityService, x: Float, y: Float, dx: Float, dy: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        val mult = if (invertScrollDirection) -1f else 1f
+        val effectiveDx = dx * mult
+        val effectiveDy = dy * mult
         val path = Path()
         val startX = x.coerceIn(0f, screenWidth.toFloat())
         val startY = y.coerceIn(0f, screenHeight.toFloat())
         path.moveTo(startX, startY)
-        // Fix (audit #17): the scroll distance was 22% of each axis separately,
-        // so the same gesture scrolled hugely on tablets (wide) and little on
-        // phones. One unit — 22% of the SHORTER dimension — makes the physical
-        // scroll distance similar across devices.
         val scrollUnit = minOf(screenWidth, screenHeight).toFloat() * 0.22f
         path.lineTo(
-            (startX + dx * scrollUnit).coerceIn(0f, screenWidth.toFloat()),
-            (startY + dy * scrollUnit).coerceIn(0f, screenHeight.toFloat()),
+            (startX + effectiveDx * scrollUnit).coerceIn(0f, screenWidth.toFloat()),
+            (startY + effectiveDy * scrollUnit).coerceIn(0f, screenHeight.toFloat()),
         )
         return submitGesture(
             service,
             GestureDescription.Builder().addStroke(
                 GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS)
             ).build(),
-            if (dx > 0) GestureAction.SCROLL_RIGHT else if (dx < 0) GestureAction.SCROLL_LEFT else if (dy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP
+            if (effectiveDx > 0) GestureAction.SCROLL_RIGHT else if (effectiveDx < 0) GestureAction.SCROLL_LEFT else if (effectiveDy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP
         )
     }
 
     private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float, screenWidth: Int, screenHeight: Int): Boolean {
+        wasEverDraggingThisPinch = true
         if (!isDragging) {
             val path = Path()
             path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
@@ -860,6 +878,7 @@ class ActionDispatcher @Inject constructor(
         isDragging = false
         pinchIsDrag = false
         pinchStartTimeMs = 0L
+        lastDragEndMs = nowMonotonicMs()
     }
 
     private fun pressMediaPlayPause(): Boolean {

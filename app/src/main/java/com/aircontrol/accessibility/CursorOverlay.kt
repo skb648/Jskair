@@ -68,8 +68,8 @@ class CursorOverlay(
      */
     var onPositionApplied: ((x: Float, y: Float) -> Unit)? = null
 
-    // 60fps cursor movement; throttled frames are coalesced (never dropped).
-    private val updateThrottleMs = 16L
+    // High refresh rate (up to 120Hz) cursor movement; throttled frames are coalesced (never dropped).
+    private val updateThrottleMs = 8L
 
     /** Whether a window position has ever been pushed to WindowManager (Rule 16 skip-guard). */
     private var lastLayoutApplied = false
@@ -123,7 +123,7 @@ class CursorOverlay(
         val targetY = if (directMapping) {
             ActionDispatcher.normalizeDirect(normY, screenHeight)
         } else {
-            ActionDispatcher.normalizeToScreenY(normY, screenHeight)
+            ActionDispatcher.normalizeToScreenY(normY, screenHeight, screenW)
         }
 
         // NaN/∞ must never move the window (spec §27: invalid coordinates).
@@ -313,12 +313,14 @@ class CursorOverlay(
         if (now - lastUpdateTimeMs < updateThrottleMs) {
             // Coalesce throttled frames into ONE deferred paint — never drop.
             if (pendingLayout == null) {
+                val remaining = (updateThrottleMs - (now - lastUpdateTimeMs)).coerceAtLeast(1L)
                 val deferred = Runnable {
                     pendingLayout = null
+                    lastUpdateTimeMs = SystemClock.elapsedRealtime()
                     applyLayout(view, params)
                 }
                 pendingLayout = deferred
-                view.postDelayed(deferred, updateThrottleMs)
+                view.postDelayed(deferred, remaining)
             }
             return
         }

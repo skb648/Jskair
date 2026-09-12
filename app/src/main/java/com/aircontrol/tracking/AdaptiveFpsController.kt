@@ -39,6 +39,14 @@ class AdaptiveFpsController(
     private val _isHandDetected = MutableStateFlow(false)
     val isHandDetected: StateFlow<Boolean> = _isHandDetected
 
+    @Volatile
+    private var isHandPresent = false
+    @Volatile
+    private var isFacePresent = false
+
+    private val isUserPresent: Boolean
+        get() = isHandPresent || isFacePresent
+
     private val downgradeJob = AtomicReference<Job?>(null)
 
     val analysisIntervalMs: Long
@@ -46,11 +54,9 @@ class AdaptiveFpsController(
 
     fun onHandDetected(timestampMs: Long) {
         val wasInScanMode = _currentFps.value != configuredFps
+        isHandPresent = true
         _isHandDetected.value = true
 
-        // Fix B-5: cancelling is cheap and idempotent (no coroutine is created),
-        // but the old code also *re-launched* a job on every frame of every
-        // state, 24 times a second, for a timer whose deadline should not move.
         downgradeJob.getAndSet(null)?.cancel()
 
         // Restore full FPS if we were in scan/thermal/battery saver mode
@@ -60,29 +66,54 @@ class AdaptiveFpsController(
         }
     }
 
+    fun onFaceDetected(timestampMs: Long) {
+        val wasInScanMode = _currentFps.value != configuredFps
+        isFacePresent = true
+
+        downgradeJob.getAndSet(null)?.cancel()
+
+        // Restore full FPS if we were in scan/thermal/battery saver mode
+        if (wasInScanMode) {
+            _currentFps.value = configuredFps
+            Timber.d("Face detected at %d - restoring full FPS: %d", timestampMs, configuredFps)
+        }
+    }
+
     fun onHandLost(timestampMs: Long) {
-        // Fix B-5 (battery): this used to re-arm the "no hand for N ms" timer on
-        // *every* frame without a hand. Frames keep arriving while the camera runs
-        // (that is the whole point of scan mode), so the deadline was pushed back
-        // ~24 times a second and never expired: AirControl never dropped to
-        // [scanFps] while you sat there with no hand in view, which is exactly the
-        // drain this class exists to prevent. Arm the timer once and let it run to
-        // completion.
+        isHandPresent = false
         _isHandDetected.value = false
 
-        // A downgrade is already counting down: leave it alone. This is the actual
-        // fix - re-arming on each lost frame pushed the deadline forward forever,
-        // so scan mode never engaged while the camera kept producing frames.
+        if (isUserPresent) return
         if (downgradeJob.get() != null) return
 
         downgradeJob.set(scope.launch {
             delay(noHandTimeoutMs)
             downgradeJob.set(null)
-            // A hand that came back in the meantime wins.
-            if (_isHandDetected.value) return@launch
+            // A user presence that came back in the meantime wins.
+            if (isUserPresent) return@launch
             _currentFps.value = scanFps
             Timber.d(
-                "No hand since %d for %d ms - dropping to scan FPS: %d",
+                "No user interaction since %d for %d ms - dropping to scan FPS: %d",
+                timestampMs,
+                noHandTimeoutMs,
+                scanFps,
+            )
+        })
+    }
+
+    fun onFaceLost(timestampMs: Long) {
+        isFacePresent = false
+
+        if (isUserPresent) return
+        if (downgradeJob.get() != null) return
+
+        downgradeJob.set(scope.launch {
+            delay(noHandTimeoutMs)
+            downgradeJob.set(null)
+            if (isUserPresent) return@launch
+            _currentFps.value = scanFps
+            Timber.d(
+                "No user interaction since %d for %d ms - dropping to scan FPS: %d",
                 timestampMs,
                 noHandTimeoutMs,
                 scanFps,
@@ -94,6 +125,8 @@ class AdaptiveFpsController(
         downgradeJob.get()?.cancel()
         downgradeJob.set(null)
         _currentFps.value = configuredFps
+        isHandPresent = false
+        isFacePresent = false
         _isHandDetected.value = false
     }
 

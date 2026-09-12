@@ -10,38 +10,30 @@ package com.aircontrol.tracking
  * emits a single click event via [update].
  */
 class BlinkDetector(
-    private val earThreshold: Float = 0.22f, // Chashma users EAR 0.18, 0.22 still triggers (was 0.20 too low for glasses reflection)
-    minBlinkMs: Long = 250L,
-    maxBlinkMs: Long = 750L,
+    private val earThreshold: Float = 0.185f, // Distinguishes true eye closure from smiles/squints (~0.21) and glasses reflection
+    minBlinkMs: Long = 180L,
+    maxBlinkMs: Long = 700L,
 ) {
-    // Fix A10: the blink window is user-tunable ("Blink duration" slider in
-    // Settings). The old 300–800ms window demanded an unnaturally slow, deliberate
-    // blink; now the minimum is adjustable (150–500ms) and the maximum follows
-    // at min + 500ms, so a user can pick a natural-feeling blink while still
-    // keeping natural (100–250ms) blinks excluded at the default.
-    // Fix (audit #7): default lowered 300 → 250ms — "slightly slower than
-    // natural" instead of "unnaturally slow", so first-time users are not left
-    // wondering why nothing clicks.
+    // Tunable blink window: 180ms offers crisp, instant responsiveness for intentional clicks
+    // while keeping involuntary/flutter blinks (<150ms) and relaxed closures (>700ms) filtered out.
     private var minBlinkMs: Long = minBlinkMs
     private var maxBlinkMs: Long = maxBlinkMs
 
     /**
-     * Fix (audit #8): Schmitt-trigger hysteresis. A single threshold lets frame
-     * noise right at the boundary flip open/closed/open, which counted phantom
-     * blinks or split one blink into several. Once closed, the eyes must open
-     * meaningfully wider (18% above the close threshold) before the blink can
-     * complete.
+     * Schmitt-trigger hysteresis: enter closed below earThreshold, but only
+     * leave it once EAR recovers meaningfully above openEarThreshold (25% higher).
      */
-    private val openEarThreshold: Float = earThreshold * 1.18f
+    private val openEarThreshold: Float = earThreshold * 1.25f
 
     /** Updates the blink duration window (clamped to a sane band). */
     fun updateConfig(minBlinkMs: Long, maxBlinkMs: Long) {
         this.minBlinkMs = minBlinkMs.coerceIn(120L, 800L)
-        this.maxBlinkMs = maxBlinkMs.coerceIn(this.minBlinkMs + 200L, 2_000L)
+        this.maxBlinkMs = maxBlinkMs.coerceIn(this.minBlinkMs + 180L, 2_000L)
     }
 
     private var closedStartMs: Long = -1L
     private var wasClosed = false
+    private var minEarDuringClosure = 1.0f
     var lastBlinkClosureStartMs: Long = -1L
         private set
 
@@ -55,20 +47,32 @@ class BlinkDetector(
      *  - [BlinkResult.NONE] otherwise (still open / still closed).
      */
     fun update(ear: Float, timestampMs: Long): BlinkResult {
-        // Hysteresis (audit #8): enter "closed" below earThreshold, but only
+        // Hysteresis: enter "closed" below earThreshold, but only
         // leave it once EAR recovers above openEarThreshold.
         val closed = if (wasClosed) ear < openEarThreshold else ear < earThreshold
 
         if (closed && !wasClosed) {
             closedStartMs = timestampMs
             lastBlinkClosureStartMs = timestampMs
+            minEarDuringClosure = ear
+        } else if (closed && wasClosed) {
+            if (ear < minEarDuringClosure) {
+                minEarDuringClosure = ear
+            }
         }
+
         if (!closed && wasClosed) {
             val start = closedStartMs
+            val minEar = minEarDuringClosure
             closedStartMs = -1L
+            minEarDuringClosure = 1.0f
             if (start >= 0L) {
                 val duration = timestampMs - start
                 wasClosed = false
+                // Ensure the closure actually reached full closure depth
+                if (minEar > earThreshold) {
+                    return BlinkResult.NONE
+                }
                 return when {
                     duration < minBlinkMs -> BlinkResult.TOO_SHORT
                     duration > maxBlinkMs -> BlinkResult.TOO_LONG
@@ -83,6 +87,7 @@ class BlinkDetector(
     fun reset() {
         closedStartMs = -1L
         wasClosed = false
+        minEarDuringClosure = 1.0f
         lastBlinkClosureStartMs = -1L
     }
 

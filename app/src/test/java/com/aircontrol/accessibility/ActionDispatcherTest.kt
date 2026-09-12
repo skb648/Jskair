@@ -51,6 +51,7 @@ class ActionDispatcherTest {
         override suspend fun updateStationaryClickEnabled(enabled: Boolean) {}
         override suspend fun updatePalmHomeEnabled(enabled: Boolean) {}
         override suspend fun updateSwipeRequiresOpenHand(enabled: Boolean) {}
+        override suspend fun updateInvertScrollDirection(invert: Boolean) {}
         override suspend fun updateSitBackMode(enabled: Boolean) {}
         override suspend fun updateReducedMotion(enabled: Boolean) {}
         override suspend fun updateCursorGain(gain: Int) {}

@@ -293,6 +293,8 @@
     <string name="settings_palm_home_subtitle">Hold a still, open palm for 2 seconds to go Home. Off by default, because an open palm is also the resting pose.</string>
     <string name="settings_swipe_open_palm">Swipes Need an Open Palm</string>
     <string name="settings_swipe_open_palm_subtitle">Only a straight open-hand sweep scrolls the page, so moving the pointer never scrolls by accident. Turn off to swipe while pointing.</string>
+    <string name="settings_invert_scroll">Invert Scroll Direction</string>
+    <string name="settings_invert_scroll_subtitle">Reverse swipe direction for natural scrolling vs traditional content pull</string>
     <string name="settings_sit_back_mode">Sit-back Mode</string>
     <string name="settings_sit_back_mode_subtitle">Reach the whole screen without raising your hand</string>
     <string name="settings_reduced_motion">Reduced Motion</string>
