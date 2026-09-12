@@ -105,7 +105,7 @@ class ActionDispatcher @Inject constructor(
 
     companion object {
         private const val MAX_RETRIES = 1
-        private const val SCROLL_DURATION_MS = 250L
+        private const val SCROLL_DURATION_MS = 200L
         private const val TAP_DURATION_MS = 25L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
@@ -785,14 +785,28 @@ class ActionDispatcher @Inject constructor(
         val mult = if (invertScrollDirection) -1f else 1f
         val effectiveDx = dx * mult
         val effectiveDy = dy * mult
+
+        // Fix U-Reels: provide generous fling distance (40% width, 42% height)
+        // with edge-safe anchoring so swipes in Reels/Shorts/TikTok and web feeds never truncate.
+        val scrollLengthX = screenWidth * 0.40f
+        val scrollLengthY = screenHeight * 0.42f
+
+        val safeStartX = when {
+            effectiveDx > 0 -> x.coerceIn(screenWidth * 0.12f, screenWidth * 0.50f)
+            effectiveDx < 0 -> x.coerceIn(screenWidth * 0.50f, screenWidth * 0.88f)
+            else -> x.coerceIn(screenWidth * 0.15f, screenWidth * 0.85f)
+        }
+        val safeStartY = when {
+            effectiveDy > 0 -> y.coerceIn(screenHeight * 0.15f, screenHeight * 0.48f)
+            effectiveDy < 0 -> y.coerceIn(screenHeight * 0.52f, screenHeight * 0.85f)
+            else -> y.coerceIn(screenHeight * 0.20f, screenHeight * 0.80f)
+        }
+
         val path = Path()
-        val startX = x.coerceIn(0f, screenWidth.toFloat())
-        val startY = y.coerceIn(0f, screenHeight.toFloat())
-        path.moveTo(startX, startY)
-        val scrollUnit = minOf(screenWidth, screenHeight).toFloat() * 0.22f
+        path.moveTo(safeStartX, safeStartY)
         path.lineTo(
-            (startX + effectiveDx * scrollUnit).coerceIn(0f, screenWidth.toFloat()),
-            (startY + effectiveDy * scrollUnit).coerceIn(0f, screenHeight.toFloat()),
+            (safeStartX + effectiveDx * scrollLengthX).coerceIn(0f, screenWidth.toFloat()),
+            (safeStartY + effectiveDy * scrollLengthY).coerceIn(0f, screenHeight.toFloat()),
         )
         return submitGesture(
             service,

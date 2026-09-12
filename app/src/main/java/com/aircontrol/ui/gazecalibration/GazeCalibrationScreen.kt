@@ -1,5 +1,10 @@
 package com.aircontrol.ui.gazecalibration
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -175,41 +181,77 @@ private fun CalibrationCanvas(
     pointIndex: Int,
     isCollecting: Boolean,
 ) {
+    val infiniteTransition = rememberInfiniteTransition(label = "calibrationPulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.45f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulseRing",
+    )
+
     Box(modifier = Modifier.fillMaxSize()) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val offsets = targets.map { (nx, ny) ->
                 Offset(size.width * nx, size.height * ny)
             }
+            // Draw subtle inactive markers so user knows calibration grid without distracting peripheral vision
             offsets.forEachIndexed { i, offset ->
-                val active = i == pointIndex
-                val color = if (active) SuccessGreen else ElectricBlue.copy(alpha = 0.3f)
-                drawCircle(color = color, radius = 24.dp.toPx(), center = offset)
-                if (active) {
-                    drawCircle(color = Color.White, radius = 8.dp.toPx(), center = offset)
+                if (i != pointIndex) {
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.10f),
+                        radius = 4.dp.toPx(),
+                        center = offset,
+                    )
                 }
+            }
+
+            // Prominently draw the single active fixation target
+            if (pointIndex in offsets.indices) {
+                val activeOffset = offsets[pointIndex]
+                val baseRadius = 20.dp.toPx()
+
+                // Pulsing lock ring around active target
+                drawCircle(
+                    color = if (isCollecting) SuccessGreen.copy(alpha = 0.4f) else ElectricBlue.copy(alpha = 0.35f),
+                    radius = baseRadius * (if (isCollecting) pulseScale else 1.15f),
+                    center = activeOffset,
+                    style = Stroke(width = 3.dp.toPx()),
+                )
+
+                // Outer bullseye circle
+                drawCircle(
+                    color = if (isCollecting) SuccessGreen else ElectricBlue,
+                    radius = baseRadius,
+                    center = activeOffset,
+                )
+
+                // High contrast white center pupil
+                drawCircle(
+                    color = Color.White,
+                    radius = 6.dp.toPx(),
+                    center = activeOffset,
+                )
             }
         }
 
         Text(
-            text = stringResource(
-                R.string.gaze_calibration_look_at,
-                pointIndex + 1,
-                targets.size,
-            ),
+            text = if (isCollecting) {
+                stringResource(R.string.gaze_calibration_hold_still)
+            } else {
+                stringResource(
+                    R.string.gaze_calibration_look_at,
+                    pointIndex + 1,
+                    targets.size,
+                )
+            },
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 32.dp),
             style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground,
+            color = if (isCollecting) SuccessGreen else MaterialTheme.colorScheme.onBackground,
         )
-
-        if (isCollecting) {
-            CircularProgressIndicator(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 48.dp),
-                color = SuccessGreen,
-            )
-        }
     }
 }

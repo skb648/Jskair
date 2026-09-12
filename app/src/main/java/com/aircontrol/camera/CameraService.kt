@@ -91,8 +91,8 @@ class CameraService : LifecycleService() {
         /** How often the watchdog checks the pipeline (ms). */
         private const val WATCHDOG_PERIOD_MS = 5_000L
 
-        /** Fix A9: analysis FPS cap while eye tracking is active (dual models). */
-        private const val EYE_MODE_FPS_CAP = 20
+        /** Fluid 30 FPS analysis rate while eye tracking is active for smooth, responsive gaze. */
+        private const val EYE_MODE_FPS_CAP = 30
 
         /** After a tracker is found missing, retry every N ticks. */
         private const val TRACKER_RETRY_TICKS = 3

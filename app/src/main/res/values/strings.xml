@@ -182,6 +182,7 @@
     <string name="gaze_calibration_title">Gaze Calibration</string>
     <string name="gaze_calibration_complete">Calibration complete!</string>
     <string name="gaze_calibration_look_at">Look at the highlighted dot (%1$d/%2$d)</string>
+    <string name="gaze_calibration_hold_still">Collecting gaze… keep your eyes fixed on the dot</string>
     <string name="gaze_calibration_retry">Retry</string>
     <string name="gaze_calibration_restart">Restart Calibration</string>
     <string name="gaze_calibration_need_eye_tracking">Eye tracking is not enabled. Turn on "Eye is Mouse" in Settings, then run calibration.</string>
@@ -273,7 +274,7 @@
     <!-- HID POC: Native HID Mouse (experimental). -->
     <string name="settings_section_native_hid">Experimental</string>
     <string name="settings_native_hid_title">Native HID Mouse (Bluetooth)</string>
-    <string name="settings_native_hid_subtitle">Experimental: act as a real Bluetooth mouse. The receiver device shows its own native cursor — AirControl draws nothing. Off by default.</string>
+    <string name="settings_native_hid_subtitle">Use your phone as a wireless air-mouse for an external PC, Mac, Tablet or Smart TV via Bluetooth HID. The connected PC/TV displays the native cursor.</string>
     <string name="settings_native_hid_state_prefix">HID status:</string>
     <string name="settings_native_hid_env">Android API %1$d · HID API %2$s</string>
     <string name="settings_native_hid_api_available">available</string>

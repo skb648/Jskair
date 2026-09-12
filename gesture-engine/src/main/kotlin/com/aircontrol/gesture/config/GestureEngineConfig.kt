@@ -127,18 +127,15 @@ data class GestureEngineConfig(
     // still far longer than the ~80ms a closing hand spends passing through
     // "thumb out" (the false-positive this gate exists for), but it turns a
     // 5-step volume change from ~6s into ~1.6s.
-    val thumbGestureHoldMs: Long = 260L,
+    val thumbGestureHoldMs: Long = 330L,
     /**
      * Fix U-6 (pinch latency): how long fingers must stay together after the
-     * pinch threshold is crossed before the click is committed. This used to be a
-     * hard-coded 80ms inside the engine, and a second 80ms was charged again on
-     * release — ~0.5s of felt latency per tap, which is what made users pinch a
-     * second time and get a double-click. 28ms is under one camera frame at 30fps,
-     * so a real pinch still needs a confirming frame but the tap feels immediate.
+     * pinch threshold is crossed before the click is committed. 50ms provides
+     * immediate responsiveness while rejecting single-frame oscillation noise.
      */
-    val pinchConfirmMs: Long = 80L,
-    /** Release-side counterpart of [pinchConfirmMs] (Fix U-6). */
-    val pinchReleaseConfirmMs: Long = 80L,
+    val pinchConfirmMs: Long = 50L,
+    /** Release-side counterpart of [pinchConfirmMs] (Fix U-6) for fast tap release. */
+    val pinchReleaseConfirmMs: Long = 50L,
     val calibratedPinchRatio: Float? = null,
 ) {
     init {
