@@ -223,6 +223,13 @@ class CursorOverlay(
         (cursorView as? CursorDotView)?.setDwellProgress(progress)
     }
 
+    /** Ghost mode for reading or background hover — reduces cursor alpha to prevent visual distraction. */
+    fun setGhostMode(ghost: Boolean) {
+        if (!visibilityMachine.isEffectivelyVisible) return
+        cursorView?.animate()?.cancel()
+        cursorView?.alpha = if (ghost) 0.32f else 1.0f
+    }
+
     /** Reduced motion — disables press/ripple animations. */
     fun setReducedMotion(reduced: Boolean) {
         (cursorView as? CursorDotView)?.setReducedMotion(reduced)

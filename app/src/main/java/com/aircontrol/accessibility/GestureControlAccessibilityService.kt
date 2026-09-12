@@ -228,6 +228,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var fixationAnchorX: Float = -1f
     @Volatile private var fixationAnchorY: Float = -1f
 
+    // Dynamic Auto-Re-anchoring state: eliminates posture drift (sofa/bed leaning)
+    @Volatile private var gazeDriftOffsetX: Float = 0f
+    @Volatile private var gazeDriftOffsetY: Float = 0f
+    @Volatile private var lastAnchorAdjustMs: Long = 0L
+
+    // Reading & Gaze Ghost Mode: dims cursor during sustained text scanning to eliminate visual distraction
+    @Volatile private var isGhostModeActive: Boolean = false
+    @Volatile private var readingScanStartMs: Long = 0L
+
     // Issue 7: Gaze history ring buffer for pre-blink position rollback
     private data class GazeHistoryEntry(val x: Float, val y: Float, val timeMs: Long)
     private val gazeHistoryBuffer = java.util.concurrent.CopyOnWriteArrayList<GazeHistoryEntry>()
@@ -852,6 +861,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             } else {
                                 gazeCursorX to gazeCursorY
                             }
+                            adjustGazeDrift(tapTarget.first, tapTarget.second, gazeCursorX, gazeCursorY)
                             actionDispatcher?.dispatchBlinkTap(tapTarget.first, tapTarget.second, screenWidth, screenHeight)
                             resetDwellState()
                             return@gaze
@@ -870,16 +880,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     } else {
                         mapGazeToDisplay(gaze.x, gaze.y)
                     }
-                    // Apply ergonomic vertical parallax correction for front camera geometry
+                    // Apply ergonomic vertical parallax correction + magnetic edge snapping for front camera geometry
                     val (nx, ny) = applyGazeParallaxCorrection(rawNx, rawNy)
                     // Fix E1: velocity-adaptive One Euro smoothing — no fixed-alpha
                     // lag on saccades, no quantization "teleports" when still.
                     val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
 
-                    // Issue 5: Fixation Lock — suppresses involuntary micro-saccadic tremor
+                    // Fixation Lock & Reading Saccade stabilization — suppresses involuntary micro-saccadic tremor
                     // by pinning cursor to target until intentional saccadic breakout occurs.
                     val finalGazeX: Float
                     val finalGazeY: Float
+                    val nowGazeMs = SystemClock.elapsedRealtime()
                     if (fixationAnchorX < 0f) {
                         fixationAnchorX = smoothX
                         fixationAnchorY = smoothY
@@ -887,9 +898,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         finalGazeY = smoothY
                     } else {
                         val dist = kotlin.math.hypot(smoothX - fixationAnchorX, smoothY - fixationAnchorY)
+                        val dx = kotlin.math.abs(smoothX - fixationAnchorX)
+                        val dy = kotlin.math.abs(smoothY - fixationAnchorY)
+                        val isReadingMotion = dx in 0.005f..0.045f && dy < 0.016f
+
                         if (dist < FIXATION_LOCK_RADIUS) {
                             finalGazeX = fixationAnchorX
                             finalGazeY = fixationAnchorY
+                            if (readingScanStartMs == 0L) readingScanStartMs = nowGazeMs
+                            if (!isGhostModeActive && nowGazeMs - readingScanStartMs > 350L) {
+                                isGhostModeActive = true
+                                mainHandler.post { cursorOverlay?.setGhostMode(true) }
+                            }
+                        } else if (isReadingMotion) {
+                            // Suppress vertical flutter across text lines while reading
+                            finalGazeX = smoothX
+                            finalGazeY = fixationAnchorY
+                            fixationAnchorX = smoothX
+                            if (readingScanStartMs == 0L) readingScanStartMs = nowGazeMs
+                            if (!isGhostModeActive && nowGazeMs - readingScanStartMs > 350L) {
+                                isGhostModeActive = true
+                                mainHandler.post { cursorOverlay?.setGhostMode(true) }
+                            }
                         } else if (dist < SACCADE_BREAKOUT_RADIUS) {
                             val blend = (dist - FIXATION_LOCK_RADIUS) / (SACCADE_BREAKOUT_RADIUS - FIXATION_LOCK_RADIUS)
                             finalGazeX = fixationAnchorX * (1f - blend) + smoothX * blend
@@ -898,11 +928,21 @@ class GestureControlAccessibilityService : AccessibilityService() {
                                 fixationAnchorX = smoothX
                                 fixationAnchorY = smoothY
                             }
+                            if (isGhostModeActive) {
+                                isGhostModeActive = false
+                                readingScanStartMs = 0L
+                                mainHandler.post { cursorOverlay?.setGhostMode(false) }
+                            }
                         } else {
                             fixationAnchorX = smoothX
                             fixationAnchorY = smoothY
                             finalGazeX = smoothX
                             finalGazeY = smoothY
+                            if (isGhostModeActive) {
+                                isGhostModeActive = false
+                                readingScanStartMs = 0L
+                                mainHandler.post { cursorOverlay?.setGhostMode(false) }
+                            }
                         }
                     }
 
@@ -1390,8 +1430,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         hoverMonitor = CursorHoverMonitor(
             scope = serviceScope,
             policy = HoverResolvePolicy(
-                moveThresholdPx = 8f * density,
-                resolveIntervalMs = 120L,
+                moveThresholdPx = 4f * density,
+                resolveIntervalMs = 35L,
             ),
             snapshotProvider = { x, y ->
                 // Runs on Dispatchers.Default (binder calls are safe off-main).
@@ -1497,11 +1537,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Vertical parallax compensation for handheld mobile usage:
-     * The front-facing camera sits at the top bezel. Looking at the lower half of the screen
-     * (>0.45) creates a steep downward angle of incidence where iris movement compresses.
-     * Non-linear expansion ensures effortless reach to keyboard, docks, and bottom sheets
-     * without neck strain or downward squinting.
+     * Dynamic Auto-Re-anchoring:
+     * When user fixates steadily or taps/dwells on a target, slightly adapts calibration drift offset
+     * to eliminate posture shifts (e.g. leaning back on sofa or resting in bed).
+     */
+    private fun adjustGazeDrift(targetX: Float, targetY: Float, currentX: Float, currentY: Float) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAnchorAdjustMs < 600L) return
+        lastAnchorAdjustMs = now
+        val deltaX = (targetX - currentX).coerceIn(-0.05f, 0.05f)
+        val deltaY = (targetY - currentY).coerceIn(-0.05f, 0.05f)
+        gazeDriftOffsetX = (gazeDriftOffsetX * 0.88f + deltaX * 0.12f).coerceIn(-0.08f, 0.08f)
+        gazeDriftOffsetY = (gazeDriftOffsetY * 0.88f + deltaY * 0.12f).coerceIn(-0.08f, 0.08f)
+    }
+
+    /**
+     * Vertical parallax compensation + Magnetic Edge & Corner Gravity:
+     * 1. Parallax: Expands lower half coordinates to compensate for top-bezel camera geometry.
+     * 2. Magnetic Edge & Corner Gravity: Reaching screen boundaries (Back button top-left,
+     *    action buttons top-right, navigation bar/dock bottom) requires extreme iris rotation.
+     *    Magnetic gravity gently pulls boundary gaze into full reach smoothly,
+     *    eliminating ocular strain while preserving 100% linear precision across the center.
+     * 3. Continuous posture drift compensation.
      */
     private fun applyGazeParallaxCorrection(x: Float, y: Float): Pair<Float, Float> {
         val correctedY = if (y > 0.45f) {
@@ -1512,7 +1569,36 @@ class GestureControlAccessibilityService : AccessibilityService() {
         } else {
             y
         }
-        return x.coerceIn(0f, 1f) to correctedY.coerceIn(0f, 1f)
+
+        // Magnetic Edge & Corner Snapping
+        val edgeSnapMarginX = 0.09f
+        val edgeSnapMarginY = 0.08f
+
+        val magX = if (x < edgeSnapMarginX) {
+            val ratio = (x / edgeSnapMarginX).coerceIn(0f, 1f)
+            x * (ratio * 0.85f + 0.15f)
+        } else if (x > 1f - edgeSnapMarginX) {
+            val fromEdge = (1f - x).coerceAtLeast(0f)
+            val ratio = (fromEdge / edgeSnapMarginX).coerceIn(0f, 1f)
+            1f - fromEdge * (ratio * 0.85f + 0.15f)
+        } else {
+            x
+        }
+
+        val magY = if (correctedY < edgeSnapMarginY) {
+            val ratio = (correctedY / edgeSnapMarginY).coerceIn(0f, 1f)
+            correctedY * (ratio * 0.85f + 0.15f)
+        } else if (correctedY > 1f - edgeSnapMarginY) {
+            val fromEdge = (1f - correctedY).coerceAtLeast(0f)
+            val ratio = (fromEdge / edgeSnapMarginY).coerceIn(0f, 1f)
+            1f - fromEdge * (ratio * 0.85f + 0.15f)
+        } else {
+            correctedY
+        }
+
+        val driftedX = (magX + gazeDriftOffsetX).coerceIn(0f, 1f)
+        val driftedY = (magY + gazeDriftOffsetY).coerceIn(0f, 1f)
+        return driftedX to driftedY
     }
 
     /**
@@ -1619,6 +1705,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
             performDwellHaptic(isClick = true)
             dwellMidHapticFired = false
             actionDispatcher?.dispatchDwellTap(x, y, screenWidth, screenHeight, fromGaze = isGaze)
+            if (isGaze) {
+                adjustGazeDrift(x, y, gazeCursorX, gazeCursorY)
+            }
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
         } else if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled && !dwellFired &&
             fixationDwellAllowed

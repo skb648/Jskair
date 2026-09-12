@@ -515,7 +515,14 @@ class ActionDispatcher @Inject constructor(
         if (service == null) return false
 
         val action = when (event) {
-            is GestureEvent.Swipe -> gestureMap[swipeKey(event.direction)]
+            is GestureEvent.Swipe -> {
+                // Top bezel downward swipe pulls down Notification Shade (status bar pull)
+                if (cursorY < 0.10f && event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN) {
+                    GestureAction.NOTIFICATIONS
+                } else {
+                    gestureMap[swipeKey(event.direction)]
+                }
+            }
             is GestureEvent.PoseTriggered -> {
                 val custom = matchCustomGesture(event.pose)
                 custom ?: gestureMap[poseKey(event.pose)]
