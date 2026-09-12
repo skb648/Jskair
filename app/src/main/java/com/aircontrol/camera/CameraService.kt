@@ -32,6 +32,7 @@ import com.aircontrol.MainActivity
 import com.aircontrol.R
 import com.aircontrol.runtime.PerfTelemetry
 import com.aircontrol.runtime.ResourceGovernor
+import com.aircontrol.util.CrashGuard
 import com.aircontrol.tracking.AdaptiveFpsController
 import com.aircontrol.tracking.HandTracker
 import com.aircontrol.tracking.SlotPool
@@ -96,6 +97,7 @@ class CameraService : LifecycleService() {
 
         /** After a tracker is found missing, retry every N ticks. */
         private const val TRACKER_RETRY_TICKS = 3
+        private const val CAMERA_RETRY_BASE_MS = 2_000L
 
         const val NOTIFICATION_ID = 1001
 
@@ -120,8 +122,13 @@ class CameraService : LifecycleService() {
         const val COMMAND_RESUME = 4
 
         data class ServiceState(
+            /** True only after CameraX is bound and the analyzer is accepting frames. */
             val isRunning: Boolean = false,
             val isPaused: Boolean = false,
+            val actualState: TrackingState = TrackingState.STOPPED,
+            val desiredTrackingEnabled: Boolean = false,
+            val generation: Long = 0L,
+            val reason: String? = null,
         )
 
         // Single companion-held MutableStateFlow so external consumers can read
@@ -172,6 +179,13 @@ class CameraService : LifecycleService() {
      * "camera in use" indicator off and stops the HAL powering the sensor in a pocket.
      */
     @Volatile private var cameraBound = false
+    /** CameraX callbacks can race a stop/rebind; this gate makes old analyzer callbacks no-ops. */
+    @Volatile private var acceptingFrames = false
+    @Volatile private var bindInProgress = false
+    @Volatile private var desiredTrackingEnabled = false
+    @Volatile private var lifecycleGeneration = 0L
+    private var cameraRetryJob: Job? = null
+    private val nextFrameId = java.util.concurrent.atomic.AtomicLong(0L)
 
     @Volatile private var userPaused = false
     // Fix (audit #21): pause raised by the system (screen off), revivable.
@@ -256,24 +270,72 @@ class CameraService : LifecycleService() {
 
     private val cameraAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
         override fun onCameraUnavailable(cameraId: String) {
-            if (_state.value.isRunning && !_state.value.isPaused) {
-                Timber.w("Camera %s became unavailable (in use by another app); pausing tracking gracefully", cameraId)
+            // CameraManager reports the camera as unavailable to *other clients* when
+            // this service owns it. Treating that observation as a pause request was
+            // the first bad transition in the reported loop: our own unbind made the
+            // camera available again, which immediately requested a resume and a new
+            // bind. Availability is an input to the lifecycle owner, never a direct
+            // start/stop command.
+            if (bindInProgress || cameraBound) {
+                Timber.d("Camera %s unavailable while owned by this session; ignoring availability edge", cameraId)
+                return
+            }
+            if (desiredTrackingEnabled && _state.value.actualState in setOf(
+                    TrackingState.STARTING,
+                    TrackingState.WAITING_FOR_CAMERA,
+                    TrackingState.RUNNING,
+                    TrackingState.CAMERA_LOST,
+                )
+            ) {
+                Timber.w("Camera %s temporarily unavailable; waiting without tearing down the service", cameraId)
                 isCameraConflictPaused = true
                 serviceScope.launch {
                     lifecycleMutex.withLock {
-                        pauseTrackingLocked(userInitiated = false)
+                        if (!desiredTrackingEnabled || lifecycleGeneration != _state.value.generation) return@withLock
+                        publishState(_state.value.copy(
+                            isRunning = false,
+                            isPaused = false,
+                            actualState = if (_state.value.actualState == TrackingState.RUNNING) {
+                                TrackingState.CAMERA_LOST
+                            } else TrackingState.WAITING_FOR_CAMERA,
+                            reason = "camera-unavailable",
+                        ))
+                        PerfTelemetry.recordCameraUnavailable(SystemClock.elapsedRealtime())
                     }
                 }
             }
         }
 
         override fun onCameraAvailable(cameraId: String) {
-            if (isCameraConflictPaused && _state.value.isPaused && !userPaused) {
-                Timber.i("Camera %s available again; resuming tracking", cameraId)
-                isCameraConflictPaused = false
-                serviceScope.launch {
-                    lifecycleMutex.withLock {
-                        resumeTrackingLocked()
+            if (!desiredTrackingEnabled || !isCameraConflictPaused) return
+            isCameraConflictPaused = false
+            serviceScope.launch {
+                lifecycleMutex.withLock {
+                    if (!desiredTrackingEnabled) return@withLock
+                    Timber.i("Camera %s available; lifecycle owner will attempt recovery", cameraId)
+                    publishState(_state.value.copy(
+                        actualState = TrackingState.STARTING,
+                        generation = lifecycleGeneration,
+                        reason = null,
+                    ))
+                    val generation = lifecycleGeneration
+                    if (attemptCameraBindLocked(generation)) {
+                        isCameraConflictPaused = false
+                        acceptingFrames = true
+                        publishState(_state.value.copy(
+                            isRunning = true,
+                            isPaused = false,
+                            actualState = TrackingState.RUNNING,
+                            generation = generation,
+                            desiredTrackingEnabled = true,
+                            reason = null,
+                        ))
+                    } else {
+                        publishState(_state.value.copy(
+                            actualState = TrackingState.WAITING_FOR_CAMERA,
+                            reason = "camera-unavailable",
+                        ))
+                        scheduleCameraRetryLocked(generation)
                     }
                 }
             }
@@ -345,23 +407,39 @@ class CameraService : LifecycleService() {
             lifecycleMutex.withLock {
                 when (intent?.action) {
                     ACTION_STOP_AND_DISABLE -> {
-                        // The ONLY caller allowed to close the shared trackers:
-                        // an explicit gesture disable means "really stop".
-                        stopTrackingLocked(closeTrackers = true)
-                        // Persist the master switch off (idempotent for every other
-                        // caller, which already turned it off before stopping).
+                        desiredTrackingEnabled = false
+                        lifecycleGeneration++
+                        stopTrackingLocked(clearDesired = true)
                         runCatching {
-                            if (::settingsRepository.isInitialized) {
-                                settingsRepository.updateGesturesEnabled(false)
-                            }
+                            if (::settingsRepository.isInitialized) settingsRepository.updateGesturesEnabled(false)
                         }.onFailure { Timber.e(it, "Could not persist gesturesEnabled=false on stop") }
                         return@launch
                     }
-                    ACTION_STOP -> { stopTrackingLocked(); return@launch }
-                    ACTION_PAUSE -> pauseTrackingLocked(userInitiated = true)
-                    ACTION_SYSTEM_PAUSE -> pauseTrackingLocked(userInitiated = false)
-                    ACTION_RESUME -> resumeTrackingLocked()
-                    ACTION_START -> startTrackingLocked()
+                    ACTION_STOP -> {
+                        desiredTrackingEnabled = false
+                        lifecycleGeneration++
+                        stopTrackingLocked(clearDesired = true)
+                        return@launch
+                    }
+                    ACTION_PAUSE -> {
+                        desiredTrackingEnabled = true
+                        pauseTrackingLocked(userInitiated = true)
+                    }
+                    ACTION_SYSTEM_PAUSE -> {
+                        desiredTrackingEnabled = true
+                        pauseTrackingLocked(userInitiated = false)
+                    }
+                    ACTION_RESUME -> {
+                        desiredTrackingEnabled = true
+                        resumeTrackingLocked()
+                    }
+                    ACTION_START -> {
+                        if (!desiredTrackingEnabled || _state.value.actualState == TrackingState.STOPPED) {
+                            desiredTrackingEnabled = true
+                            lifecycleGeneration++
+                        }
+                        startTrackingLocked()
+                    }
                     else -> {
                         Timber.d("Null/unknown intent; not auto-starting camera (fix #14).")
                     }
@@ -378,39 +456,62 @@ class CameraService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        // Perf audit P2: onDestroy used to re-run the full stopTrackingLocked()
-        // teardown here. After an ACTION_STOP that had already run it, this
-        // re-ran the job cancels and tracker closes a second time — one of the
-        // triple "HandTracker closed" lines in the 2026-09-07 logcat. The stop
-        // path already did the work; only per-instance resources are released
-        // here. Trackers survive by design (P2) and are reclaimed under
-        // memory pressure (AirControlApp.onTrimMemory) or explicit disable.
-        PerfTelemetry.recordCameraLifecycle("service-destroyed", SystemClock.elapsedRealtime())
-        stopOrientationListener()
-        runCatching { cameraManager?.unregisterAvailabilityCallback(cameraAvailabilityCallback) }
+        // Invalidate the generation before any platform teardown. Queued analyzer
+        // callbacks and late MediaPipe results can then only close their own
+        // resources; they cannot publish into the next session.
+        acceptingFrames = false
+        desiredTrackingEnabled = false
+        lifecycleGeneration++
+        publishState(ServiceState(
+            isRunning = false,
+            isPaused = false,
+            actualState = TrackingState.STOPPING,
+            desiredTrackingEnabled = false,
+            generation = lifecycleGeneration,
+            reason = "service-destroyed",
+        ))
+        synchronized(jobsLock) {
+            pipelineJobs.forEach { it.cancel() }
+            pipelineJobs.clear()
+        }
+        frameWatchdogJob?.cancel(); frameWatchdogJob = null
+        cameraRetryJob?.cancel(); cameraRetryJob = null
+        thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
+        stopThermalMonitoring()
         runCatching { unregisterPowerSaveReceiver() }
-            .onFailure { Timber.e(it, "Power-save receiver unregister on destroy failed") }
+        stopOrientationListener()
+        runCatching {
+            // onDestroy is on the main thread for LifecycleService, so this
+            // closes the CameraX ownership edge synchronously before the service
+            // reports STOPPED to a debug handoff.
+            imageAnalysis?.clearAnalyzer()
+            cameraProvider?.unbindAll()
+        }.onFailure { Timber.e(it, "CameraService destroy unbind failed") }
+        cameraBound = false
+        imageAnalysis = null
+        cameraProvider = null
+        PerfTelemetry.recordCameraLifecycle("service-destroyed", SystemClock.elapsedRealtime())
+
+        val executor = analysisExecutor
+        analysisExecutor = null
         serviceScope.launch(Dispatchers.IO) {
-            val executor = analysisExecutor
-            analysisExecutor = null
+            runCatching { handTracker.close() }.onFailure { Timber.e(it, "hand tracker close on destroy failed") }
+            runCatching { faceTracker.close() }.onFailure { Timber.e(it, "face tracker close on destroy failed") }
             executor?.shutdown()
             try {
-                if (executor != null && !executor.awaitTermination(2, TimeUnit.SECONDS)) {
-                    executor.shutdownNow()
-                }
+                if (executor != null && !executor.awaitTermination(2, TimeUnit.SECONDS)) executor.shutdownNow()
             } catch (_: InterruptedException) {
                 executor?.shutdownNow()
             }
-            // P0-2: the frame-buffer pool replaces the single reusable bitmap. Draining recycles
-            // every buffer, including any still leased by a tracker that has not reported yet -
-            // at teardown nothing may outlive the service, and a lease that never returns is
-            // harmless here because the pool itself goes away with it.
+            // SlotPool drains only free buffers and retires busy ones; the graph
+            // closes above release any outstanding lease first.
             frameBitmaps.drain()
             cachedMatrix = null
+            publishState(ServiceState())
+            serviceScope.cancel()
         }
-        super.onDestroy()
-        serviceScope.launch { delay(1500); serviceScope.cancel() }
         Timber.i("CameraService destroyed")
+        super.onDestroy()
     }
 
     override fun onTrimMemory(level: Int) {
@@ -426,135 +527,198 @@ class CameraService : LifecycleService() {
     // ------------------- start/stop/pause/resume -------------------
 
     private suspend fun startTrackingLocked() {
-        if (_state.value.isRunning) return
+        if (!desiredTrackingEnabled) return
+        val current = _state.value.actualState
+        if (current == TrackingState.RUNNING || current == TrackingState.STARTING ||
+            current == TrackingState.WAITING_FOR_CAMERA || current == TrackingState.CAMERA_LOST
+        ) return
+
+        val generation = lifecycleGeneration
+        publishState(_state.value.copy(
+            isRunning = false,
+            isPaused = false,
+            actualState = TrackingState.STARTING,
+            desiredTrackingEnabled = true,
+            generation = generation,
+            reason = null,
+        ))
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            Timber.e("Camera permission missing; aborting start")
-            stopSelf()
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            publishState(_state.value.copy(
+                actualState = TrackingState.FAILED,
+                reason = "camera-permission-missing",
+            ))
+            Timber.e("Camera permission missing; tracking remains requested but is not active")
             return
         }
         val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
         if (km?.isKeyguardLocked == true) {
-            Timber.i("Keyguard locked — deferring camera start until unlock")
+            publishState(_state.value.copy(
+                actualState = TrackingState.WAITING_FOR_CAMERA,
+                reason = "device-locked",
+            ))
+            Timber.i("Keyguard locked — waiting without starting the camera")
             return
         }
         if (!::handTracker.isInitialized || !::settingsRepository.isInitialized) {
-            Timber.e("Dependencies not initialized")
-            stopSelf()
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "dependencies-not-ready"))
+            Timber.e("Tracking dependencies are not initialized")
             return
         }
 
         try {
-            val notification = buildNotification(isPaused = false)
+            val notification = buildNotification(isPaused = false, isWaiting = true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "foreground-start-failed"))
             Timber.e(e, "startForeground failed")
             stopSelf()
             return
         }
-        // Service is starting; report a live session only after CameraX binds.
-        publishState(ServiceState(isRunning = false, isPaused = false))
 
+        acceptingFrames = false
         withContext(Dispatchers.Default) { handTracker.initialize() }
-        // Fix A-1b: never pretend the session is live if the model could not be
-        // created - the watchdog below rebuilds it, and the log says so plainly.
         if (!handTracker.isInitialized()) {
-            Timber.e("Hand tracker failed to initialize; the watchdog will keep retrying")
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "hand-tracker-not-ready"))
+            scheduleCameraRetryLocked(generation)
+            updateNotification(isPaused = false, isWaiting = true)
+            ensureWatchdogAndMonitoring()
+            return
         }
-        deadTrackerTicks = 0
-        nextTrackerRetryTick = TRACKER_RETRY_TICKS
 
+        // These collectors are session-owned and are installed exactly once. A
+        // duplicate START therefore cannot create duplicate consumers/watchdogs.
         synchronized(jobsLock) {
-            pipelineJobs.add(serviceScope.launchGuarded("camera settings", restart = true) {
-                settingsRepository.userPreferences.collectGuarded("camera settings") { prefs ->
-                    // Fix A9: in eye mode two landmarkers run per frame on the CPU.
-                    // Capping the analysis rate at 20 fps (only in eye mode) cuts
-                    // the combined CPU load ~20–35% while the One Euro-smoothed
-                    // gaze cursor stays visually smooth; battery saver still wins.
-                    // Perf audit P9: this is the mode BASE rate; applyConfiguredFps
-                    // layers the OS power-save cap on top.
-                    baseConfiguredFps = when {
-                        prefs.batterySaver -> minOf(15, prefs.analysisFps)
-                        prefs.eyeTrackingEnabled -> minOf(EYE_MODE_FPS_CAP, prefs.analysisFps)
-                        else -> prefs.analysisFps
-                    }
-                    applyConfiguredFps()
-                    if (eyeTrackingEnabled != prefs.eyeTrackingEnabled) {
-                        eyeTrackingEnabled = prefs.eyeTrackingEnabled
-                        if (eyeTrackingEnabled && !faceTracker.isInitialized()) {
-                            // Initializing the face landmarker can throw on devices where
-                            // MediaPipe cannot allocate a GPU delegate. A throw here used to
-                            // kill the collector (and the process). Now: log, keep hands
-                            // working, and retry the next time the toggle changes.
-                            runCatching {
-                                withContext(Dispatchers.Default) {
-                                    synchronized(faceTrackerLock) { faceTracker.initialize() }
-                                }
-                            }
-                                .onFailure { Timber.e(it, "Face tracker init failed; eye mode stays off") }
-                        } else if (!eyeTrackingEnabled && faceTracker.isInitialized()) {
-                            // Fix D7: the face landmarker used to stay loaded (tens of MB of
-                            // native model memory) after eye mode was switched off. Release it;
-                            // the toggle-on path above re-initializes on demand.
-                            serviceScope.launch(Dispatchers.Default) {
-                                synchronized(faceTrackerLock) {
-                                    runCatching { faceTracker.close() }
-                                        .onFailure { Timber.e(it, "Face tracker close on disable failed") }
-                                }
-                            }
+            if (pipelineJobs.isEmpty()) {
+                installPipelineCollectors()
+            }
+        }
+
+        if (!attemptCameraBindLocked(generation)) {
+            publishState(_state.value.copy(
+                isRunning = false,
+                isPaused = false,
+                actualState = TrackingState.WAITING_FOR_CAMERA,
+                desiredTrackingEnabled = true,
+                generation = generation,
+                reason = "camera-unavailable",
+            ))
+            scheduleCameraRetryLocked(generation)
+            updateNotification(isPaused = false, isWaiting = true)
+            ensureWatchdogAndMonitoring()
+            return
+        }
+
+        if (!desiredTrackingEnabled || generation != lifecycleGeneration) return
+        isCameraConflictPaused = false
+        acceptingFrames = true
+        publishState(_state.value.copy(
+            isRunning = true,
+            isPaused = false,
+            actualState = TrackingState.RUNNING,
+            desiredTrackingEnabled = true,
+            generation = generation,
+            reason = null,
+        ))
+        userPaused = false
+        systemPaused = false
+        _userPaused.value = false
+        thermalPaused = false
+        lastProcessedFrameMs = SystemClock.elapsedRealtime()
+        Timber.i("Tracking reached RUNNING (generation=%d)", generation)
+        PerfTelemetry.recordCameraLifecycle("started", SystemClock.elapsedRealtime())
+        ensureWatchdogAndMonitoring()
+        registerPowerSaveReceiver()
+    }
+
+    /** Installs all long-lived service collectors. */
+    private fun installPipelineCollectors() {
+        pipelineJobs.add(serviceScope.launchGuarded("camera settings", restart = true) {
+            settingsRepository.userPreferences.collectGuarded("camera settings") { prefs ->
+                baseConfiguredFps = when {
+                    prefs.batterySaver -> minOf(15, prefs.analysisFps)
+                    prefs.eyeTrackingEnabled -> minOf(EYE_MODE_FPS_CAP, prefs.analysisFps)
+                    else -> prefs.analysisFps
+                }
+                applyConfiguredFps()
+                if (eyeTrackingEnabled != prefs.eyeTrackingEnabled) {
+                    eyeTrackingEnabled = prefs.eyeTrackingEnabled
+                    if (eyeTrackingEnabled && !faceTracker.isInitialized()) {
+                        runCatching { withContext(Dispatchers.Default) { synchronized(faceTrackerLock) { faceTracker.initialize() } } }
+                            .onFailure { Timber.e(it, "Face tracker init failed; eye mode stays off") }
+                    } else if (!eyeTrackingEnabled && faceTracker.isInitialized()) {
+                        serviceScope.launch(Dispatchers.Default) {
+                            synchronized(faceTrackerLock) { runCatching { faceTracker.close() }.onFailure { Timber.e(it, "Face tracker close failed") } }
                         }
                     }
                 }
-            })
-            pipelineJobs.add(serviceScope.launchGuarded("hand fps", restart = true) {
-                handTracker.handFrames.collectGuarded("hand fps") { frame ->
-                    if (frame.isDetected) adaptiveFpsController.onHandDetected(frame.timestampMs)
-                    else adaptiveFpsController.onHandLost(frame.timestampMs)
-                }
-            })
-            // Fix A4: face presence also keeps the analysis at full FPS. In eye
-            // mode the user's hands are usually down — with only the hand signal
-            // wired, the controller dropped to 5 fps scan mode after 5 seconds
-            // and the gaze cursor turned into a slideshow exactly in the mode
-            // where the face is the active input.
-            pipelineJobs.add(serviceScope.launchGuarded("face fps", restart = true) {
-                faceTracker.gazeObservations.collectGuarded("face fps") { obs ->
-                    if (obs.faceDetected) adaptiveFpsController.onFaceDetected(obs.timestampMs)
-                    else adaptiveFpsController.onFaceLost(obs.timestampMs)
-                }
-            })
-        }
-
-        try {
-            if (!bindAnalysisUseCase()) {
-                // A bind failure here is a device/permission problem, not a transient one.
-                // Tear the session down and let the accessibility-side retry bring it back:
-                // a half-started service that reports "running" is what used to leave people
-                // with gestures that never work until they reopened the app.
-                Timber.e("Could not open the front camera; tearing the session down for a retry")
-                stopTrackingLocked()
-                return
             }
-            // CameraX bind succeeded; now report the session as live.
-            publishState(ServiceState(isRunning = true, isPaused = false))
-            userPaused = false
-            systemPaused = false
-            _userPaused.value = false
-            thermalPaused = false
-            lastProcessedFrameMs = SystemClock.elapsedRealtime()
-            Timber.i("Camera started")
-            PerfTelemetry.recordCameraLifecycle("started", SystemClock.elapsedRealtime())
-            startFrameWatchdog()
-            startThermalMonitoring()
-            registerPowerSaveReceiver()
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to start camera")
-            stopTrackingLocked()
+        })
+        pipelineJobs.add(serviceScope.launchGuarded("hand fps", restart = true) {
+            handTracker.handFrames.collectGuarded("hand fps") { frame ->
+                if (frame.isDetected) adaptiveFpsController.onHandDetected(frame.timestampMs)
+                else adaptiveFpsController.onHandLost(frame.timestampMs)
+            }
+        })
+        pipelineJobs.add(serviceScope.launchGuarded("face fps", restart = true) {
+            faceTracker.gazeObservations.collectGuarded("face fps") { obs ->
+                if (obs.faceDetected) adaptiveFpsController.onFaceDetected(obs.timestampMs)
+                else adaptiveFpsController.onFaceLost(obs.timestampMs)
+            }
+        })
+    }
+
+    private fun ensureWatchdogAndMonitoring() {
+        if (frameWatchdogJob?.isActive != true) startFrameWatchdog()
+        if (!::thermalMonitor.isInitialized || thermalMonitoringJob?.isActive != true) startThermalMonitoring()
+    }
+
+    private suspend fun attemptCameraBindLocked(generation: Long): Boolean {
+        if (!desiredTrackingEnabled || generation != lifecycleGeneration) return false
+        bindInProgress = true
+        return try {
+            val ok = bindAnalysisUseCase()
+            if (ok) PerfTelemetry.recordCameraLifecycle("bound", SystemClock.elapsedRealtime())
+            ok
+        } finally {
+            bindInProgress = false
+        }
+    }
+
+    private fun scheduleCameraRetryLocked(generation: Long) {
+        if (!desiredTrackingEnabled || generation != lifecycleGeneration) return
+        if (cameraRetryJob?.isActive == true) return
+        cameraRetryJob = serviceScope.launch {
+            delay(CAMERA_RETRY_BASE_MS)
+            lifecycleMutex.withLock {
+                if (desiredTrackingEnabled && generation == lifecycleGeneration &&
+                    _state.value.actualState in setOf(TrackingState.WAITING_FOR_CAMERA, TrackingState.CAMERA_LOST, TrackingState.STARTING)
+                ) {
+                    attemptCameraBindLocked(generation)
+                    if (cameraBound) {
+                        isCameraConflictPaused = false
+                        acceptingFrames = true
+                        publishState(_state.value.copy(
+                            isRunning = true,
+                            isPaused = false,
+                            actualState = TrackingState.RUNNING,
+                            desiredTrackingEnabled = true,
+                            generation = generation,
+                            reason = null,
+                        ))
+                    } else {
+                        publishState(_state.value.copy(actualState = TrackingState.WAITING_FOR_CAMERA, reason = "camera-unavailable"))
+                        cameraRetryJob = null
+                        scheduleCameraRetryLocked(generation)
+                    }
+                }
+            }
         }
     }
 
@@ -606,6 +770,8 @@ class CameraService : LifecycleService() {
             true
         } catch (e: Exception) {
             cameraBound = false
+            acceptingFrames = false
+            PerfTelemetry.recordCameraLifecycle("bind-failed", SystemClock.elapsedRealtime())
             Timber.e(e, "Failed to bind the analysis use case")
             false
         }
@@ -634,22 +800,38 @@ class CameraService : LifecycleService() {
             }
     }
 
-    private suspend fun stopTrackingLocked(closeTrackers: Boolean = false) {
-        // Perf audit P2: idempotent. Two owners used to send ACTION_STOP for
-        // one user action; the second re-ran the whole teardown (and re-closed
-        // the shared trackers) for an already-dead session. A duplicate stop
-        // intent that spawned a fresh service instance still stops that
-        // instance — it just skips the (already done) pipeline teardown.
-        if (!closeTrackers && !_state.value.isRunning && !cameraBound) {
-            Timber.d("Stop requested for an already-stopped session; nothing to do")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
-            else @Suppress("DEPRECATION") stopForeground(true)
+    private suspend fun stopTrackingLocked(clearDesired: Boolean = false) {
+        val wasStopped = _state.value.actualState == TrackingState.STOPPED &&
+            !cameraBound && pipelineJobs.isEmpty()
+        if (wasStopped) {
+            publishState(_state.value.copy(
+                isRunning = false,
+                isPaused = false,
+                actualState = TrackingState.STOPPED,
+                desiredTrackingEnabled = if (clearDesired) false else desiredTrackingEnabled,
+                generation = lifecycleGeneration,
+            ))
+            stopForegroundCompat()
             stopSelf()
             return
         }
+
+        acceptingFrames = false
+        cameraRetryJob?.cancel(); cameraRetryJob = null
         restartJob?.cancel(); restartJob = null
         frameWatchdogJob?.cancel(); frameWatchdogJob = null
         thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
+        publishState(_state.value.copy(
+            isRunning = false,
+            isPaused = false,
+            actualState = TrackingState.STOPPING,
+            desiredTrackingEnabled = if (clearDesired) false else desiredTrackingEnabled,
+            generation = lifecycleGeneration,
+        ))
+
+        // Stop accepting callbacks before touching CameraX. The analyzer can
+        // already have a queued ImageProxy; its first line is the generation/state
+        // gate and it will close that proxy without touching a bitmap.
         synchronized(jobsLock) {
             pipelineJobs.forEach { it.cancel() }
             pipelineJobs.clear()
@@ -657,50 +839,75 @@ class CameraService : LifecycleService() {
         stopThermalMonitoring()
         unregisterPowerSaveReceiver()
         stopOrientationListener()
-        runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
-            .onFailure { Timber.e(it, "unbindAll failed") }
+        runCatching {
+            withContext(Dispatchers.Main.immediate) {
+                imageAnalysis?.clearAnalyzer()
+                cameraProvider?.unbindAll()
+            }
+        }.onFailure { Timber.e(it, "camera close failed") }
         cameraProvider = null
         imageAnalysis = null
         cameraBound = false
-        if (closeTrackers) {
-            // Perf audit P2: only an explicit gesture disable closes the
-            // @Singleton trackers. An ordinary session stop leaves the loaded
-            // models in place so the next start skips the asset re-read and
-            // native model creation entirely.
-            withContext(Dispatchers.Default) {
-                runCatching { handTracker.close() }
-                runCatching { faceTracker.close() }
-            }
+
+        // A stop is a resource boundary. Close both async graphs before
+        // retiring pixel leases; otherwise a debug handoff or a rapid
+        // start→stop→start can leave the old callback holding a bitmap.
+        withContext(Dispatchers.Default) {
+            runCatching { handTracker.close() }.onFailure { Timber.e(it, "hand tracker close failed") }
+            runCatching { faceTracker.close() }.onFailure { Timber.e(it, "face tracker close failed") }
         }
+        // Busy buffers are retired, not recycled. Tracker.close() above releases
+        // any outstanding leases; a late callback can only release a retired slot.
+        frameBitmaps.drain()
         adaptiveFpsController.reset()
-        publishState(ServiceState(isRunning = false, isPaused = false))
+        desiredTrackingEnabled = if (clearDesired) false else desiredTrackingEnabled
+        publishState(ServiceState(
+            isRunning = false,
+            isPaused = false,
+            actualState = TrackingState.STOPPED,
+            desiredTrackingEnabled = desiredTrackingEnabled,
+            generation = lifecycleGeneration,
+        ))
         userPaused = false
         systemPaused = false
         _userPaused.value = false
         thermalPaused = false
         postRecoveryFps = 0
         PerfTelemetry.recordCameraLifecycle("stopped", SystemClock.elapsedRealtime())
+        stopForegroundCompat()
+        stopSelf()
+        Timber.i("Tracking stopped (desired=%s)", desiredTrackingEnabled)
+    }
+
+    private fun stopForegroundCompat() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
         else @Suppress("DEPRECATION") stopForeground(true)
-        stopSelf()
-        Timber.i("Tracking stopped")
     }
 
     private suspend fun pauseTrackingLocked(userInitiated: Boolean = true) {
-        if (!_state.value.isRunning) return
+        if (_state.value.actualState != TrackingState.RUNNING) return
         if (userInitiated) userPaused = true else systemPaused = true
         _userPaused.value = userInitiated
-        publishState(_state.value.copy(isPaused = true))
+        acceptingFrames = false
+        publishState(_state.value.copy(
+            isRunning = false,
+            isPaused = true,
+            actualState = TrackingState.PAUSING,
+            desiredTrackingEnabled = true,
+            reason = if (userInitiated) "user-paused" else "screen-off",
+        ))
         withContext(Dispatchers.Main.immediate) {
             imageAnalysis?.clearAnalyzer()
-            // Hand the sensor back while paused. Keeping the capture session open with the
-            // analyzer detached still lit the privacy indicator and kept the camera HAL
-            // powered (visible as heat and a few percent an hour overnight in a pocket), and
-            // on Android 12+ it is the indicator that makes a camera app look like a spy app.
             runCatching { cameraProvider?.unbindAll() }
                 .onFailure { Timber.e(it, "unbindAll on pause failed") }
             cameraBound = false
         }
+        publishState(_state.value.copy(
+            isRunning = false,
+            isPaused = true,
+            actualState = TrackingState.PAUSED,
+            desiredTrackingEnabled = true,
+        ))
         updateNotification(isPaused = true)
         Timber.i(if (userInitiated) "Tracking paused by user (sticky)" else "Tracking paused by system (screen off)")
         PerfTelemetry.recordCameraLifecycle(
@@ -710,7 +917,14 @@ class CameraService : LifecycleService() {
     }
 
     private suspend fun resumeTrackingLocked() {
-        if (!_state.value.isRunning) { startTrackingLocked(); return }
+        if (!desiredTrackingEnabled) return
+        if (_state.value.actualState == TrackingState.RUNNING) return
+        if (_state.value.actualState == TrackingState.STOPPED || _state.value.actualState == TrackingState.FAILED) {
+            lifecycleGeneration++
+            startTrackingLocked()
+            return
+        }
+        if (_state.value.actualState !in setOf(TrackingState.PAUSED, TrackingState.CAMERA_LOST, TrackingState.WAITING_FOR_CAMERA)) return
         userPaused = false
         systemPaused = false
         _userPaused.value = false
@@ -720,28 +934,44 @@ class CameraService : LifecycleService() {
         }
         val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
         if (km?.isKeyguardLocked == true) {
-            Timber.i("Resume requested but keyguard locked; staying paused")
+            publishState(_state.value.copy(actualState = TrackingState.PAUSED, reason = "device-locked"))
             return
         }
-        publishState(_state.value.copy(isPaused = false))
+        val generation = ++lifecycleGeneration
+        publishState(_state.value.copy(
+            isRunning = false,
+            isPaused = false,
+            actualState = TrackingState.STARTING,
+            generation = generation,
+            desiredTrackingEnabled = true,
+            reason = null,
+        ))
         lastFrameTimestampMs = 0L
         lastProcessedFrameMs = SystemClock.elapsedRealtime()
-        if (cameraBound && imageAnalysis != null) {
-            val executor = analysisExecutor ?: return
-            withContext(Dispatchers.Main.immediate) {
-                imageAnalysis?.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
-            }
-        } else if (!bindAnalysisUseCase()) {
-            // The camera refused to come back (another app took it, or the provider is in a
-            // bad state after the screen was off for a long time). Tear the session down so
-            // the retry logic starts it cleanly instead of leaving a paused service that
-            // reports itself healthy forever.
-            Timber.e("Camera did not come back after the pause; restarting the session")
-            stopTrackingLocked()
+        if (!attemptCameraBindLocked(generation)) {
+            publishState(_state.value.copy(
+                isRunning = false,
+                isPaused = false,
+                actualState = TrackingState.WAITING_FOR_CAMERA,
+                generation = generation,
+                reason = "camera-unavailable",
+            ))
+            scheduleCameraRetryLocked(generation)
+            updateNotification(isPaused = false, isWaiting = true)
             return
         }
+        isCameraConflictPaused = false
+        acceptingFrames = true
+        publishState(_state.value.copy(
+            isRunning = true,
+            isPaused = false,
+            actualState = TrackingState.RUNNING,
+            generation = generation,
+            desiredTrackingEnabled = true,
+            reason = null,
+        ))
         updateNotification(isPaused = false)
-        Timber.i("Tracking resumed")
+        Timber.i("Tracking resumed (generation=%d)", generation)
         PerfTelemetry.recordCameraLifecycle("resumed", SystemClock.elapsedRealtime())
     }
 
@@ -752,20 +982,18 @@ class CameraService : LifecycleService() {
         var leased: Bitmap? = null
         var handedOff = false
         try {
-            if (_state.value.isPaused) return
+            val state = _state.value
+            if (!acceptingFrames || state.actualState != TrackingState.RUNNING ||
+                state.generation != lifecycleGeneration || state.isPaused
+            ) return
             val intervalMs = adaptiveFpsController.analysisIntervalMs
             if (startMs - lastFrameTimestampMs < intervalMs) {
-                // Perf audit P18: throttled frames are counted, not processed.
                 PerfTelemetry.recordFrameDroppedThrottle()
                 return
             }
             lastFrameTimestampMs = startMs
             lastProcessedFrameMs = startMs
 
-            // P0-2: the reusable buffer is leased for as long as the trackers can still read it,
-            // not for the duration of this callback. Size it from the stream first — a resolution
-            // or rotation change invalidates every buffer in the pool, and draining here (a few
-            // times per session) replaces the re-allocation the old code did inside the frame path.
             val rotation = imageProxy.imageInfo.rotationDegrees
             val swapped = rotation == 90 || rotation == 270
             val targetW = if (swapped) imageProxy.height else imageProxy.width
@@ -773,12 +1001,12 @@ class CameraService : LifecycleService() {
             if (targetW != conversionTargetWidth || targetH != conversionTargetHeight) {
                 conversionTargetWidth = targetW
                 conversionTargetHeight = targetH
+                // SlotPool.drain retires busy slots; it never recycles a bitmap
+                // still visible to MediaPipe.
                 frameBitmaps.drain()
             }
             val bitmap = frameBitmaps.acquire()
             if (bitmap == null) {
-                // Every buffer is still being read by inference. Dropping is the only correct
-                // response: waiting would block the camera thread and queue frames behind it.
                 PerfTelemetry.recordFrameDroppedBackpressure()
                 return
             }
@@ -788,38 +1016,60 @@ class CameraService : LifecycleService() {
             val mpImage = convertIntoLeasedBitmap(bitmap, imageProxy)
             PerfTelemetry.recordImageConversion(SystemClock.elapsedRealtime() - conversionStart)
             if (mpImage == null) {
-                // Its own reason code: a frame whose pixels could not be prepared is a different
-                // fault from a channel that is not running, and conflating them hid P1-2.
                 PerfTelemetry.recordFrameDroppedConversion()
                 return
             }
 
-            // One hook per channel that is asked to consume the frame, fired exactly once by that
-            // channel — immediately if it refuses the frame, otherwise when MediaPipe delivers the
-            // result. The slot therefore returns when the LAST reader is done, including the case
-            // where both channels refuse and no result will ever arrive.
-            if (!handTracker.isInitialized()) PerfTelemetry.recordFrameDroppedNoTracker()
+            val frameId = nextFrameId.incrementAndGet()
+            val generation = lifecycleGeneration
             val eyeChannelWanted = eyeTrackingEnabled && faceTracker.isInitialized()
-            val remaining = java.util.concurrent.atomic.AtomicInteger(if (eyeChannelWanted) 2 else 1)
-            val onConsumed: () -> Unit = {
-                if (remaining.decrementAndGet() <= 0) {
-                    // MPImage owns reference-counted native storage; close it once nobody reads it,
-                    // which is also the moment the buffer may be overwritten again.
+            val ownership = com.aircontrol.tracking.FrameOwnership(
+                frameId = frameId,
+                generation = generation,
+                bitmapId = System.identityHashCode(bitmap),
+                createdAtMs = startMs,
+                consumerCount = if (eyeChannelWanted) 2 else 1,
+                onReleased = {
                     runCatching { mpImage.close() }
                     frameBitmaps.release(bitmap)
+                },
+                onViolation = { reason ->
+                    Timber.e("Frame ownership violation frame=%d generation=%d bitmap=%d: %s", frameId, generation, System.identityHashCode(bitmap), reason)
+                    PerfTelemetry.recordFrameOwnershipViolation()
+                },
+            )
+            handedOff = true
+
+            ownership.markSubmitted(com.aircontrol.tracking.FrameOwnership.Consumer.HAND)
+            try {
+                handTracker.processFrame(mpImage, startMs) {
+                    ownership.markCompleted(com.aircontrol.tracking.FrameOwnership.Consumer.HAND)
+                    PerfTelemetry.recordHandFrameCompleted(frameId, SystemClock.elapsedRealtime() - startMs)
+                }
+            } catch (e: Throwable) {
+                ownership.markCompleted(com.aircontrol.tracking.FrameOwnership.Consumer.HAND)
+                CrashGuard.report("hand frame $frameId", e)
+            }
+
+            if (eyeChannelWanted) {
+                ownership.markSubmitted(com.aircontrol.tracking.FrameOwnership.Consumer.FACE)
+                try {
+                    faceTracker.processFrame(mpImage, startMs) {
+                        ownership.markCompleted(com.aircontrol.tracking.FrameOwnership.Consumer.FACE)
+                        PerfTelemetry.recordFaceFrameCompleted(frameId, SystemClock.elapsedRealtime() - startMs)
+                    }
+                } catch (e: Throwable) {
+                    ownership.markCompleted(com.aircontrol.tracking.FrameOwnership.Consumer.FACE)
+                    CrashGuard.report("face frame $frameId", e)
                 }
             }
-            handedOff = true
-            handTracker.processFrame(mpImage, startMs, onConsumed)
-            if (eyeChannelWanted) faceTracker.processFrame(mpImage, startMs, onConsumed)
             PerfTelemetry.recordFrameProcessed(startMs)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Timber.e(e, "processImageFrame error")
+            PerfTelemetry.recordPipelineException("frame-analyzer", e::class.java.simpleName)
         } finally {
-            // Anything that did not reach a tracker comes straight back; anything that did is
-            // returned by the channel's own onConsumed hook.
             leased?.let { if (!handedOff) frameBitmaps.discard(it) }
-            imageProxy.close()
+            runCatching { imageProxy.close() }
             PerfTelemetry.recordAnalyzerDuration(SystemClock.elapsedRealtime() - startMs)
         }
     }
@@ -884,7 +1134,11 @@ class CameraService : LifecycleService() {
         }.onFailure { Timber.e(it, "Notification channel creation failed") }
     }
 
-    private fun buildNotification(isPaused: Boolean, isThermal: Boolean = false): Notification {
+    private fun buildNotification(
+        isPaused: Boolean,
+        isThermal: Boolean = false,
+        isWaiting: Boolean = false,
+    ): Notification {
         val contentIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -902,6 +1156,7 @@ class CameraService : LifecycleService() {
 
         val contentText = when {
             isThermal && isPaused -> getString(R.string.notification_text_thermal_critical)
+            isWaiting -> getString(R.string.notification_text_waiting)
             isThermal -> getString(R.string.notification_text_thermal)
             isPaused -> getString(R.string.notification_text_paused)
             else -> getString(R.string.notification_text_active)
@@ -917,10 +1172,14 @@ class CameraService : LifecycleService() {
             .build()
     }
 
-    private fun updateNotification(isPaused: Boolean, isThermal: Boolean = false) {
+    private fun updateNotification(
+        isPaused: Boolean,
+        isThermal: Boolean = false,
+        isWaiting: Boolean = false,
+    ) {
         runCatching {
             getSystemService(NotificationManager::class.java)
-                ?.notify(NOTIFICATION_ID, buildNotification(isPaused, isThermal))
+                ?.notify(NOTIFICATION_ID, buildNotification(isPaused, isThermal, isWaiting))
         }
     }
 
@@ -952,11 +1211,13 @@ class CameraService : LifecycleService() {
                 // anything as a rate, and reading it here (every 5 s) keeps the cost off the frame
                 // path entirely. `faceTracker` is lateinit and injection races a very early
                 // watchdog tick, hence runCatching.
+                var inferenceStalled = false
                 runCatching {
                     val gateNow = SystemClock.elapsedRealtime()
                     val handStats = handTracker.inFlightStats(gateNow)
                     val faceStats =
                         if (faceTracker.isInitialized()) faceTracker.inFlightStats(gateNow) else null
+                    inferenceStalled = handStats.stalled || faceStats?.stalled == true
                     PerfTelemetry.recordGateStats(
                         handBusy = handStats.busy,
                         faceBusy = faceStats?.busy ?: false,
@@ -966,20 +1227,16 @@ class CameraService : LifecycleService() {
                     )
                 }
                 val s = _state.value
-                if (!s.isRunning || thermalPaused) continue
-                if (s.isPaused || userPaused || systemPaused) {
-                    // A pause releases the camera and normally ends via ACTION_RESUME
-                    // (notification button, or the screen-on receiver for system pauses).
-                    // If that broadcast is ever missed - doze, an OEM that reorders or
-                    // swallows them - the session would sit paused with no camera
-                    // forever: gestures dead and nothing left to restart it.
-                    //
-                    // Fix (audit #21): a USER pause is STICKY — the watchdog must
-                    // never revive it. "I pressed Pause" has to mean "stay paused",
-                    // or the camera coming back on by itself destroys trust. Only a
-                    // system pause (screen off with a missed wake broadcast) may be
-                    // recovered here, and only while plainly awake.
-                    if (systemPaused && !userPaused && !cameraBound) revivePausedSessionIfNeeded()
+                // The watchdog observes RUNNING; it never turns STARTING,
+                // WAITING_FOR_CAMERA, PAUSING, PAUSED, CAMERA_LOST or STOPPING
+                // into a restart request. Those states are owned by the lifecycle
+                // coordinator and recover through their explicit event.
+                if (s.actualState != TrackingState.RUNNING || !s.isRunning || thermalPaused ||
+                    !desiredTrackingEnabled
+                ) continue
+                if (inferenceStalled) {
+                    Timber.w("Inference callback exceeded its diagnostic window; rebuilding the graph")
+                    restartCamera()
                     continue
                 }
 
@@ -1044,49 +1301,59 @@ class CameraService : LifecycleService() {
         }
     }
 
-    /** Resume a session that is paused with the camera released, but only when it is safe. */
-    private suspend fun revivePausedSessionIfNeeded() {
-        val pm = getSystemService(POWER_SERVICE) as? android.os.PowerManager
-        val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
-        val awake = pm?.isInteractive == true && km?.isKeyguardLocked == false
-        if (!awake) return
-        Timber.w("Paused with no camera while the screen is awake; resuming the session")
-        resumeTrackingLocked()
-    }
-
     private suspend fun restartCamera() {
-        PerfTelemetry.recordWatchdogAction("restart-camera", SystemClock.elapsedRealtime())
-        runCatching { withContext(Dispatchers.Main.immediate) { cameraProvider?.unbindAll() } }
-            .onFailure { Timber.e(it, "unbindAll on restart failed") }
-        imageAnalysis = null
-        cameraBound = false
-        lastProcessedFrameMs = SystemClock.elapsedRealtime()
-        withContext(Dispatchers.Default) {
-            runCatching { handTracker.close(); handTracker.initialize() }
-            if (eyeTrackingEnabled) runCatching { faceTracker.close(); faceTracker.initialize() }
-        }
-        restartJob = serviceScope.launch {
-            // Fix: a restart that failed silently used to leave a "running" session with no
-            // analyzer attached - exactly the frozen-cursor state it was meant to clear. The
-            // shared binder is used so a restart cannot drift from a cold start.
-            //
-            // Fix (audit #22): NEVER bind the camera when no tracker survived the
-            // re-init. Binding anyway produced the zombie state — camera service
-            // "running", privacy indicator on, but no pipeline to feed — which
-            // users read as "everything says ON but nothing works". Skip the bind
-            // and let the watchdog retry with its widening backoff instead.
-            val handReady = handTracker.isInitialized()
-            val eyeReady = !eyeTrackingEnabled || faceTracker.isInitialized()
-            if (!handReady && !eyeReady) {
-                Timber.e(
-                    "Camera restart skipped — no working tracker (hand=%b, eye=%b); watchdog will retry",
-                    handReady,
-                    eyeReady,
-                )
-                return@launch
+        lifecycleMutex.withLock {
+            if (!desiredTrackingEnabled || _state.value.actualState != TrackingState.RUNNING || bindInProgress) return@withLock
+            val generation = ++lifecycleGeneration
+            Timber.w("Watchdog detected a genuine RUNNING stall; rebuilding generation=%d", generation)
+            PerfTelemetry.recordWatchdogAction("rebuild-camera", SystemClock.elapsedRealtime())
+            acceptingFrames = false
+            publishState(_state.value.copy(
+                isRunning = false,
+                isPaused = false,
+                actualState = TrackingState.STARTING,
+                generation = generation,
+                reason = "pipeline-stall",
+            ))
+            runCatching {
+                withContext(Dispatchers.Main.immediate) {
+                    imageAnalysis?.clearAnalyzer()
+                    cameraProvider?.unbindAll()
+                }
+            }.onFailure { Timber.e(it, "unbindAll on watchdog rebuild failed") }
+            cameraBound = false
+            imageAnalysis = null
+            // Closing the graph, rather than reclaiming a timed-out gate, is what
+            // proves that no old callback can still read the old frame.
+            withContext(Dispatchers.Default) {
+                runCatching { handTracker.close() }
+                if (eyeTrackingEnabled) runCatching { faceTracker.close() }
+                runCatching { handTracker.initialize() }
+                if (eyeTrackingEnabled) runCatching { faceTracker.initialize() }
             }
-            if (bindAnalysisUseCase()) Timber.i("Camera restarted")
-            else Timber.e("Camera restart failed; the watchdog keeps trying")
+            frameBitmaps.drain()
+            if (handTracker.isInitialized() && attemptCameraBindLocked(generation)) {
+                isCameraConflictPaused = false
+                acceptingFrames = true
+                publishState(_state.value.copy(
+                    isRunning = true,
+                    isPaused = false,
+                    actualState = TrackingState.RUNNING,
+                    generation = generation,
+                    desiredTrackingEnabled = true,
+                    reason = null,
+                ))
+                PerfTelemetry.recordCameraLifecycle("recovered", SystemClock.elapsedRealtime())
+            } else {
+                publishState(_state.value.copy(
+                    isRunning = false,
+                    actualState = TrackingState.WAITING_FOR_CAMERA,
+                    generation = generation,
+                    desiredTrackingEnabled = true,
+                    reason = "camera-unavailable-after-stall",
+                ))
+                scheduleCameraRetryLocked(generation)
+            }
         }
     }
 
@@ -1124,6 +1391,7 @@ class CameraService : LifecycleService() {
 
     private fun stopThermalMonitoring() {
         thermalMonitoringJob?.cancel(); thermalMonitoringJob = null
+        if (!::thermalMonitor.isInitialized) return
         thermalMonitor.stopMonitoring(resetStatus = false) // fix #43
         // Perf audit P5: a stopped monitor must not leave pending confirmation
         // counts behind; the next session debounces from a clean NONE.
@@ -1169,6 +1437,7 @@ class CameraService : LifecycleService() {
             resourceGovernor.fpsCapFor(isPowerSaveMode = pm?.isPowerSaveMode == true),
         )
         configuredFps = capped
+        PerfTelemetry.recordConfiguredFps(capped)
         adaptiveFpsController.updateConfiguredFps(capped)
     }
 
@@ -1177,7 +1446,7 @@ class CameraService : LifecycleService() {
             com.aircontrol.tracking.ThermalStatus.NONE -> {
                 if (thermalPaused) {
                     thermalPaused = false
-                    if (!userPaused) serviceScope.launch { resumeTrackingLocked() }
+                    if (!userPaused) serviceScope.launch { lifecycleMutex.withLock { resumeTrackingLocked() } }
                     postRecoveryFps = (configuredFps / 2).coerceAtLeast(5)
                     adaptiveFpsController.updateConfiguredFps(postRecoveryFps)
                     thermalRecoveryJob?.cancel()
@@ -1197,7 +1466,7 @@ class CameraService : LifecycleService() {
             com.aircontrol.tracking.ThermalStatus.LIGHT -> {
                 if (thermalPaused) {
                     thermalPaused = false
-                    if (!userPaused) serviceScope.launch { resumeTrackingLocked() }
+                    if (!userPaused) serviceScope.launch { lifecycleMutex.withLock { resumeTrackingLocked() } }
                     postRecoveryFps = (configuredFps / 2).coerceAtLeast(5)
                     adaptiveFpsController.updateConfiguredFps(postRecoveryFps)
                     thermalRecoveryJob?.cancel()
@@ -1224,7 +1493,7 @@ class CameraService : LifecycleService() {
             com.aircontrol.tracking.ThermalStatus.SEVERE -> {
                 if (thermalPaused) {
                     thermalPaused = false
-                    if (!userPaused) serviceScope.launch { resumeTrackingLocked() }
+                    if (!userPaused) serviceScope.launch { lifecycleMutex.withLock { resumeTrackingLocked() } }
                 }
                 thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
                 postRecoveryFps = 0
@@ -1236,7 +1505,7 @@ class CameraService : LifecycleService() {
                 thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
                 postRecoveryFps = 0
                 if (!_state.value.isPaused) {
-                    serviceScope.launch { pauseTrackingLocked() }
+                    serviceScope.launch { lifecycleMutex.withLock { pauseTrackingLocked() } }
                     updateNotification(isPaused = true, isThermal = true)
                 }
             }

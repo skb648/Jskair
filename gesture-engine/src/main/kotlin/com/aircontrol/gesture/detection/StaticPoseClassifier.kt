@@ -9,6 +9,7 @@ import com.aircontrol.gesture.model.LandmarkTemplate
 import com.aircontrol.gesture.model.Pose
 import kotlin.concurrent.Volatile
 import kotlin.math.sqrt
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Classifies a static hand pose from landmarks + finger extension state, with a
@@ -35,6 +36,10 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
 
     private val fingerDetector = FingerExtensionDetector(config)
 
+    // Debounce history is temporal state, not a concurrent collection. The
+    // lock is deliberately local to this classifier and held only for one
+    // classification turn, so unrelated camera/face work is never blocked.
+    private val stateLock = ReentrantLock()
     private val poseHistory = ArrayDeque<Pose>()
 
     /** The last confirmed pose (after debounce). */
@@ -88,20 +93,24 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
      *   reject thumb poses made while the hand is moving (Fix A-12).
      */
     fun classify(input: HandInput, handVelocity: Float = 0f): Pose {
-        if (!input.isDetected) {
-            poseHistory.clear()
-            runPose = Pose.NONE
-            runLength = 0
-            lastFrameFistLike = false
-            confirmedPose = Pose.NONE
-            return Pose.NONE
+        stateLock.lock()
+        try {
+            if (!input.isDetected) {
+                poseHistory.clear()
+                runPose = Pose.NONE
+                runLength = 0
+                lastFrameFistLike = false
+                confirmedPose = Pose.NONE
+                return Pose.NONE
+            }
+
+            val fingerState = fingerDetector.detect(input)
+            lastFrameFistLike = fingerState.extendedFingerCount == 0
+            val rawPose = classifyRaw(input, fingerState, handVelocity)
+            return applyDebounce(rawPose)
+        } finally {
+            stateLock.unlock()
         }
-
-        val fingerState = fingerDetector.detect(input)
-        lastFrameFistLike = fingerState.extendedFingerCount == 0
-
-        val rawPose = classifyRaw(input, fingerState, handVelocity)
-        return applyDebounce(rawPose)
     }
 
     /** Returns the finger extension state for [input] without classifying. */
@@ -206,40 +215,42 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
      * — not 600ms in 5fps scan mode.
      */
     internal fun applyDebounce(rawPose: Pose): Pose {
-        val requiredFrames = effectiveDebounceFrames.coerceAtLeast(1)
-
-        if (rawPose == runPose) {
-            runLength++
-        } else {
-            runPose = rawPose
-            runLength = 1
+        stateLock.lock()
+        try {
+            val requiredFrames = effectiveDebounceFrames.coerceAtLeast(1)
+            if (rawPose == runPose) runLength++ else {
+                runPose = rawPose
+                runLength = 1
+            }
+            poseHistory.addLast(rawPose)
+            while (poseHistory.size > requiredFrames) poseHistory.removeFirst()
+            if (runLength >= requiredFrames && poseHistory.all { it == rawPose }) confirmedPose = rawPose
+            return confirmedPose
+        } finally {
+            stateLock.unlock()
         }
-
-        poseHistory.addLast(rawPose)
-        while (poseHistory.size > requiredFrames) {
-            poseHistory.removeFirst()
-        }
-
-        if (runLength >= requiredFrames && poseHistory.all { it == rawPose }) {
-            confirmedPose = rawPose
-        }
-        return confirmedPose
     }
 
     /** Resets the classifier state. */
     fun reset() {
-        poseHistory.clear()
-        runPose = Pose.NONE
-        runLength = 0
-        confirmedPose = Pose.NONE
-        lastFrameFistLike = false
+        stateLock.lock()
+        try {
+            poseHistory.clear()
+            runPose = Pose.NONE
+            runLength = 0
+            confirmedPose = Pose.NONE
+            lastFrameFistLike = false
+        } finally { stateLock.unlock() }
     }
 
     /** Updates the config in place (sensitivity change) preserving in-progress state. */
     fun updateConfig(newConfig: GestureEngineConfig) {
-        this.config = newConfig
-        effectiveDebounceFrames = newConfig.poseDebounceFrames
-        fingerDetector.updateConfig(newConfig)
+        stateLock.lock()
+        try {
+            this.config = newConfig
+            effectiveDebounceFrames = newConfig.poseDebounceFrames
+            fingerDetector.updateConfig(newConfig)
+        } finally { stateLock.unlock() }
     }
 
     /**

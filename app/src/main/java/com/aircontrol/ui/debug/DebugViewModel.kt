@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
 import timber.log.Timber
 import java.util.concurrent.Executors
 import javax.inject.Inject
@@ -114,11 +115,13 @@ class DebugViewModel @Inject constructor(
     private var frameCount = 0
     private var lastFpsMeasureTimeMs = 0L
 
-    // Reusable transform bitmap for debug camera — avoids per-frame allocation
-    @Volatile
-    private var reusableDebugBitmap: Bitmap? = null
+    // A debug bitmap is owned by MediaPipe until its completion callback. It is
+    // never recycled or overwritten while that callback is outstanding.
+    @Volatile private var reusableDebugBitmap: Bitmap? = null
     private var debugBitmapWidth: Int = 0
     private var debugBitmapHeight: Int = 0
+    private val debugFrameInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var debugFrameIdle: CompletableDeferred<Unit> = CompletableDeferred(Unit)
 
     // Camera management
     private val analysisExecutor = Executors.newSingleThreadExecutor { r ->
@@ -139,14 +142,13 @@ class DebugViewModel @Inject constructor(
     fun startTracking(context: Context) {
         if (_isServiceRunning.value) return
 
-        // Check if CameraService is running and stop it to take over camera
-        wasServiceRunning = CameraService.isRunning.value
+        // Declare exclusive ownership before requesting the handoff. The
+        // accessibility watchdog must not race this stop with a revive.
+        cameraServiceManager.autoReviveEnabled = false
+        wasServiceRunning = CameraService.serviceState.value.actualState != com.aircontrol.camera.TrackingState.STOPPED
         if (wasServiceRunning) {
-            val stopIntent = Intent(context, CameraService::class.java).apply {
-                action = CameraService.ACTION_STOP
-            }
-            context.startService(stopIntent)
-            Timber.d("Stopped CameraService for debug screen")
+            cameraServiceManager.stopTracking()
+            Timber.d("Debug screen requested the CameraService handoff")
         }
 
         // Perf audit P3: the tracker init (asset load + native model creation)
@@ -330,101 +332,105 @@ class DebugViewModel @Inject constructor(
      * expires). Polls cheap companion state — no binder calls.
      */
     private suspend fun awaitCameraServiceStopped(timeoutMs: Long) {
-        if (!CameraService.isRunning.value) return
+        if (CameraService.serviceState.value.actualState == com.aircontrol.camera.TrackingState.STOPPED) return
         val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
-            if (!CameraService.isRunning.value) return
-            delay(50L)
+            if (CameraService.serviceState.value.actualState == com.aircontrol.camera.TrackingState.STOPPED) return
+            delay(25L)
         }
-        Timber.w("CameraService did not report stopped within %dms; binding anyway", timeoutMs)
+        Timber.e("CameraService did not reach STOPPED before debug handoff timeout; refusing camera overlap")
+        throw IllegalStateException("camera ownership handoff did not complete")
     }
 
     private fun processDebugFrame(imageProxy: ImageProxy) {
-        try {
-            val mpImage = synchronized(this) {
-                imageProxyToMPImage(imageProxy)
-            }
-            if (mpImage != null) {
-                try {
-                    val timestampMs = System.currentTimeMillis()
-                    handTracker.processFrame(mpImage, timestampMs)
-                } finally {
-                    // Perf audit P15: the debug path never closed the MPImage —
-                    // its reference-counted native storage leaked once per
-                    // frame (the service path has always closed it). Close
-                    // after submission; detectAsync consumes the image
-                    // synchronously, same contract as CameraService.
-                    mpImage.close()
+        // Debug and accessibility use the same singleton HandTracker. A debug
+        // frame is therefore a real asynchronous lease, not a temporary MPImage.
+        if (!debugFrameInFlight.compareAndSet(false, true)) {
+            imageProxy.close()
+            return
+        }
+        val idle = CompletableDeferred<Unit>()
+        debugFrameIdle = idle
+        var ownedBitmap: Bitmap? = null
+        var ownedMpImage: MPImage? = null
+        var completed = false
+        fun complete() {
+            if (completed) return
+            completed = true
+            runCatching { ownedMpImage?.close() }
+            ownedBitmap?.let { bitmap ->
+                synchronized(this) {
+                    if (reusableDebugBitmap == null && !bitmap.isRecycled) {
+                        reusableDebugBitmap = bitmap
+                    }
                 }
             }
-        } catch (e: Exception) {
+            debugFrameInFlight.set(false)
+            idle.complete(Unit)
+        }
+        try {
+            val converted = imageProxyToMPImage(imageProxy)
+            if (converted == null) {
+                complete()
+                return
+            }
+            val (mpImage, bitmap) = converted
+            ownedBitmap = bitmap
+            ownedMpImage = mpImage
+            val accepted = handTracker.processFrame(mpImage, android.os.SystemClock.elapsedRealtime()) {
+                // MediaPipe has finished reading the pixels. Only now may the
+                // MPImage be closed and the bitmap returned to the idle pool.
+                complete()
+            }
+            if (!accepted) {
+                runCatching { mpImage.close() }
+                complete()
+            }
+        } catch (e: Throwable) {
             Timber.e(e, "Error processing debug frame")
+            runCatching { complete() }
         } finally {
             imageProxy.close()
         }
     }
 
-    private fun imageProxyToMPImage(imageProxy: ImageProxy): MPImage? {
+    private fun imageProxyToMPImage(imageProxy: ImageProxy): Pair<MPImage, Bitmap>? {
         return try {
             val rawBitmap = imageProxy.toBitmap()
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+            val targetWidth = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.height else rawBitmap.width
+            val targetHeight = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.width else rawBitmap.height
 
-            // Calculate target dimensions after rotation
-            val targetWidth: Int
-            val targetHeight: Int
-            if (rotationDegrees == 90 || rotationDegrees == 270) {
-                targetWidth = rawBitmap.height
-                targetHeight = rawBitmap.width
-            } else {
-                targetWidth = rawBitmap.width
-                targetHeight = rawBitmap.height
+            val targetBitmap = synchronized(this) {
+                val cached = reusableDebugBitmap
+                if (cached != null && !cached.isRecycled &&
+                    debugBitmapWidth == targetWidth && debugBitmapHeight == targetHeight
+                ) {
+                    reusableDebugBitmap = null
+                    cached
+                } else {
+                    // Do not recycle a size-mismatched bitmap: it may still be
+                    // held by a late consumer from the previous frame.
+                    reusableDebugBitmap = null
+                    Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                }.also {
+                    debugBitmapWidth = targetWidth
+                    debugBitmapHeight = targetHeight
+                }
             }
-
-            // Reuse or allocate transform bitmap
-            if (reusableDebugBitmap == null ||
-                debugBitmapWidth != targetWidth ||
-                debugBitmapHeight != targetHeight ||
-                reusableDebugBitmap?.isRecycled == true
-            ) {
-                reusableDebugBitmap?.recycle()
-                reusableDebugBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-                debugBitmapWidth = targetWidth
-                debugBitmapHeight = targetHeight
-            }
-
-            val targetBitmap = checkNotNull(reusableDebugBitmap)
 
             val matrix = Matrix()
             when (rotationDegrees) {
-                90 -> {
-                    matrix.postRotate(90f)
-                    matrix.postTranslate(rawBitmap.height.toFloat(), 0f)
-                }
-                180 -> {
-                    matrix.postRotate(180f)
-                    matrix.postTranslate(rawBitmap.width.toFloat(), rawBitmap.height.toFloat())
-                }
-                270 -> {
-                    matrix.postRotate(270f)
-                    matrix.postTranslate(0f, rawBitmap.width.toFloat())
-                }
+                90 -> { matrix.postRotate(90f); matrix.postTranslate(rawBitmap.height.toFloat(), 0f) }
+                180 -> { matrix.postRotate(180f); matrix.postTranslate(rawBitmap.width.toFloat(), rawBitmap.height.toFloat()) }
+                270 -> { matrix.postRotate(270f); matrix.postTranslate(0f, rawBitmap.width.toFloat()) }
             }
-            // Mirror horizontally for front camera (selfie view)
             matrix.postScale(-1f, 1f, targetWidth / 2f, targetHeight / 2f)
-
-            // Draw into reusable target bitmap
             val canvas = android.graphics.Canvas(targetBitmap)
             canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
             canvas.drawBitmap(rawBitmap, matrix, null)
-
-            // Perf audit P6: with RGBA_8888 output, toBitmap() WRAPS the frame
-            // buffer CameraX still owns — recycling it would free live
-            // storage. On API 26+ even the YUV-converted path is GC-managed,
-            // so the source bitmap is simply left to the GC on both paths.
-
-            // BitmapImageBuilder copies data internally, safe to reuse targetBitmap next frame
-            BitmapImageBuilder(targetBitmap).build()
-        } catch (e: Exception) {
+            BitmapImageBuilder(targetBitmap).build() to targetBitmap
+        } catch (e: Throwable) {
             Timber.e(e, "Error converting debug ImageProxy to MPImage")
             null
         }
@@ -454,34 +460,26 @@ class DebugViewModel @Inject constructor(
         gestureDetector.reset()
         _isServiceRunning.value = false
 
-        cameraServiceManager.autoReviveEnabled = true
-
-        if (wasServiceRunning) {
-            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            val isForeground = activityManager?.runningAppProcesses?.any {
-                it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
-            } ?: false
-
-            if (isForeground) {
-                val startIntent = Intent(context, CameraService::class.java).apply {
-                    action = CameraService.ACTION_START
-                }
-                try {
-                    context.startForegroundService(startIntent)
-                    Timber.d("Restarted CameraService after debug screen")
-                } catch (e: Exception) {
-                    Timber.e(e, "Failed to start camera service")
-                }
+        // Complete the exclusive handoff only after the last asynchronous
+        // MediaPipe submission has released its MPImage/bitmap. No fixed delay
+        // is used; the completion callback is the synchronization point.
+        val idleAtStop = debugFrameIdle
+        viewModelScope.launch {
+            runCatching { idleAtStop.await() }
+            cameraServiceManager.autoReviveEnabled = true
+            if (wasServiceRunning) {
+                cameraServiceManager.startTracking()
+                Timber.d("Debug camera closed; requested CameraService handoff back")
             }
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        synchronized(this) {
-            reusableDebugBitmap?.recycle()
-            reusableDebugBitmap = null
-        }
+        // Do not recycle a bitmap here. A late MediaPipe callback may still be
+        // holding the last debug lease; letting it become GC-managed is safer
+        // than turning a lifecycle transition into a use-after-recycle crash.
+        synchronized(this) { reusableDebugBitmap = null }
         // Perf audit P3: the old code blocked the MAIN thread here for up to
         // 2 s in awaitTermination while navigating away from the screen.
         // shutdown() is non-blocking; the bounded wait + shutdownNow run on a

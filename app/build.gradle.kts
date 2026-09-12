@@ -112,6 +112,7 @@ android {
             isIncludeAndroidResources = true
             isReturnDefaultValues = false
             all {
+                it.maxHeapSize = "256m"
                 it.jvmArgs("-XX:+EnableDynamicAgentLoading")
             }
         }

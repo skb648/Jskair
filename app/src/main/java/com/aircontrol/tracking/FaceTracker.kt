@@ -343,6 +343,7 @@ class FaceTrackerImpl @Inject constructor(
             submitted = stats.submitted,
             refused = stats.refused,
             expired = stats.expired,
+            stalled = inFlight.isStalled(nowMs),
         )
     }
 

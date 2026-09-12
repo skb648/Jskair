@@ -66,6 +66,9 @@ object RuntimeHealthMonitor {
                 val reason = when {
                     !prefs.gesturesEnabled -> null
                     !accessibility -> "accessibility-disconnected"
+                    service.actualState == com.aircontrol.camera.TrackingState.WAITING_FOR_CAMERA ||
+                        service.actualState == com.aircontrol.camera.TrackingState.CAMERA_LOST -> "camera-waiting"
+                    service.actualState == com.aircontrol.camera.TrackingState.STARTING -> "camera-starting"
                     !service.isRunning && !service.isPaused -> "camera-not-running"
                     !trackerReady -> "tracker-not-ready"
                     !freshFrames -> "frames-stale"

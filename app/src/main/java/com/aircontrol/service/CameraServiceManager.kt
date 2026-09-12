@@ -69,11 +69,13 @@ class CameraServiceManager @Inject constructor(
      * Safe to call multiple times — CameraService handles idempotency internally.
      */
     fun stopTracking() {
-        // Perf audit P10: startService() with ACTION_STOP while the service is
-        // not running CREATES a service instance whose only job is to stop
-        // itself — one of the duplicate lifecycle churn sources in the
-        // 2026-09-07 logcat. Nothing running means nothing to stop.
-        if (!CameraService.isRunning.value) return
+        // A STARTING/WAITING session is still owned by CameraService and must
+        // receive the disable event. Guard on desired ownership, not only on
+        // isRunning (which is intentionally false until CameraX is ready).
+        val state = CameraService.serviceState.value
+        if (!state.desiredTrackingEnabled &&
+            state.actualState == com.aircontrol.camera.TrackingState.STOPPED
+        ) return
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = CameraService.ACTION_STOP
@@ -92,9 +94,10 @@ class CameraServiceManager @Inject constructor(
      * watchdog may auto-revive; a user pause (default) is sticky.
      */
     fun pauseTracking(systemInitiated: Boolean = false) {
-        // Perf audit P10: same guard as stopTracking — never spawn a service
-        // instance just to pause a session that isn't running.
-        if (!CameraService.isRunning.value) return
+        val state = CameraService.serviceState.value
+        if (state.actualState == com.aircontrol.camera.TrackingState.STOPPED ||
+            state.actualState == com.aircontrol.camera.TrackingState.STOPPING
+        ) return
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = if (systemInitiated) CameraService.ACTION_SYSTEM_PAUSE else CameraService.ACTION_PAUSE
@@ -110,6 +113,8 @@ class CameraServiceManager @Inject constructor(
      * Resumes camera tracking after pause.
      */
     fun resumeTracking() {
+        val state = CameraService.serviceState.value
+        if (!state.desiredTrackingEnabled && state.actualState == com.aircontrol.camera.TrackingState.STOPPED) return
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = CameraService.ACTION_RESUME
@@ -124,7 +129,14 @@ class CameraServiceManager @Inject constructor(
     /**
      * Returns true if the camera service is currently running.
      */
-    fun isTracking(): Boolean = CameraService.isRunning.value
+    fun isTracking(): Boolean {
+        val state = CameraService.serviceState.value
+        return state.desiredTrackingEnabled && state.actualState !in setOf(
+            com.aircontrol.camera.TrackingState.STOPPED,
+            com.aircontrol.camera.TrackingState.STOPPING,
+            com.aircontrol.camera.TrackingState.FAILED,
+        )
+    }
 
     /**
      * Returns true if the camera service is currently paused.

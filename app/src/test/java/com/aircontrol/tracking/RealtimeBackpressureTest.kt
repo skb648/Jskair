@@ -45,20 +45,17 @@ class RealtimeBackpressureTest {
         assertEquals("no expiry was needed", 0L, gate.stats().expired)
     }
 
-    /**
-     * A wedged graph must not be able to stop the pipeline forever. The window is the point: still
-     * reserved inside it, reclaimable past it, and the reclaim counted so "1 expired" in the debug
-     * overlay reads as a broken graph rather than as slow inference.
-     */
+    /** A late callback must not be reclaimed by time: close/reinitialize is the safe owner action. */
     @Test
-    fun `a submission whose result never arrives is reclaimed after the timeout`() {
+    fun `a stalled submission remains reserved until the graph releases it`() {
         val gate = InFlightGate(timeoutMs = 1_000L)
         assertTrue(gate.tryReserve(1_000L))
         assertTrue(gate.isBusy(1_999L))
-        assertFalse(gate.isBusy(2_000L))
-        assertTrue(gate.tryReserve(2_001L))
+        assertTrue(gate.isStalled(2_000L))
+        assertFalse(gate.tryReserve(2_001L))
         assertEquals(1L, gate.stats().expired)
-        assertEquals("the stuck frame was not counted as a refusal", 0L, gate.stats().refused)
+        gate.release()
+        assertTrue(gate.tryReserve(2_002L))
     }
 
     @Test
@@ -148,6 +145,9 @@ class RealtimeBackpressureTest {
         assertNotSame(a, b)
         assertEquals(2, f.created.size)
         f.pool.drain()
+        assertEquals("the active replacement is retired but still owned", listOf(0), f.destroyed)
+        assertEquals(1, f.pool.stats().retiredCount)
+        assertTrue(f.pool.release(b))
         assertEquals(listOf(0, 1), f.destroyed)
         assertEquals(0, f.pool.stats().created)
     }
@@ -161,12 +161,15 @@ class RealtimeBackpressureTest {
     }
 
     @Test
-    fun `draining releases the capacity so a size change can start over`() {
+    fun `draining retires leases and releases capacity only after consumers finish`() {
         val f = Fixture(capacity = 3)
-        repeat(3) { checkNotNull(f.pool.acquire()) }
+        val held = List(3) { checkNotNull(f.pool.acquire()) }
         assertEquals(3, f.pool.stats().busy)
         assertNull(f.pool.acquire())
         f.pool.drain()
+        assertEquals(3, f.pool.stats().busy)
+        assertEquals(3, f.pool.stats().retiredCount)
+        held.forEach { assertTrue(f.pool.release(it)) }
         assertEquals(0, f.pool.stats().busy)
         assertNotNull(f.pool.acquire())
         assertEquals(4, f.created.size)

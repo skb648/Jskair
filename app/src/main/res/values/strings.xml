@@ -201,6 +201,7 @@
     <string name="notification_channel_description">Controls for the hand tracking foreground service</string>
     <string name="notification_title">AirControl Tracking</string>
     <string name="notification_text_active">Hand tracking is active</string>
+    <string name="notification_text_waiting">Waiting for camera</string>
     <string name="notification_text_paused">Hand tracking is paused</string>
     <string name="notification_action_pause">Pause</string>
     <string name="notification_action_resume">Resume</string>

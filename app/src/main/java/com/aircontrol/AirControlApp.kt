@@ -48,7 +48,7 @@ class AirControlApp : Application() {
         val memoryLevel = resourceGovernor.classifyTrim(level)
         val trackersIdle = runCatching {
             val entryPoint = AccessibilityServiceEntryPoint.getFromApplication(this)
-            !CameraService.isRunning.value &&
+            CameraService.serviceState.value.actualState == com.aircontrol.camera.TrackingState.STOPPED &&
                 // autoReviveEnabled == false marks an exclusive camera owner
                 // (the debug screen) — its trackers are in use, not idle.
                 entryPoint.cameraServiceManager().autoReviveEnabled &&
@@ -62,7 +62,7 @@ class AirControlApp : Application() {
             Thread {
                 runCatching {
                     val entryPoint = AccessibilityServiceEntryPoint.getFromApplication(this)
-                    if (!CameraService.isRunning.value) {
+                    if (CameraService.serviceState.value.actualState == com.aircontrol.camera.TrackingState.STOPPED) {
                         entryPoint.handTracker().close()
                         entryPoint.faceTracker().close()
                         Timber.i("Memory pressure (level=%d): released idle trackers", level)

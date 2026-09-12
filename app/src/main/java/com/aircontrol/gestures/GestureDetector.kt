@@ -25,6 +25,7 @@ import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.concurrent.Volatile
@@ -101,6 +102,13 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     // AtomicReference overkill but kept for thread-safe swap; could be @Volatile var
     private val engineRef = AtomicReference(GestureEngine(GestureEngineConfig()))
     private val engine: GestureEngine get() = engineRef.get()
+
+    /**
+     * GestureEngine contains temporal mutable state (debounce history, pinch
+     * phases, swipe trajectory). All frame and configuration mutations pass
+     * through this one owner; concurrent collectors cannot interleave frames.
+     */
+    private val frameSerial = ReentrantLock()
     private var engineEventsJob: Job? = null
     @Volatile
     private var currentSensitivity: Int = 70
@@ -200,28 +208,32 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     }
 
     override fun processHandFrame(frame: HandFrame) {
-        val input = frame.toHandInput()
-        engine.processFrame(input)
+        frameSerial.lock()
+        try {
+            val input = frame.toHandInput()
+            engine.processFrame(input)
 
-        // Forward state from engine
-        _engineState.value = engine.engineState.value
-        _currentPose.value = engine.currentPose.value
-        _armingProgress.value = engine.armingProgress.value
-        if (debugInstrumentation) publishSwipeDebug()
+            // Forward state from engine while still owning the same serial turn.
+            _engineState.value = engine.engineState.value
+            _currentPose.value = engine.currentPose.value
+            _armingProgress.value = engine.armingProgress.value
+            if (debugInstrumentation) publishSwipeDebug()
+        } finally {
+            frameSerial.unlock()
+        }
     }
 
     override fun updateSensitivity(sensitivity: Int) {
-        val clamped = sensitivity.coerceIn(0, 100)
-        if (clamped == currentSensitivity) return
-
-        Timber.i("Updating gesture engine sensitivity to %d (without engine recreation)", clamped)
-        currentSensitivity = clamped
-        // H-06 Fix: Update sensitivity without recreating the entire engine.
-        // The old code destroyed and recreated GestureEngine on every slider change,
-        // which lost all in-progress gesture state (arming, pinch, swipe detection).
-        // Now we call the engine's updateSensitivity() which propagates the new config
-        // to all detectors while preserving state.
-        engine.updateSensitivity(clamped)
+        frameSerial.lock()
+        try {
+            val clamped = sensitivity.coerceIn(0, 100)
+            if (clamped == currentSensitivity) return
+            Timber.i("Updating gesture engine sensitivity to %d (without engine recreation)", clamped)
+            currentSensitivity = clamped
+            engine.updateSensitivity(clamped)
+        } finally {
+            frameSerial.unlock()
+        }
     }
 
     /**
@@ -231,7 +243,9 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
      * caller in GestureControlAccessibilityService).
      */
     override fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
-        engine.updateCustomTemplates(templates)
+        frameSerial.lock()
+        try { engine.updateCustomTemplates(templates.toList()) }
+        finally { frameSerial.unlock() }
     }
 
     /**
@@ -240,17 +254,25 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
      * Settings switch did nothing and pointer travel kept scrolling pages.
      */
     override fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean) {
-        Timber.i("Updating swipe pose gate: requiresOpenHand=%s", requiresOpenHand)
-        engine.updateSwipeRequiresOpenHand(requiresOpenHand)
+        frameSerial.lock()
+        try {
+            Timber.i("Updating swipe pose gate: requiresOpenHand=%s", requiresOpenHand)
+            engine.updateSwipeRequiresOpenHand(requiresOpenHand)
+        } finally { frameSerial.unlock() }
     }
 
     override fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {
-        engine.updateCalibration(handSizeMm, pinchDistanceMm)
+        frameSerial.lock()
+        try { engine.updateCalibration(handSizeMm, pinchDistanceMm) }
+        finally { frameSerial.unlock() }
     }
 
     override fun reset() {
-        engine.reset()
-        resetStateFlows()
+        frameSerial.lock()
+        try {
+            engine.reset()
+            resetStateFlows()
+        } finally { frameSerial.unlock() }
         if (debugInstrumentation) clearSwipeDebug()
         Timber.d("Gesture detector reset")
     }
@@ -286,7 +308,8 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     }
 
     override fun close() {
-        engine.stop()
+        frameSerial.lock()
+        try { engine.stop() } finally { frameSerial.unlock() }
         scope.cancel()
         Timber.d("GestureDetector closed and scope cancelled")
     }

@@ -49,6 +49,7 @@ data class InFlightStats(
     val submitted: Long,
     val refused: Long,
     val expired: Long,
+    val stalled: Boolean = false,
 )
 
 @Singleton
@@ -175,6 +176,7 @@ class HandTrackerImpl @Inject constructor(
             submitted = stats.submitted,
             refused = stats.refused,
             expired = stats.expired,
+            stalled = inFlight.isStalled(nowMs),
         )
     }
 

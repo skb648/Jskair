@@ -26,6 +26,7 @@ package com.aircontrol.runtime
 object PerfTelemetry {
 
     private const val FRAME_WINDOW = 128
+    private const val LATENCY_WINDOW = 128
     private const val EVENT_WINDOW = 64
     private const val LOG_INTERVAL_MS = 30_000L
 
@@ -75,6 +76,19 @@ object PerfTelemetry {
     private var watchdogActions = 0L
     private var configuredFps = 0
     private var lastActualFps = 0f
+
+    // Lifecycle/error counters and bounded stage-age samples.
+    private var cameraUnavailable = 0L
+    private var cameraOpenFailures = 0L
+    private var cameraRestarts = 0L
+    private var frameOwnershipViolations = 0L
+    private var pipelineExceptions = 0L
+    private val handResultAges = LongArray(LATENCY_WINDOW)
+    private var handResultAgeCount = 0
+    private var handResultAgeWrite = 0
+    private val faceResultAges = LongArray(LATENCY_WINDOW)
+    private var faceResultAgeCount = 0
+    private var faceResultAgeWrite = 0
 
     // ---- event ring --------------------------------------------------------
     private val events = ArrayDeque<String>(EVENT_WINDOW)
@@ -218,6 +232,45 @@ object PerfTelemetry {
     @Synchronized
     fun recordCameraLifecycle(event: String, nowMs: Long) {
         addEvent("camera:$event", nowMs)
+        when (event) {
+            "recovered", "started" -> if (event == "recovered") cameraRestarts++
+            "bind-failed" -> cameraOpenFailures++
+        }
+    }
+
+    @Synchronized
+    fun recordCameraUnavailable(nowMs: Long) {
+        cameraUnavailable++
+        addEvent("camera:temporarily-unavailable", nowMs)
+    }
+
+    @Synchronized
+    fun recordFrameOwnershipViolation() {
+        frameOwnershipViolations++
+    }
+
+    @Synchronized
+    fun recordPipelineException(stage: String, exceptionType: String) {
+        pipelineExceptions++
+        addEvent("pipeline-error:$stage:$exceptionType", System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun recordHandFrameCompleted(frameId: Long, ageMs: Long) {
+        if (ageMs >= 0L) {
+            handResultAges[handResultAgeWrite] = ageMs
+            handResultAgeWrite = (handResultAgeWrite + 1) % LATENCY_WINDOW
+            if (handResultAgeCount < LATENCY_WINDOW) handResultAgeCount++
+        }
+    }
+
+    @Synchronized
+    fun recordFaceFrameCompleted(frameId: Long, ageMs: Long) {
+        if (ageMs >= 0L) {
+            faceResultAges[faceResultAgeWrite] = ageMs
+            faceResultAgeWrite = (faceResultAgeWrite + 1) % LATENCY_WINDOW
+            if (faceResultAgeCount < LATENCY_WINDOW) faceResultAgeCount++
+        }
     }
 
     @Synchronized
@@ -255,6 +308,17 @@ object PerfTelemetry {
         val expiredReservations: Long,
         val watchdogActions: Long,
         val events: List<String>,
+        val cameraUnavailable: Long = 0L,
+        val cameraOpenFailures: Long = 0L,
+        val cameraRestarts: Long = 0L,
+        val frameOwnershipViolations: Long = 0L,
+        val pipelineExceptions: Long = 0L,
+        val handResultAgeP50Ms: Long = 0L,
+        val handResultAgeP95Ms: Long = 0L,
+        val handResultAgeP99Ms: Long = 0L,
+        val faceResultAgeP50Ms: Long = 0L,
+        val faceResultAgeP95Ms: Long = 0L,
+        val faceResultAgeP99Ms: Long = 0L,
     )
 
     @Synchronized
@@ -293,6 +357,17 @@ object PerfTelemetry {
             expiredReservations = expiredReservations,
             watchdogActions = watchdogActions,
             events = events.toList(),
+            cameraUnavailable = cameraUnavailable,
+            cameraOpenFailures = cameraOpenFailures,
+            cameraRestarts = cameraRestarts,
+            frameOwnershipViolations = frameOwnershipViolations,
+            pipelineExceptions = pipelineExceptions,
+            handResultAgeP50Ms = latencyPercentile(handResultAges, handResultAgeCount, 0.50),
+            handResultAgeP95Ms = latencyPercentile(handResultAges, handResultAgeCount, 0.95),
+            handResultAgeP99Ms = latencyPercentile(handResultAges, handResultAgeCount, 0.99),
+            faceResultAgeP50Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.50),
+            faceResultAgeP95Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.95),
+            faceResultAgeP99Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.99),
         )
     }
 
@@ -319,7 +394,11 @@ object PerfTelemetry {
                 " drop(backpressure=${s.framesDroppedBackpressure},conversion=${s.framesDroppedConversion})" +
                 " inFlight(hand=${if (s.handGateBusy) 1 else 0},face=${if (s.faceGateBusy) 1 else 0})" +
                 " refused(hand=${s.handRefusals},face=${s.faceRefusals},expired=${s.expiredReservations})" +
-                " watchdog=${s.watchdogActions}",
+                " watchdog=${s.watchdogActions}) lifecycle(unavailable=${s.cameraUnavailable}," +
+                "restarts=${s.cameraRestarts},ownership=${s.frameOwnershipViolations}," +
+                "exceptions=${s.pipelineExceptions}) resultAge(hand=${s.handResultAgeP50Ms}/" +
+                "${s.handResultAgeP95Ms}/${s.handResultAgeP99Ms},face=${s.faceResultAgeP50Ms}/" +
+                "${s.faceResultAgeP95Ms}/${s.faceResultAgeP99Ms})",
         )
         // Reset the accumulators so each window is fresh; the event ring and
         // cumulative counters stay.
@@ -352,6 +431,13 @@ object PerfTelemetry {
         watchdogActions = 0
         configuredFps = 0
         lastActualFps = 0f
+        cameraUnavailable = 0L
+        cameraOpenFailures = 0L
+        cameraRestarts = 0L
+        frameOwnershipViolations = 0L
+        pipelineExceptions = 0L
+        handResultAgeCount = 0; handResultAgeWrite = 0
+        faceResultAgeCount = 0; faceResultAgeWrite = 0
         events.clear()
         lastSummaryAtMs = null
     }
@@ -359,6 +445,13 @@ object PerfTelemetry {
     private fun addEvent(event: String, nowMs: Long) {
         if (events.size >= EVENT_WINDOW) events.removeFirst()
         events.addLast("@${nowMs % 1_000_000L} $event")
+    }
+
+    private fun latencyPercentile(values: LongArray, count: Int, p: Double): Long {
+        if (count == 0) return 0L
+        val sorted = values.copyOf(count)
+        sorted.sort()
+        return percentile(sorted, p)
     }
 
     private fun percentile(sorted: LongArray, p: Double): Long {
