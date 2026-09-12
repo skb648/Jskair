@@ -11,11 +11,11 @@ package com.aircontrol.tracking
  */
 class BlinkDetector(
     private val earThreshold: Float = 0.185f, // Distinguishes true eye closure from smiles/squints (~0.21) and glasses reflection
-    minBlinkMs: Long = 180L,
-    maxBlinkMs: Long = 700L,
+    minBlinkMs: Long = 200L,
+    maxBlinkMs: Long = 650L,
 ) {
-    // Tunable blink window: 180ms offers crisp, instant responsiveness for intentional clicks
-    // while keeping involuntary/flutter blinks (<150ms) and relaxed closures (>700ms) filtered out.
+    // Tunable blink window: 200ms discriminates natural involuntary eye flutters (<180ms)
+    // from intentional click gestures while remaining crisp and instant.
     private var minBlinkMs: Long = minBlinkMs
     private var maxBlinkMs: Long = maxBlinkMs
 

@@ -1570,28 +1570,29 @@ class GestureControlAccessibilityService : AccessibilityService() {
             y
         }
 
-        // Magnetic Edge & Corner Snapping
-        val edgeSnapMarginX = 0.09f
-        val edgeSnapMarginY = 0.08f
+        // Subtle edge reach assist (3.5% margin instead of 9% sticky trap)
+        // allows effortless escape when looking back towards the screen center.
+        val edgeSnapMarginX = 0.035f
+        val edgeSnapMarginY = 0.035f
 
         val magX = if (x < edgeSnapMarginX) {
             val ratio = (x / edgeSnapMarginX).coerceIn(0f, 1f)
-            x * (ratio * 0.85f + 0.15f)
+            x * (ratio * 0.94f + 0.06f)
         } else if (x > 1f - edgeSnapMarginX) {
             val fromEdge = (1f - x).coerceAtLeast(0f)
             val ratio = (fromEdge / edgeSnapMarginX).coerceIn(0f, 1f)
-            1f - fromEdge * (ratio * 0.85f + 0.15f)
+            1f - fromEdge * (ratio * 0.94f + 0.06f)
         } else {
             x
         }
 
         val magY = if (correctedY < edgeSnapMarginY) {
             val ratio = (correctedY / edgeSnapMarginY).coerceIn(0f, 1f)
-            correctedY * (ratio * 0.85f + 0.15f)
+            correctedY * (ratio * 0.94f + 0.06f)
         } else if (correctedY > 1f - edgeSnapMarginY) {
             val fromEdge = (1f - correctedY).coerceAtLeast(0f)
             val ratio = (fromEdge / edgeSnapMarginY).coerceIn(0f, 1f)
-            1f - fromEdge * (ratio * 0.85f + 0.15f)
+            1f - fromEdge * (ratio * 0.94f + 0.06f)
         } else {
             correctedY
         }
