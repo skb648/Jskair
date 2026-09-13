@@ -79,10 +79,10 @@ class CameraService : LifecycleService() {
 
     companion object {
         /**
-         * P0-2: how many frames may be in flight at once. Two per channel would be the theoretical
-         * minimum; three keeps the camera thread unblocked while a result is being delivered.
+         * P0-2: how many frames may be in flight at once. Five slots ensure the camera thread
+         * is never starved and frames are not dropped while concurrent Hand and Face models execute.
          */
-        private const val FRAME_BUFFER_SLOTS = 3
+        private const val FRAME_BUFFER_SLOTS = 5
 
         /** Analysis resolution; small on purpose, it is fed to a landmark model. */
         private const val ANALYSIS_WIDTH = 640

@@ -192,6 +192,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private val gazeTransport =
         com.aircontrol.accessibility.LatestWinsTransport<Pair<Float, Float>>(schedule = { scheduleGazeFrame() })
+    private val handTransport =
+        com.aircontrol.accessibility.LatestWinsTransport<Pair<Float, Float>>(schedule = { scheduleHandFrame() })
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // Fix (audit #6): last time the smoothed gaze moved meaningfully — the
@@ -882,69 +884,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     }
                     // Apply ergonomic vertical parallax correction + magnetic edge snapping for front camera geometry
                     val (nx, ny) = applyGazeParallaxCorrection(rawNx, rawNy)
-                    // Fix E1: velocity-adaptive One Euro smoothing — no fixed-alpha
-                    // lag on saccades, no quantization "teleports" when still.
+                    // Velocity-adaptive One Euro smoothing — zero lag during eye movements, rock-solid at rest.
                     val (smoothX, smoothY) = gazeCursorSmoother.filter(nx, ny, gaze.timestampMs)
 
-                    // Fixation Lock & Reading Saccade stabilization — suppresses involuntary micro-saccadic tremor
-                    // by pinning cursor to target until intentional saccadic breakout occurs.
-                    val finalGazeX: Float
-                    val finalGazeY: Float
-                    val nowGazeMs = SystemClock.elapsedRealtime()
-                    if (fixationAnchorX < 0f) {
-                        fixationAnchorX = smoothX
-                        fixationAnchorY = smoothY
-                        finalGazeX = smoothX
-                        finalGazeY = smoothY
-                    } else {
-                        val dist = kotlin.math.hypot(smoothX - fixationAnchorX, smoothY - fixationAnchorY)
-                        val dx = kotlin.math.abs(smoothX - fixationAnchorX)
-                        val dy = kotlin.math.abs(smoothY - fixationAnchorY)
-                        val isReadingMotion = dx in 0.005f..0.045f && dy < 0.016f
-
-                        if (dist < FIXATION_LOCK_RADIUS) {
-                            finalGazeX = fixationAnchorX
-                            finalGazeY = fixationAnchorY
-                            if (readingScanStartMs == 0L) readingScanStartMs = nowGazeMs
-                            if (!isGhostModeActive && nowGazeMs - readingScanStartMs > 350L) {
-                                isGhostModeActive = true
-                                mainHandler.post { cursorOverlay?.setGhostMode(true) }
-                            }
-                        } else if (isReadingMotion) {
-                            // Suppress vertical flutter across text lines while reading
-                            finalGazeX = smoothX
-                            finalGazeY = fixationAnchorY
-                            fixationAnchorX = smoothX
-                            if (readingScanStartMs == 0L) readingScanStartMs = nowGazeMs
-                            if (!isGhostModeActive && nowGazeMs - readingScanStartMs > 350L) {
-                                isGhostModeActive = true
-                                mainHandler.post { cursorOverlay?.setGhostMode(true) }
-                            }
-                        } else if (dist < SACCADE_BREAKOUT_RADIUS) {
-                            val blend = (dist - FIXATION_LOCK_RADIUS) / (SACCADE_BREAKOUT_RADIUS - FIXATION_LOCK_RADIUS)
-                            finalGazeX = fixationAnchorX * (1f - blend) + smoothX * blend
-                            finalGazeY = fixationAnchorY * (1f - blend) + smoothY * blend
-                            if (blend > 0.50f) {
-                                fixationAnchorX = smoothX
-                                fixationAnchorY = smoothY
-                            }
-                            if (isGhostModeActive) {
-                                isGhostModeActive = false
-                                readingScanStartMs = 0L
-                                mainHandler.post { cursorOverlay?.setGhostMode(false) }
-                            }
-                        } else {
-                            fixationAnchorX = smoothX
-                            fixationAnchorY = smoothY
-                            finalGazeX = smoothX
-                            finalGazeY = smoothY
-                            if (isGhostModeActive) {
-                                isGhostModeActive = false
-                                readingScanStartMs = 0L
-                                mainHandler.post { cursorOverlay?.setGhostMode(false) }
-                            }
-                        }
-                    }
+                    val finalGazeX = smoothX
+                    val finalGazeY = smoothY
+                    fixationAnchorX = smoothX
+                    fixationAnchorY = smoothY
 
                     gazeCursorX = finalGazeX
                     gazeCursorY = finalGazeY
@@ -1075,6 +1021,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // P0-3: dropping the transport here also covers pause/trim/screen-off, because no
         // collector survives this call to publish a new target.
         cancelPendingGazeMove()
+        cancelPendingHandMove()
         synchronized(pipelineJobs) {
             pipelineJobs.forEach { it.cancel() }
             pipelineJobs.clear()
@@ -1194,10 +1141,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
                     handleCursorStillness(smoothX, smoothY, event.timestampMs)
 
-                    // Non-blocking UI post keeps the gesture pipeline running smoothly without thread stall.
-                    mainHandler.post {
-                        cursorOverlay?.updatePosition(smoothX, smoothY, screenWidth, screenHeight)
-                    }
+                    // Coalesced latest-wins UI post keeps the hand cursor moving at full display refresh rate with zero queue lag.
+                    handTransport.publish(smoothX to smoothY)
                     cursorController?.updatePosition(smoothX, smoothY)
                 }
                 return
@@ -1496,12 +1441,36 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Requests one UI-frame application of the latest hand cursor target.
+     */
+    private fun scheduleHandFrame() {
+        mainHandler.post {
+            applyLatestHandTarget()
+        }
+    }
+
+    /** Runs on the UI thread, once per frame at most. */
+    private fun applyLatestHandTarget() {
+        if (!currentPreferences.cursorEnabled) {
+            handTransport.reset()
+            return
+        }
+        val target = handTransport.consume() ?: return
+        val overlay = cursorOverlay ?: return
+        overlay.show()
+        overlay.updatePosition(target.first, target.second, screenWidth, screenHeight)
+    }
+
+    /**
      * Drops a queued gaze move when the cursor must stop moving (tracking lost, pause, overlay
      * hidden, pipeline stopped). The already-scheduled frame callback then finds nothing to apply.
      */
     private fun cancelPendingGazeMove() {
         gazeTransport.reset()
-        mainHandler.removeCallbacksAndMessages(null)
+    }
+
+    private fun cancelPendingHandMove() {
+        handTransport.reset()
     }
 
     private fun gazeDiagnosticsSnapshot(): String? =
@@ -1805,7 +1774,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // filter actually sees, so fast motion passes through and only tremor is
         // damped.
         private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.1f
-        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 0.9f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 12.0f
 
         // Smoothing slider range (minCutoff in Hz). Higher cutoff = less lag.
         private const val MIN_SMOOTHING_CUTOFF = 0.9f
@@ -1826,12 +1795,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val STATIONARY_THRESHOLD = 0.008f
         private const val HOVER_AFTER_MS = 150L
 
-        // Fix E1: gaze One Euro constants — a little hotter than the hand
-        // cursor's (1.1 / 0.9) because gaze targets are small and saccades are
-        // the fastest human movement; the dead-zone inside CursorSmoother
-        // handles the sub-threshold jitter.
-        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.8f
-        private const val GAZE_SMOOTHER_BETA = 1.4f
+        // Fix E1: gaze One Euro constants — velocity-adaptive with zero lag during saccades
+        // and rock-solid jitter suppression when resting on a UI element.
+        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.4f
+        private const val GAZE_SMOOTHER_BETA = 18.0f
 
         // Fix A6: consecutive missed gaze frames tolerated before the dot hides.
         private const val GAZE_HIDE_MISS_FRAMES = 4

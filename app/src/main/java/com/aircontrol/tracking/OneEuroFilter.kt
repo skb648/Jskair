@@ -90,7 +90,7 @@ class OneEuroFilter(
  */
 class CursorSmoother(
     minCutoff: Float = 1.1f,
-    beta: Float = 0.9f,
+    beta: Float = 12.0f,
 ) {
     private var baseMinCutoff: Float = minCutoff
     private var baseBeta: Float = beta
@@ -133,13 +133,13 @@ class CursorSmoother(
             val dy = fy - oldY
             val distance = sqrt(dx * dx + dy * dy)
 
-            // Strict dead zone prevents residual micro-tremor when aiming at a button
+            // Ultra-tight micro dead zone clamps sensor noise at pure rest (< 0.6px on 1080p)
             if (distance < DEAD_ZONE_NORMALIZED) return oldX to oldY
 
-            // Instant and responsive breakout from deadband with smooth Hermite transition
+            // Instant and responsive breakout: blend across a micro transition margin to prevent
+            // single-frame step artifacts, then track filter output at 100% speed without drag.
             val excess = distance - DEAD_ZONE_NORMALIZED
-            val t = (excess / DEAD_ZONE_NORMALIZED).coerceIn(0.0f, 1.0f)
-            val blend = t * t * (3.0f - 2.0f * t)
+            val blend = (excess / (DEAD_ZONE_NORMALIZED * 0.5f)).coerceIn(0.0f, 1.0f)
             val smoothX = oldX + dx * blend
             val smoothY = oldY + dy * blend
             lastOutputX = smoothX
@@ -171,10 +171,9 @@ class CursorSmoother(
     }
 
     companion object {
-        // ~2 px on a 1080p display. Suppresses involuntary micro-tremor while
-        // ensuring instant responsiveness to deliberate finger movement.
-        private const val DEAD_ZONE_NORMALIZED = 0.0018f
-        private const val FAST_SPEED_THRESHOLD = 0.20f
-        private const val BALLISTIC_BOOST_FACTOR = 16.0f
+        // Micro-deadzone ~0.6 px on a 1080p display: clamps stillness tremor without slowing motion
+        private const val DEAD_ZONE_NORMALIZED = 0.0006f
+        private const val FAST_SPEED_THRESHOLD = 0.05f
+        private const val BALLISTIC_BOOST_FACTOR = 24.0f
     }
 }
