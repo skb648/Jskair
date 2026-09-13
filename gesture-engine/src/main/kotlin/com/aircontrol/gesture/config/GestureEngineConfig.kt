@@ -122,8 +122,8 @@ data class GestureEngineConfig(
     val palmHomeMinHandSizeNormalized: Float = 0.18f,
     val palmHomeMaxCursorMovement: Float = 0.05f,
     val thumbGestureMaxVelocity: Float = 0.35f,
-    // Faster volume step adjustment (260ms for immediate responsiveness while filtering closures)
-    val thumbGestureHoldMs: Long = 260L,
+    // Stable volume step adjustment (360ms discriminates intentional thumbs-up from resting/face touches)
+    val thumbGestureHoldMs: Long = 360L,
     /**
      * Pinch confirmation window: 50ms provides fast responsiveness while
      * strictly rejecting single-frame oscillation noise.

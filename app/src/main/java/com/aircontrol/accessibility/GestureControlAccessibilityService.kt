@@ -1679,6 +1679,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         val stillMs = timestampMs - stationarySinceMs
 
+        // Check if cursor is hovering over the on-screen soft keyboard (IME window).
+        // Dwell clicking on keyboard keys causes accidental typing while looking at keys.
+        if (isCursorOverKeyboard(x, y)) {
+            if (hoverActive) {
+                hoverActive = false
+                serviceScope.launch(Dispatchers.Main) { cursorOverlay?.resetHover() }
+            }
+            serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
+            return
+        }
+
         if (!hoverActive && stillMs >= HOVER_AFTER_MS) {
             hoverActive = true
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.notifyHover() }
@@ -1716,6 +1727,32 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     cursorOverlay?.setDwellProgress(progress)
                 }
             }
+        }
+    }
+
+    /**
+     * Checks whether the normalized cursor coordinates fall inside an active Input Method
+     * (soft keyboard) window. Dwell clicks are suspended over keyboards to prevent accidental typing.
+     */
+    private fun isCursorOverKeyboard(normX: Float, normY: Float): Boolean {
+        if (screenWidth <= 0 || screenHeight <= 0) return false
+        val px = (normX * screenWidth).toInt()
+        val py = (normY * screenHeight).toInt()
+        return try {
+            val windowList = windows ?: return false
+            val rect = android.graphics.Rect()
+            for (i in 0 until windowList.size) {
+                val window = windowList[i] ?: continue
+                if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                    window.getBoundsInScreen(rect)
+                    if (rect.contains(px, py)) {
+                        return true
+                    }
+                }
+            }
+            false
+        } catch (_: Throwable) {
+            false
         }
     }
 

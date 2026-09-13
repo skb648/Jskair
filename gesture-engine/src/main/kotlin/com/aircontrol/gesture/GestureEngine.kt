@@ -487,7 +487,9 @@ class GestureEngine(
     }
 
     companion object {
-        private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.035f
+        // Prevents minor finger closure jitter from triggering accidental drag/selection,
+        // while allowing deliberate slide gestures to unlock drag smoothly.
+        private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.048f
         // Fix U-6: an 80ms post-release lockout added to the felt tap latency on
         // every second tap of a fast double-tap. 40ms still blocks a single
         // physical pinch from re-entering as two clicks.

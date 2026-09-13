@@ -77,6 +77,8 @@ class HandTrackerImpl @Inject constructor(
      * them (see HandInput.frameAspectRatio).
      */
     @Volatile private var lastFrameAspectRatio = 1f
+    @Volatile private var lastTrackedWristX = -1f
+    @Volatile private var lastTrackedWristY = -1f
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
         // Fix (audit #16): deeper buffer — a stalled collector must not eat the
@@ -199,6 +201,8 @@ class HandTrackerImpl @Inject constructor(
             _isInitialized = false
             isClosing = false
             lastSubmittedTimestampMs = Long.MIN_VALUE
+            lastTrackedWristX = -1f
+            lastTrackedWristY = -1f
         }
         // P0-2: a close while a frame is in flight must not strand its lease. No result callback is
         // coming for that frame, and the graph is already torn down, so the gate is cleared and the
@@ -234,6 +238,8 @@ class HandTrackerImpl @Inject constructor(
 
         val timestampMs = resultTimestampMs
         if (result.landmarks().isEmpty()) {
+            lastTrackedWristX = -1f
+            lastTrackedWristY = -1f
             _handFrames.tryEmit(
                 HandFrame(
                     landmarks = emptyList(),
@@ -246,7 +252,34 @@ class HandTrackerImpl @Inject constructor(
             return
         }
 
-        val landmarks = result.landmarks()[0]
+        // Multi-hand spatial continuity: if multiple hands are present,
+        // stick to the hand closest to the last tracked wrist/palm position.
+        // This prevents the cursor from teleporting when a second hand enters or moves.
+        val selectedIdx = if (result.landmarks().size > 1 && lastTrackedWristX >= 0f) {
+            var bestIdx = 0
+            var bestDist = Float.MAX_VALUE
+            for (i in result.landmarks().indices) {
+                val lms = result.landmarks()[i]
+                if (lms.isNotEmpty()) {
+                    val dx = lms[0].x() - lastTrackedWristX
+                    val dy = lms[0].y() - lastTrackedWristY
+                    val distSq = dx * dx + dy * dy
+                    if (distSq < bestDist) {
+                        bestDist = distSq
+                        bestIdx = i
+                    }
+                }
+            }
+            bestIdx
+        } else {
+            0
+        }
+
+        val landmarks = result.landmarks()[selectedIdx]
+        if (landmarks.isNotEmpty()) {
+            lastTrackedWristX = landmarks[0].x()
+            lastTrackedWristY = landmarks[0].y()
+        }
         val handedness = result.handednesses()
         val landmark3DList = landmarks.map { lm ->
             Landmark3D(x = lm.x(), y = lm.y(), z = lm.z())
@@ -259,8 +292,8 @@ class HandTrackerImpl @Inject constructor(
         // over (postScale(-1, 1) in CameraService.convertIntoLeasedBitmap). The double flip made
         // "use my left hand only" accept the right hand and reject the left, which
         // is exactly what users hit when they set a hand preference.
-        val handednessCategory = if (handedness.isNotEmpty() && handedness[0].isNotEmpty()) {
-            when (handedness[0][0].categoryName().uppercase()) {
+        val handednessCategory = if (handedness.size > selectedIdx && handedness[selectedIdx].isNotEmpty()) {
+            when (handedness[selectedIdx][0].categoryName().uppercase()) {
                 "LEFT" -> Handedness.LEFT
                 "RIGHT" -> Handedness.RIGHT
                 else -> Handedness.UNKNOWN
@@ -269,8 +302,8 @@ class HandTrackerImpl @Inject constructor(
             Handedness.UNKNOWN
         }
 
-        val confidence = if (handedness.isNotEmpty() && handedness[0].isNotEmpty()) {
-            handedness[0][0].score()
+        val confidence = if (handedness.size > selectedIdx && handedness[selectedIdx].isNotEmpty()) {
+            handedness[selectedIdx][0].score()
         } else {
             0f
         }
@@ -326,7 +359,7 @@ class HandTrackerImpl @Inject constructor(
 
     companion object {
         private const val MODEL_FILE = "hand_landmarker.task"
-        private const val NUM_HANDS = 1
+        private const val NUM_HANDS = 2
         private const val MIN_DETECTION_CONFIDENCE = 0.40f
         private const val MIN_TRACKING_CONFIDENCE = 0.35f
         private const val MIN_PRESENCE_CONFIDENCE = 0.38f
