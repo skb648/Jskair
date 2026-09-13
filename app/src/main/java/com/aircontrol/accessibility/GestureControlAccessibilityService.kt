@@ -1535,29 +1535,40 @@ class GestureControlAccessibilityService : AccessibilityService() {
      * 3. Continuous posture drift compensation.
      */
     private fun applyGazeParallaxCorrection(x: Float, y: Float): Pair<Float, Float> {
+        // Ergonomic horizontal expansion: allows eyes to reach left and right edges
+        // without straining ocular muscles or having to rotate the head.
+        val expandedX = if (x > 0.5f) {
+            val t = ((x - 0.5f) / 0.5f).coerceIn(0f, 1f)
+            0.5f + (x - 0.5f) * (1.0f + 0.12f * t)
+        } else {
+            val t = ((0.5f - x) / 0.5f).coerceIn(0f, 1f)
+            0.5f - (0.5f - x) * (1.0f + 0.12f * t)
+        }.coerceIn(0f, 1f)
+
         val correctedY = if (y > 0.45f) {
             val t = ((y - 0.45f) / 0.55f).coerceIn(0f, 1f)
             0.45f + (y - 0.45f) * (1.0f + 0.35f * t)
         } else if (y < 0.15f) {
-            y * 0.92f
+            val t = ((0.15f - y) / 0.15f).coerceIn(0f, 1f)
+            y * (0.92f - 0.08f * t)
         } else {
             y
-        }
+        }.coerceIn(0f, 1f)
 
         // Subtle edge reach assist (3.5% margin instead of 9% sticky trap)
         // allows effortless escape when looking back towards the screen center.
         val edgeSnapMarginX = 0.035f
         val edgeSnapMarginY = 0.035f
 
-        val magX = if (x < edgeSnapMarginX) {
-            val ratio = (x / edgeSnapMarginX).coerceIn(0f, 1f)
-            x * (ratio * 0.94f + 0.06f)
-        } else if (x > 1f - edgeSnapMarginX) {
-            val fromEdge = (1f - x).coerceAtLeast(0f)
+        val magX = if (expandedX < edgeSnapMarginX) {
+            val ratio = (expandedX / edgeSnapMarginX).coerceIn(0f, 1f)
+            expandedX * (ratio * 0.94f + 0.06f)
+        } else if (expandedX > 1f - edgeSnapMarginX) {
+            val fromEdge = (1f - expandedX).coerceAtLeast(0f)
             val ratio = (fromEdge / edgeSnapMarginX).coerceIn(0f, 1f)
             1f - fromEdge * (ratio * 0.94f + 0.06f)
         } else {
-            x
+            expandedX
         }
 
         val magY = if (correctedY < edgeSnapMarginY) {
@@ -1617,9 +1628,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
 
         if (dist > effectiveThreshold) {
-            // In gaze mode, if the micro-drift is minor (under 0.045f) and dwell was active,
+            // In gaze mode, if the micro-drift is minor (under 0.022f) and dwell was active,
             // decay stationary time gracefully rather than wiping progress instantly to 0.
-            if (isGaze && stationarySinceMs > 0L && dist < 0.045f) {
+            // When reading or shifting gaze to another word/button (dist >= 0.022f), dwell resets
+            // immediately so reading text never fires an accidental click ("Midas Touch" solved).
+            if (isGaze && stationarySinceMs > 0L && dist < 0.022f) {
                 stationarySinceMs = (stationarySinceMs + 70L).coerceAtMost(timestampMs)
                 return
             }

@@ -10,8 +10,8 @@ package com.aircontrol.tracking
  * emits a single click event via [update].
  */
 class BlinkDetector(
-    private val earThreshold: Float = 0.185f, // Distinguishes true eye closure from smiles/squints (~0.21) and glasses reflection
-    minBlinkMs: Long = 200L,
+    private val earThreshold: Float = 0.170f, // Distinguishes true eye closure from smiles/squints (~0.20-0.24) and glasses reflection
+    minBlinkMs: Long = 180L,
     maxBlinkMs: Long = 650L,
 ) {
     // Tunable blink window: 200ms discriminates natural involuntary eye flutters (<180ms)
