@@ -115,27 +115,22 @@ data class GestureEngineConfig(
     // pauses while still releasing control when the user actually walks away.
     val autoDisarmTimeoutMs: Long = 15_000L,
     val fistDisarmDurationMs: Long = 1000L,
-    val swipeCooldownMs: Long = 220L,
+    val swipeCooldownMs: Long = 180L,
     val palmHomeHoldMs: Long = 2500L,
     // Fix #5: Reduced from 0.26f to 0.18f so user can rest forearm/elbow on table or lap
     // without forcing elevated "gorilla arm" hand posture right up against the lens.
     val palmHomeMinHandSizeNormalized: Float = 0.18f,
     val palmHomeMaxCursorMovement: Float = 0.05f,
     val thumbGestureMaxVelocity: Float = 0.35f,
-    // Fix U-11 ("volume 5 steps = 6 seconds"): 600ms of perfectly still hand per
-    // single volume step made repeated adjustment physically tiring. 260ms is
-    // still far longer than the ~80ms a closing hand spends passing through
-    // "thumb out" (the false-positive this gate exists for), but it turns a
-    // 5-step volume change from ~6s into ~1.6s.
-    val thumbGestureHoldMs: Long = 330L,
+    // Faster volume step adjustment (260ms for immediate responsiveness while filtering closures)
+    val thumbGestureHoldMs: Long = 260L,
     /**
-     * Fix U-6 (pinch latency): how long fingers must stay together after the
-     * pinch threshold is crossed before the click is committed. 50ms provides
-     * immediate responsiveness while rejecting single-frame oscillation noise.
+     * Pinch confirmation window: 50ms provides fast responsiveness while
+     * strictly rejecting single-frame oscillation noise.
      */
     val pinchConfirmMs: Long = 50L,
-    /** Release-side counterpart of [pinchConfirmMs] (Fix U-6) for fast tap release. */
-    val pinchReleaseConfirmMs: Long = 50L,
+    /** Fast tap release (40ms) for snappy, lag-free click lift-off. */
+    val pinchReleaseConfirmMs: Long = 40L,
     val calibratedPinchRatio: Float? = null,
 ) {
     init {

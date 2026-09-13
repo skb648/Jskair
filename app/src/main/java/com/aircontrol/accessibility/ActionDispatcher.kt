@@ -105,21 +105,17 @@ class ActionDispatcher @Inject constructor(
 
     companion object {
         private const val MAX_RETRIES = 1
-        private const val SCROLL_DURATION_MS = 200L
-        private const val TAP_DURATION_MS = 25L
+        private const val SCROLL_DURATION_MS = 140L
+        private const val TAP_DURATION_MS = 15L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
         private const val DOUBLE_TAP_WINDOW_MS = 350L
-        private const val INTENTIONAL_PINCH_HOLD_MS = 120L
-        private const val MIN_MOVING_PINCH_VELOCITY = 0.35f
-        private const val MAX_MOVING_PINCH_VELOCITY = 0.95f
+        private const val INTENTIONAL_PINCH_HOLD_MS = 80L
+        private const val MIN_MOVING_PINCH_VELOCITY = 0.55f
+        private const val MAX_MOVING_PINCH_VELOCITY = 1.10f
         private const val TAP_PATH_DISPLACEMENT_PX = 3f
-        // Fix (user test: "paint line trails behind the cursor"): each drag step
-        // is an 80ms interpolated stroke segment, so the injected touch point
-        // was always ~1-2 segments behind the (60fps) cursor — visible as the
-        // paint line lagging. 48ms ≈ one camera frame at ~20fps: the stroke now
-        // lands nearly as fast as the cursor moves.
-        private const val DRAG_STEP_DURATION_MS = 48L
+        // Fix: each drag step duration optimized from 48ms to 36ms so dragging tracks hand tightly.
+        private const val DRAG_STEP_DURATION_MS = 36L
         private const val DRAG_END_DURATION_MS = 120L
         private const val HAPTIC_TICK_MS = 15L
 

@@ -330,11 +330,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
             val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
             cachedKeyguardLocked = km?.isKeyguardLocked ?: false
 
-            // Attach dispatcher and register visual-feedback callback.
+            // Attach dispatcher and register visual and haptic feedback callback.
             actionDispatcher?.attachService(this)
             actionDispatcher?.onGestureDispatched = { actionName ->
+                val isClick = actionName.contains("TAP", ignoreCase = true) ||
+                    actionName.contains("PINCH", ignoreCase = true) ||
+                    actionName.contains("CLICK", ignoreCase = true)
+                performDwellHaptic(isClick)
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.ripple() }
-                Timber.d("Gesture dispatched: %s — cursor ripple", actionName)
+                Timber.d("Gesture dispatched: %s — cursor ripple & haptic", actionName)
             }
             // Issue 10: the dispatcher surfaces WHY an action was blocked
             // (unsupported action, another modality just acted, calibration owns
@@ -1106,6 +1110,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDragging(true) }
                     }
                     com.aircontrol.gesture.model.PinchPhase.END -> {
+                        unfreezeCursor()
                         (cursorController as? com.aircontrol.control.CursorControllerImpl)?.releaseClick()
                         (cursorController as? com.aircontrol.control.CursorControllerImpl)?.clearPinClick()
                         serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDragging(false) }
@@ -1762,19 +1767,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
             _isConnected.value = connected
         }
 
-        // Fix #30: reduced from 300ms to 80ms so the cursor doesn't visibly stall.
+        // Reduced freeze for discrete gestures (fix #30: 300ms → 80ms).
         private const val CURSOR_FREEZE_MS_GESTURE = 80L
-        private const val CURSOR_FREEZE_MS_PINCH = 50L
+        // Anchors cursor rock-solid throughout full pinch click without drift or jitter
+        private const val CURSOR_FREEZE_MS_PINCH = 350L
 
-        // Fix B-5 (cursor feels floaty/slow): the old pair was minCutoff 1.0 Hz
-        // with beta 0.007. Velocity here is in *normalized units per second*
-        // (a fast sweep is ~1-3), so beta*velocity ≈ 0.02 — the adaptive half of
-        // the One Euro filter was effectively disabled and the cursor was a fixed
-        // ~1 Hz low-pass: ~400ms to settle at 24fps. Beta is now in the units the
-        // filter actually sees, so fast motion passes through and only tremor is
-        // damped.
-        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.1f
-        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 12.0f
+        // Fast, lag-free cursor tracking with crisp jitter damping
+        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.35f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 16.0f
 
         // Smoothing slider range (minCutoff in Hz). Higher cutoff = less lag.
         private const val MIN_SMOOTHING_CUTOFF = 0.9f

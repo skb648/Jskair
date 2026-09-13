@@ -354,7 +354,11 @@ class GestureEngine(
      */
     private fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
         val currentState = _engineState.value
-        if (currentState != GestureEngineState.ARMED && currentState != GestureEngineState.EXECUTING && currentState != GestureEngineState.COOLDOWN) {
+        val isAllowedState = currentState == GestureEngineState.ARMED ||
+            currentState == GestureEngineState.EXECUTING ||
+            currentState == GestureEngineState.COOLDOWN ||
+            (currentState == GestureEngineState.ARMING && input.isDetected)
+        if (!isAllowedState) {
             if (wasPinching) { wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false }
             return
         }
@@ -412,6 +416,10 @@ class GestureEngine(
             }
             PinchState.PINCH_START -> {
                 if (timeInState >= config.pinchConfirmMs && allowEntry) {
+                    if (_engineState.value == GestureEngineState.ARMING) {
+                        _engineState.value = GestureEngineState.ARMED
+                        _gestureEvents.tryEmit(GestureEvent.Armed(timestampMs))
+                    }
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     pinchDragUnlocked = false
                     pinchStartX = pinchAnchoredX; pinchStartY = pinchAnchoredY
