@@ -23,7 +23,7 @@ import org.junit.Test
  * IDLE → HOVER (<enter×1.9) → PINCH_START (<enter, 80ms confirm) →
  * HOLD (START event = the click) → PINCH_RELEASE (>enter×1.30, 80ms) → IDLE,
  * plus an 80ms post-END cooldown. Default config (s=70, pinch ease 0.85–1.15
- * band → ease 1.06): enter ≈ 0.2332, exit ≈ 0.3381, hover ≈ 0.4430
+ * band → ease 1.06): enter ≈ 0.2332, exit ≈ 0.3032 (1.30x, G10), hover ≈ 0.4430
  * (thumb-index distance normalized by wrist→middle-MCP hand size).
  *
  * Already pinned elsewhere (not duplicated here): tracking-loss candidate
@@ -134,8 +134,11 @@ class PinchClickTest {
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
         var ts = arm(engine)
+        // After the G10 fix EXIT is enter×1.30 ≈ 0.303, so the "below release"
+        // half of the oscillation must stay under that (0.28); the old 0.33
+        // value now legitimately crosses the release threshold.
         repeat(30) { i ->
-            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.23f else 0.33f))
+            engine.processFrame(hand(ts, pinchGap = if (i % 2 == 0) 0.23f else 0.28f))
             ts += 40L
         }
         runCurrent()

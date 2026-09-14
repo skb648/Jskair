@@ -614,15 +614,20 @@ class SwipeIntentArbiter(
          * then special-cased low frame rates down to one; that special case is gone.
          */
         /**
-         * Fix (verified G9): was 3 moving steps, which at 10 fps scan cadence
-         * right after idle/thermal recovery needed ~300 ms of motion — the
-         * natural ~200 ms first flick after raising the hand was always
-         * dropped. Two moving steps (three samples), together with the
-         * path-efficiency, heading-drift, resolution and tracking-quality
-         * floors, is still sufficient to reject single-frame teleports while
-         * making the first swipe after a scan-mode gap register.
+         * Three moving steps is the least temporal evidence that can distinguish a
+         * direction from a flick: start, somewhere, end. Two steps (three samples) is
+         * what a single-frame tracking teleport produces, and a teleport must never
+         * commit no matter how far it jumped.
+         *
+         * G9 review (CI): lowering this to 2 re-opened hardening round 9/10
+         * regressions — an out-and-back wiggle's 2-step half and the second
+         * half of a gesture split by a tracking-loss gap both committed as
+         * swipes (GestureAdversarialTest "outward half alone does not fire",
+         * DynamicGestureDetectorTest "tracking loss mid swipe cancels").
+         * Real flicks are 4-6+ moving steps, so the 3-step floor costs them
+         * no latency; only accidental/teleport motion is rejected. Kept at 3.
          */
-        const val MIN_MOVING_STEPS = 2
+        const val MIN_MOVING_STEPS = 3
 
         /**
          * Stillness limit, in hand spans per SECOND, used only to decide when the hand
