@@ -19,6 +19,23 @@ class BlinkDetector(
     private var minBlinkMs: Long = minBlinkMs
     private var maxBlinkMs: Long = maxBlinkMs
 
+    // Fix (verified E4): the 0.170 fixed EAR threshold does not fit small
+    // eyes, almond-shaped eyes, astigmatism glasses or facial asymmetry —
+    // natural blinks for those users never crossed it. Track a slow baseline
+    // of the user's open-eye EAR and derive the closure threshold from it
+    // (72% of their personal open value), falling back to the fixed default
+    // until enough confident open frames are seen.
+    private var baselineOpenEar: Float = Float.NaN
+
+    /** Effective closure threshold (personalized once calibrated). */
+    private fun closureThreshold(): Float {
+        if (baselineOpenEar.isNaN()) return earThreshold
+        return (baselineOpenEar * 0.72f).coerceIn(0.10f, 0.22f)
+    }
+
+    /** Effective re-open threshold with Schmitt hysteresis above closure. */
+    private fun openThreshold(): Float = closureThreshold() * 1.15f
+
     /**
      * Schmitt-trigger hysteresis: enter closed below earThreshold, but only
      * leave it once EAR recovers meaningfully above openEarThreshold (25% higher).
@@ -47,9 +64,20 @@ class BlinkDetector(
      *  - [BlinkResult.NONE] otherwise (still open / still closed).
      */
     fun update(ear: Float, timestampMs: Long): BlinkResult {
-        // Hysteresis: enter "closed" below earThreshold, but only
-        // leave it once EAR recovers above openEarThreshold.
-        val closed = if (wasClosed) ear < openEarThreshold else ear < earThreshold
+        // Hysteresis: enter "closed" below the (personalized) closure
+        // threshold, but only leave once EAR recovers above the derived
+        // re-open threshold.
+        val closeAt = closureThreshold()
+        val openAt = openThreshold()
+        val closed = if (wasClosed) ear < openAt else ear < closeAt
+
+        // Learn the open-eye baseline only from confidently-open frames and
+        // never while a closure is in progress (a 2 s rest must not drag the
+        // baseline down to "closed").
+        if (!closed && ear > earThreshold * 1.25f && ear.isFinite()) {
+            baselineOpenEar = if (baselineOpenEar.isNaN()) ear
+            else baselineOpenEar + (ear - baselineOpenEar) * 0.01f
+        }
 
         if (closed && !wasClosed) {
             closedStartMs = timestampMs
@@ -70,7 +98,7 @@ class BlinkDetector(
                 val duration = timestampMs - start
                 wasClosed = false
                 // Ensure the closure actually reached full closure depth
-                if (minEar > earThreshold) {
+                if (minEar > closeAt) {
                     return BlinkResult.NONE
                 }
                 return when {

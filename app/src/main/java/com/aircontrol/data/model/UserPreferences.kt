@@ -19,9 +19,11 @@ data class UserPreferences(
     // HID POC: experimental Native HID Mouse (Bluetooth). OFF by default; the
     // whole path is isolated from the accessibility control pipeline.
     val nativeHidMouseEnabled: Boolean = false,
-    // Fix #32: status pill is OFF by default so no system-wide overlay appears
-    // on first run without the user asking for it.
-    val statusPillEnabled: Boolean = false,
+    // Fix (verified E2): the status pill is ON by default. It is the only
+    // surface that explains why a blink/dwell/gesture was ignored; with it
+    // off, rejected actions were completely silent ("kabhi chalta hai kabhi
+    // nahi"). It is a small, throttled (change-only) hint, not a toast storm.
+    val statusPillEnabled: Boolean = true,
     val calibratedHandSizeMm: Float = 0f,
     val calibratedPinchDistanceMm: Float = 0f,
     val isCalibrated: Boolean = false,

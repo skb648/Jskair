@@ -36,17 +36,27 @@ object CameraRevivePolicy {
         /** AirControl Activity not visible — starting would no-op anyway. */
         DEFER_NOT_VISIBLE,
 
-        /** All preconditions met: start/revive the camera service now. */
+        /** All preconditions met and the app is on screen: start now. */
         REVIVE,
+
+        /** All preconditions met but the app is backgrounded: still revive —
+         *  the camera FGS start is attempted and retried on rejection. */
+        REVIVE_BACKGROUND,
     }
 
     /**
      * Precondition priority (first match wins):
-     * consistency → keyguard → exclusive user → permission → visibility.
+     * consistency → keyguard → exclusive user → permission → revive.
      *
      * Keyguard outranks the exclusive-user check because a locked device must
-     * never even consider the camera; visibility is last because it is the
-     * condition that changes most often.
+     * never even consider the camera.
+     *
+     * Fix (verified critical #4): visibility is intentionally NOT a gate any
+     * more. The old `!activityVisible -> DEFER_NOT_VISIBLE` rule meant the
+     * watchdog could never revive an OEM-killed service while the user was in
+     * another app — the exact moment gestures matter. A background start is
+     * attempted while unlocked + permitted; the platform rejection (if any) is
+     * caught and retried with backoff by the service itself.
      */
     fun decide(
         gesturesEnabled: Boolean,
@@ -62,7 +72,6 @@ object CameraRevivePolicy {
         keyguardLocked -> Decision.DEFER_KEYGUARD
         exclusiveCameraUser -> Decision.SUPPRESS_EXCLUSIVE_USER
         !permissionGranted -> Decision.DEFER_PERMISSION
-        !activityVisible -> Decision.DEFER_NOT_VISIBLE
-        else -> Decision.REVIVE
+        else -> if (activityVisible) Decision.REVIVE else Decision.REVIVE_BACKGROUND
     }
 }

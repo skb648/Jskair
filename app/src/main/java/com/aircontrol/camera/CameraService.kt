@@ -89,8 +89,10 @@ class CameraService : LifecycleService() {
         private const val ANALYSIS_HEIGHT = 480
         const val CHANNEL_ID = "aircontrol_tracking"
 
-        /** How often the watchdog checks the pipeline (ms). */
-        private const val WATCHDOG_PERIOD_MS = 5_000L
+        /** How often the watchdog checks the pipeline (ms). Fix (verified R6):
+         *  5 s period + 5 s stall threshold made a wedged camera freeze for
+         *  10-15 s before recovery; 3 s/3 s lands around 6-8 s worst case. */
+        private const val WATCHDOG_PERIOD_MS = 3_000L
 
         /** Fluid 30 FPS analysis rate while eye tracking is active for smooth, responsive gaze. */
         private const val EYE_MODE_FPS_CAP = 30
@@ -312,6 +314,17 @@ class CameraService : LifecycleService() {
             serviceScope.launch {
                 lifecycleMutex.withLock {
                     if (!desiredTrackingEnabled) return@withLock
+                    // Fix (verified R1): never rebind while the screen is off or
+                    // the keyguard is showing. A camera-conflict recovery used to
+                    // race the screen-off pause and silently re-enabled the
+                    // camera in a pocket/against an ear (privacy + heat + drain).
+                    val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                    val pm = getSystemService(POWER_SERVICE) as? android.os.PowerManager
+                    if (km?.isKeyguardLocked == true || pm?.isInteractive == false) {
+                        Timber.i("Camera %s available while locked/screen-off; staying unbound", cameraId)
+                        isCameraConflictPaused = true
+                        return@withLock
+                    }
                     Timber.i("Camera %s available; lifecycle owner will attempt recovery", cameraId)
                     publishState(_state.value.copy(
                         actualState = TrackingState.STARTING,
@@ -322,6 +335,13 @@ class CameraService : LifecycleService() {
                     if (attemptCameraBindLocked(generation)) {
                         isCameraConflictPaused = false
                         acceptingFrames = true
+                        // Fix (verified R5): the conflict out-age can easily
+                        // exceed the 5 s stall threshold. Without resetting the
+                        // bookkeeping, the very next watchdog tick mistook the
+                        // recovered pipeline for a stall and pointlessly
+                        // rebuilt the whole camera graph (a second "blink").
+                        lastFrameTimestampMs = 0L
+                        lastProcessedFrameMs = SystemClock.elapsedRealtime()
                         publishState(_state.value.copy(
                             isRunning = true,
                             isPaused = false,
@@ -363,6 +383,16 @@ class CameraService : LifecycleService() {
     private fun stopOrientationListener() {
         orientationEventListener?.disable()
         orientationEventListener = null
+    }
+
+    /** Fix (verified R3): the availability callback is registered once per
+     *  service creation, so it must be released on every stop/destroy. It used
+     *  to be registered for the process lifetime and never unregistered,
+     *  leaking one callback (and its service capture) per start/stop cycle. */
+    private fun unregisterCameraAvailability() {
+        cameraManager?.let { cm ->
+            runCatching { cm.unregisterAvailabilityCallback(cameraAvailabilityCallback) }
+        }
     }
 
     override fun onCreate() {
@@ -480,6 +510,7 @@ class CameraService : LifecycleService() {
         stopThermalMonitoring()
         runCatching { unregisterPowerSaveReceiver() }
         stopOrientationListener()
+        unregisterCameraAvailability() // Fix (verified R3)
         runCatching {
             // onDestroy is on the main thread for LifecycleService, so this
             // closes the CameraX ownership edge synchronously before the service
@@ -681,6 +712,11 @@ class CameraService : LifecycleService() {
 
     private suspend fun attemptCameraBindLocked(generation: Long): Boolean {
         if (!desiredTrackingEnabled || generation != lifecycleGeneration) return false
+        // Fix (verified R1): defense in depth — no bind while locked/asleep,
+        // regardless of which recovery path requests it.
+        val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val pm = getSystemService(POWER_SERVICE) as? android.os.PowerManager
+        if (km?.isKeyguardLocked == true || pm?.isInteractive == false) return false
         bindInProgress = true
         return try {
             val ok = bindAnalysisUseCase()
@@ -697,7 +733,18 @@ class CameraService : LifecycleService() {
         cameraRetryJob = serviceScope.launch {
             delay(CAMERA_RETRY_BASE_MS)
             lifecycleMutex.withLock {
+                // Fix (verified R2): a FAILED session (e.g. tracker init failed
+                // under low RAM just after boot) used to be a permanent dead
+                // end — the scheduled retry only acted on WAITING/CAMERA_LOST/
+                // STARTING and the watchdog skips non-RUNNING states, so the UI
+                // showed "waiting" forever until a manual toggle. FAILED now
+                // re-enters the full (re)start path, which re-initializes the
+                // trackers before binding the camera.
                 if (desiredTrackingEnabled && generation == lifecycleGeneration &&
+                    _state.value.actualState == TrackingState.FAILED
+                ) {
+                    startTrackingLocked()
+                } else if (desiredTrackingEnabled && generation == lifecycleGeneration &&
                     _state.value.actualState in setOf(TrackingState.WAITING_FOR_CAMERA, TrackingState.CAMERA_LOST, TrackingState.STARTING)
                 ) {
                     attemptCameraBindLocked(generation)
@@ -738,7 +785,16 @@ class CameraService : LifecycleService() {
         return try {
             val provider = cameraProvider
                 ?: withContext(Dispatchers.Default) {
-                    ProcessCameraProvider.getInstance(this@CameraService).get()
+                    // Fix (verified R7): the blocking .get() used to wait
+                    // forever for a hung camera provider. Because every
+                    // onStartCommand action (including Stop) runs behind the
+                    // same lifecycleMutex, one hung get() bricked the whole
+                    // service — no tracking, no Stop button. Bound it; on
+                    // timeout the normal bind-failure/retry path takes over and
+                    // the mutex is released so commands keep flowing.
+                    kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                        ProcessCameraProvider.getInstance(this@CameraService).get()
+                    } ?: throw java.io.IOException("CameraProvider unavailable after 5s")
                 }
             cameraProvider = provider
             withContext(Dispatchers.Main.immediate) {
@@ -901,6 +957,11 @@ class CameraService : LifecycleService() {
             runCatching { cameraProvider?.unbindAll() }
                 .onFailure { Timber.e(it, "unbindAll on pause failed") }
             cameraBound = false
+            // Fix (verified R8): the service deliberately stays alive while the
+            // screen is off; the orientation listener must not keep the
+            // accelerometer waking the CPU all night in a pocket. It is
+            // re-enabled on rebind (bindAnalysisUseCase).
+            stopOrientationListener()
         }
         publishState(_state.value.copy(
             isRunning = false,
@@ -925,11 +986,16 @@ class CameraService : LifecycleService() {
             return
         }
         if (_state.value.actualState !in setOf(TrackingState.PAUSED, TrackingState.CAMERA_LOST, TrackingState.WAITING_FOR_CAMERA)) return
+        // Fix (verified critical #1): clear the pause latches BEFORE the thermal
+        // gate. An explicit user Resume during a thermal CRITICAL state must not
+        // be treated as "stay paused forever"; it arms the auto-recovery that
+        // fires as soon as the device cools (applyThermalThrottling NONE/LIGHT).
         userPaused = false
         systemPaused = false
         _userPaused.value = false
         if (thermalPaused) {
-            Timber.i("Resume requested but thermal pause active; waiting for recovery")
+            Timber.i("Resume requested during thermal pause; latched, will resume when device cools")
+            updateNotification(isPaused = true, isThermal = true)
             return
         }
         val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
@@ -987,11 +1053,24 @@ class CameraService : LifecycleService() {
                 state.generation != lifecycleGeneration || state.isPaused
             ) return
             val intervalMs = adaptiveFpsController.analysisIntervalMs
-            if (startMs - lastFrameTimestampMs < intervalMs) {
+            // Fix (verified critical #2): absolute-deadline pacing. The old code
+            // reset the timer to the ACCEPTED frame's timestamp
+            // (`lastFrameTimestampMs = startMs`). With a 33 ms camera and a
+            // 41 ms (24 fps) interval that phase-locks into an accept-skip-accept
+            // pattern at 66 ms = ~15 fps, so "24 fps" silently ran at 15 fps on
+            // every 30 fps device. Advance a fixed deadline instead, and snap the
+            // deadline to now when the pipeline fell behind (stall/GC) so no
+            // frame burst tries to repay the debt.
+            if (lastFrameTimestampMs != 0L && startMs - lastFrameTimestampMs < intervalMs) {
                 PerfTelemetry.recordFrameDroppedThrottle()
                 return
             }
-            lastFrameTimestampMs = startMs
+            lastFrameTimestampMs = if (lastFrameTimestampMs == 0L) {
+                startMs
+            } else {
+                val nextDeadline = lastFrameTimestampMs + intervalMs
+                if (startMs - nextDeadline > intervalMs) startMs else nextDeadline
+            }
             lastProcessedFrameMs = startMs
 
             val rotation = imageProxy.imageInfo.rotationDegrees
@@ -1143,7 +1222,11 @@ class CameraService : LifecycleService() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val pauseResumeAction = if (isPaused && !isThermal) {
+        // Fix (verified critical #1): a Resume action must be offered while
+        // thermally paused too. Tapping it clears the user-pause latch and arms
+        // auto-recovery; resumeTrackingLocked() itself waits out the thermal
+        // state and rebinds the moment the device cools.
+        val pauseResumeAction = if (isPaused) {
             NotificationCompat.Action(null, getString(R.string.notification_action_resume),
                 createCommandPendingIntent(COMMAND_RESUME))
         } else if (!isPaused) {
@@ -1293,7 +1376,9 @@ class CameraService : LifecycleService() {
                 val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 if (km?.isKeyguardLocked == true) continue
                 val elapsed = SystemClock.elapsedRealtime() - lastProcessedFrameMs
-                if (lastProcessedFrameMs > 0L && elapsed > 5000L) {
+                // Fix (verified R6): 3 s stall threshold to match the faster
+                // watchdog period — genuine wedges recover in ~6-8 s now.
+                if (lastProcessedFrameMs > 0L && elapsed > 3000L) {
                     Timber.w("Frame stall %dms — restarting camera", elapsed)
                     restartCamera()
                 }
@@ -1505,7 +1590,13 @@ class CameraService : LifecycleService() {
                 thermalRecoveryJob?.cancel(); thermalRecoveryJob = null
                 postRecoveryFps = 0
                 if (!_state.value.isPaused) {
-                    serviceScope.launch { lifecycleMutex.withLock { pauseTrackingLocked() } }
+                    // Fix (verified critical #1): a thermal CRITICAL pause is a
+                    // SYSTEM pause, never a user one. The default
+                    // userInitiated=true used to latch userPaused, so after the
+                    // device cooled down every auto-recovery path
+                    // (`if (!userPaused)`) refused to resume — tracking stayed
+                    // dead until the app was force-stopped.
+                    serviceScope.launch { lifecycleMutex.withLock { pauseTrackingLocked(userInitiated = false) } }
                     updateNotification(isPaused = true, isThermal = true)
                 }
             }

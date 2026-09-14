@@ -11,6 +11,7 @@ import com.aircontrol.data.model.CustomGestureTrigger
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.LandmarkTemplate
 import com.aircontrol.tracking.HandTracker
+import com.aircontrol.service.CameraServiceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -50,7 +51,14 @@ data class CustomGestureCreatorState(
 class CustomGestureViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val handTracker: HandTracker,
+    private val cameraServiceManager: CameraServiceManager,
 ) : ViewModel() {
+
+    // Fix (verified U1): recording used to subscribe to hand frames while
+    // tracking was OFF, time out, and then blame "bad lighting". Start the
+    // camera ourselves for the capture; stop it again if we started it and
+    // the user did not have gestures enabled.
+    private var startedCameraForCapture = false
 
     init {
         // Fix B-3: while a setup flow is on screen, the accessibility service
@@ -63,7 +71,16 @@ class CustomGestureViewModel @Inject constructor(
 
     override fun onCleared() {
         Suppression.release()
+        releaseCaptureCamera()
         super.onCleared()
+    }
+
+    private fun releaseCaptureCamera() {
+        if (startedCameraForCapture) {
+            startedCameraForCapture = false
+            // We only ever started it because tracking was already off.
+            cameraServiceManager.stopTracking()
+        }
     }
 
     val customGestures = settingsRepository.customGestures
@@ -168,6 +185,10 @@ class CustomGestureViewModel @Inject constructor(
             templateCaptureFailed = false,
             capturedTemplate = null,
         )
+        if (!cameraServiceManager.isTracking()) {
+            cameraServiceManager.startTracking()
+            startedCameraForCapture = true
+        }
         viewModelScope.launch {
             val frames = withTimeoutOrNull(TEMPLATE_CAPTURE_TIMEOUT_MS) {
                 handTracker.handFrames
@@ -181,6 +202,7 @@ class CustomGestureViewModel @Inject constructor(
                     templateCaptureFailed = true,
                 )
                 Timber.w("Template capture failed: only %d usable frames", frames?.size ?: 0)
+                releaseCaptureCamera()
                 return@launch
             }
             val acc = FloatArray(LandmarkTemplate.EXPECTED_DISTANCE_COUNT)
@@ -206,6 +228,7 @@ class CustomGestureViewModel @Inject constructor(
                 isValid = _creatorState.value.name.isNotBlank(),
             )
             Timber.i("Hand-shape template recorded (%d frames)", TEMPLATE_CAPTURE_FRAMES)
+            releaseCaptureCamera()
         }
     }
 

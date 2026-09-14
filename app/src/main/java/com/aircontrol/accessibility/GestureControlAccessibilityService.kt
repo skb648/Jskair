@@ -140,6 +140,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var hoverActive: Boolean = false
     @Volatile private var dwellMidHapticFired: Boolean = false
 
+    /**
+     * Fix (verified E2): the 11 block reasons defined in [BlockReason] used to
+     * never be emitted — most blink/stillness rejections only hit Timber.d and
+     * the status pill stayed empty, so actions felt randomly dead. Route them
+     * through the same throttled hub as everything else.
+     */
+    private fun recordBlockReason(reason: BlockReason) {
+        actionDispatcher?.blockReasonHub?.record(reason, SystemClock.elapsedRealtime())
+    }
+
     private fun performDwellHaptic(isClick: Boolean) {
         if (!currentPreferences.hapticFeedback) return
         runCatching {
@@ -176,6 +186,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var fixationDwellAllowed: Boolean = false
     @Volatile private var dwellFireX: Float = 0.5f
     @Volatile private var dwellFireY: Float = 0.5f
+    // Fix (verified E5): content signature captured when a dwell begins. If a
+    // dialog/feed changes what sits under the stationary cursor before the
+    // dwell fires, the tap is cancelled instead of hitting new content the
+    // user never selected (Midas-touch).
+    @Volatile private var dwellContentStamp: String? = null
+    private var lastKeyboardWindowCheckMs = 0L
+    private var keyboardWindowOverCursor = false
 
     /** Fix (audit #10): last main-thread dwell-ring paint (real ~30fps gate). */
     @Volatile private var lastDwellUiUpdateMs: Long = 0L
@@ -234,10 +251,6 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var gazeDriftOffsetX: Float = 0f
     @Volatile private var gazeDriftOffsetY: Float = 0f
     @Volatile private var lastAnchorAdjustMs: Long = 0L
-
-    // Reading & Gaze Ghost Mode: dims cursor during sustained text scanning to eliminate visual distraction
-    @Volatile private var isGhostModeActive: Boolean = false
-    @Volatile private var readingScanStartMs: Long = 0L
 
     // Issue 7: Gaze history ring buffer for pre-blink position rollback
     private data class GazeHistoryEntry(val x: Float, val y: Float, val timeMs: Long)
@@ -333,6 +346,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
             // Attach dispatcher and register visual and haptic feedback callback.
             actionDispatcher?.attachService(this)
             actionDispatcher?.onGestureDispatched = { actionName ->
+                // Fix (verified C1): DRAG continuations complete ~28 times per
+                // second; haptic + ripple on every one of them made the phone
+                // buzz continuously and the dot strobe for the whole drag.
+                // Drags already get tint/scale feedback; only discrete actions
+                // tick and ripple.
+                if (actionName == GestureAction.DRAG.name) return@onGestureDispatched
                 val isClick = actionName.contains("TAP", ignoreCase = true) ||
                     actionName.contains("PINCH", ignoreCase = true) ||
                     actionName.contains("CLICK", ignoreCase = true)
@@ -739,11 +758,22 @@ class GestureControlAccessibilityService : AccessibilityService() {
                                 }
                             }
                             GestureEngineState.DISARMED -> {
-                                cursorOverlay?.hide()
-                                cursorOverlay?.setArmed(false)
-                                cursorController?.hide()
-                                cursorSmoother.reset()
-                                resetDwellState()
+                                // Fix (verified E3): the hand engine and the
+                                // gaze pipeline share ONE overlay. A hand
+                                // leaving the frame (DISARMED) used to hide the
+                                // dot while eye mode kept publishing positions,
+                                // causing show/hide flicker every frame. While
+                                // the eyes own the cursor, hand disarm only
+                                // updates the arming ring.
+                                if (currentPreferences.eyeTrackingEnabled && _gazeTracking.value) {
+                                    cursorOverlay?.setArmed(false)
+                                } else {
+                                    cursorOverlay?.hide()
+                                    cursorOverlay?.setArmed(false)
+                                    cursorController?.hide()
+                                    cursorSmoother.reset()
+                                    resetDwellState()
+                                }
                             }
                             GestureEngineState.ARMING -> {
                                 // Cursor stays hidden while arming, but the ring is
@@ -755,6 +785,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 } catch (e: Exception) {
                     CrashGuard.report("overlay state", e)
                 }
+            }
+        })
+
+        // Fix (verified G6): low-confidence tracking used to mute
+        // poses/pinches/custom gestures with zero indication — a dim-light
+        // session looked random. Surface it in the (now default-on) pill.
+        pipelineJobs.add(serviceScope.launchGuarded("low confidence", restart = true) {
+            var lastLow = false
+            gestureDetector?.lowConfidence?.collectGuarded("low confidence") { low ->
+                if (low && !lastLow) recordBlockReason(BlockReason.HAND_NOT_CONFIDENT)
+                lastLow = low
             }
         })
 
@@ -786,6 +827,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             // consecutive misses crossed the hysteresis bound.
                             gazeMissCount = 0
                             faceStableSinceMs = 0L
+                            recordBlockReason(BlockReason.FACE_LOST) // Fix (verified E2)
                             // P0-3: a queued gaze move must die with the transition, or the frame
                             // callback would re-show the cursor the frame after it was hidden.
                             cancelPendingGazeMove()
@@ -843,6 +885,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             // fire. Consume it (the detector already has) and say so
                             // in the pill, rather than clicking something arbitrary.
                             Timber.d("Blink click suppressed: gaze not actionable this frame")
+                            recordBlockReason(BlockReason.EYE_NOT_STABLE)
                             resetDwellState()
                             return@gaze
                         } else if (blinkResult == com.aircontrol.tracking.BlinkResult.CLICK) {
@@ -855,6 +898,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             // counts as a click. Moving-eyes blinks are dropped.
                             if (SystemClock.elapsedRealtime() - lastGazeMoveMs < BLINK_INTENT_STILLNESS_MS) {
                                 Timber.d("Blink during eye movement ignored (not intentional)")
+                                // Fix (verified E1/E2): no more silent blink drops.
+                                recordBlockReason(BlockReason.BLINK_DURING_MOVEMENT)
                                 resetDwellState()
                                 return@gaze
                             }
@@ -871,7 +916,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             actionDispatcher?.dispatchBlinkTap(tapTarget.first, tapTarget.second, screenWidth, screenHeight)
                             resetDwellState()
                             return@gaze
-                        } else if (blinkResult != com.aircontrol.tracking.BlinkResult.NONE) {
+                        } else if (blinkResult == com.aircontrol.tracking.BlinkResult.TOO_SHORT) {
+                            // Fix (verified E2): surface why the blink did not click.
+                            recordBlockReason(BlockReason.BLINK_TOO_SHORT)
+                            resetDwellState()
+                            return@gaze
+                        } else if (blinkResult == com.aircontrol.tracking.BlinkResult.TOO_LONG) {
+                            recordBlockReason(BlockReason.BLINK_TOO_LONG)
                             resetDwellState()
                             return@gaze
                         }
@@ -1060,7 +1111,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 // live gaze cursor, and END taps the pinned position — so the click
                 // lands where the user is looking instead of where the hand hangs
                 // in the camera frame.
-                val eyeMode = currentPreferences.eyeTrackingEnabled && currentPreferences.cursorEnabled
+                // Fix (verified E7): pinch-in-eye-mode must pin to the gaze
+                // position whenever eye tracking is the active modality —
+                // including the "cursor overlay OFF, blink click ON" config.
+                // The old extra cursorEnabled gate dropped that config onto
+                // the hand-coordinate path while dispatch still mapped with
+                // normalizeDirect, landing clicks 10-15% off (and off-screen).
+                val eyeMode = currentPreferences.eyeTrackingEnabled &&
+                    (currentPreferences.cursorEnabled || currentPreferences.blinkClickEnabled)
                 if (eyeMode) {
                     when (event.phase) {
                         com.aircontrol.gesture.model.PinchPhase.START -> {
@@ -1216,10 +1274,18 @@ class GestureControlAccessibilityService : AccessibilityService() {
      * a process kill — and retried with backoff if a strict OEM rejects it;
      * MainActivity.onResume remains the fast path while the app is visible.
      */
-    private fun startCameraService() {
+    private fun startCameraService(allowBackgroundStart: Boolean = false) {
         if (!currentPreferences.gesturesEnabled) return
-        if (!MainActivity.isVisible) {
-            Timber.v("Camera start deferred: AirControl Activity is not visible")
+        // Fix (verified critical #4): the visibility gate meant an OEM kill
+        // while the user was in Chrome/YouTube — exactly when gestures are
+        // needed — was never recovered until they reopened AirControl.
+        // Foreground starts keep their normal flow (fast path); watchdog/
+        // backoff retries pass allowBackgroundStart=true, which is legal while
+        // the device is unlocked and the camera is not exclusively held; a
+        // platform rejection is caught and rescheduled below.
+        if (!MainActivity.isVisible && !allowBackgroundStart) {
+            Timber.v("Foreground camera start deferred: Activity not visible; watchdog will retry")
+            scheduleCameraRetry()
             return
         }
         if (cameraServiceManager?.isTracking() == true) {
@@ -1252,7 +1318,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
             // A start that the platform still rejects is caught and rescheduled.
             if (currentPreferences.gesturesEnabled && cameraPermissionGranted() &&
                 cameraServiceManager?.isTracking() != true) {
-                startCameraService()
+                // Fix (verified critical #4): retries are allowed from the
+                // background — the comment here used to promise it while the
+                // code visibility-gated the call into a permanent no-op.
+                startCameraService(allowBackgroundStart = true)
             }
         }
     }
@@ -1286,15 +1355,22 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 )
                 when (decision) {
                     CameraRevivePolicy.Decision.REVIVE -> {
-                        // Fix (audit #23) semantics preserved: with the
-                        // permission granted and the Activity visible, revive
-                        // immediately. Failures are caught and retried on the
-                        // next tick.
                         logWatchdogDecision(decision)
                         com.aircontrol.runtime.PerfTelemetry.recordWatchdogAction(
                             "revive", android.os.SystemClock.elapsedRealtime(),
                         )
                         startCameraService()
+                    }
+                    // Fix (verified critical #4): revive even with AirControl in
+                    // the background (user in another app is when gestures are
+                    // needed). The FGS start is attempted; a platform rejection
+                    // is caught and retried with backoff.
+                    CameraRevivePolicy.Decision.REVIVE_BACKGROUND -> {
+                        logWatchdogDecision(decision)
+                        com.aircontrol.runtime.PerfTelemetry.recordWatchdogAction(
+                            "revive-background", android.os.SystemClock.elapsedRealtime(),
+                        )
+                        startCameraService(allowBackgroundStart = true)
                     }
                     CameraRevivePolicy.Decision.STOP_SERVICE -> stopCameraService()
                     else -> logWatchdogDecision(decision)
@@ -1323,6 +1399,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 Timber.i("Watchdog: gestures disabled while tracking — stopping the camera service")
             CameraRevivePolicy.Decision.REVIVE ->
                 Timber.w("Watchdog: gestures enabled — reviving camera")
+            CameraRevivePolicy.Decision.REVIVE_BACKGROUND ->
+                Timber.w("Watchdog: gestures enabled while app is backgrounded — reviving camera")
             CameraRevivePolicy.Decision.DEFER_KEYGUARD ->
                 Timber.v("Watchdog: camera start deferred (keyguard locked)")
             CameraRevivePolicy.Decision.SUPPRESS_EXCLUSIVE_USER ->
@@ -1440,9 +1518,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
         val target = gazeTransport.consume() ?: return
-        val overlay = cursorOverlay ?: return
-        overlay.show()
-        overlay.updatePosition(target.first, target.second, screenWidth, screenHeight, directMapping = true)
+        // Fix (verified C5): the analysis pipeline runs at 15-24 fps while
+        // the panel is 60/120 Hz. Setting the overlay position once per
+        // analyzed sample made the dot step in 40-66 ms jumps. Feed the new
+        // target into a vsync-rate exponential approach so the dot glides at
+        // full refresh rate; the time constant (~28 ms) is below one analysis
+        // frame, so the cursor still tracks with no perceptible lag.
+        feedSmoothTarget(gazeSmootherState, target.first, target.second, directMapping = true)
     }
 
     /**
@@ -1461,9 +1543,59 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
         val target = handTransport.consume() ?: return
+        feedSmoothTarget(handSmootherState, target.first, target.second, directMapping = false)
+    }
+
+    /** Per-modality interpolation bookkeeping (Fix verified C5). */
+    private class SmoothOverlayState {
+        @Volatile var targetX = 0.5f
+        @Volatile var targetY = 0.5f
+        var shownX = Float.NaN
+        var shownY = Float.NaN
+        var running = false
+    }
+    private val handSmootherState = SmoothOverlayState()
+    private val gazeSmootherState = SmoothOverlayState()
+
+    private fun feedSmoothTarget(state: SmoothOverlayState, x: Float, y: Float, directMapping: Boolean) {
+        state.targetX = x
+        state.targetY = y
+        if (state.running) return
         val overlay = cursorOverlay ?: return
+        state.running = true
         overlay.show()
-        overlay.updatePosition(target.first, target.second, screenWidth, screenHeight)
+        val frameRunnable = object : Runnable {
+            override fun run() {
+                val ov = cursorOverlay
+                if (ov == null || !currentPreferences.cursorEnabled) {
+                    state.running = false
+                    return
+                }
+                if (state.shownX.isNaN()) {
+                    state.shownX = state.targetX
+                    state.shownY = state.targetY
+                } else {
+                    // Exponential approach with a ~28 ms time constant:
+                    // ~85% of each step covered in ~50 ms, snapping sub-pixel.
+                    val t = (1f - kotlin.math.exp(-16f / 28f)).coerceIn(0f, 1f)
+                    state.shownX += (state.targetX - state.shownX) * t
+                    state.shownY += (state.targetY - state.shownY) * t
+                    val px = kotlin.math.abs(state.targetX - state.shownX) * screenWidth
+                    val py = kotlin.math.abs(state.targetY - state.shownY) * screenHeight
+                    if (px < 0.6f && py < 0.6f) {
+                        state.shownX = state.targetX
+                        state.shownY = state.targetY
+                    }
+                }
+                ov.updatePosition(state.shownX, state.shownY, screenWidth, screenHeight, directMapping)
+                if (state.shownX == state.targetX && state.shownY == state.targetY) {
+                    state.running = false
+                } else {
+                    mainHandler.postDelayed(this, 16L)
+                }
+            }
+        }
+        mainHandler.post(frameRunnable)
     }
 
     /**
@@ -1472,10 +1604,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun cancelPendingGazeMove() {
         gazeTransport.reset()
+        gazeSmootherState.shownX = Float.NaN
+        gazeSmootherState.shownY = Float.NaN
     }
 
     private fun cancelPendingHandMove() {
         handTransport.reset()
+        handSmootherState.shownX = Float.NaN
+        handSmootherState.shownY = Float.NaN
     }
 
     private fun gazeDiagnosticsSnapshot(): String? =
@@ -1598,6 +1734,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         stationarySinceMs = 0L
         dwellMovingTravel = 0f
         fixationDwellAllowed = false
+        dwellContentStamp = null
         // Throttle main-thread hop.
         serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
     }
@@ -1618,21 +1755,27 @@ class GestureControlAccessibilityService : AccessibilityService() {
         lastCursorX = x
         lastCursorY = y
 
-        val effectiveThreshold = if (isGaze) {
-            // Fix #8: Gaze physiological micro-saccade tolerance: human eyes have natural tremor.
-            // When dwell is already underway, give soft anchor tolerance (0.026f) so 90% progress isn't instantly broken.
+        // Fix (verified E6): gaze thresholds used normalized x/y distances,
+        // which map to ~2x more pixels vertically than horizontally — the
+        // dwell dead-zone was an ellipse, so horizontal eye tremor reset the
+        // ring while the same vertical tremor did not. Compare in screen
+        // pixels against a circular radius (thresholds scaled by height).
+        val distPx = kotlin.math.hypot(dx * screenWidth, dy * screenHeight)
+        val effectiveThresholdPx = if (isGaze) {
             val isUnderway = stationarySinceMs > 0L && (timestampMs - stationarySinceMs) > 150L
-            if (isUnderway) 0.026f else 0.016f
+            val norm = if (isUnderway) 0.026f else 0.016f
+            norm * screenHeight
         } else {
-            STATIONARY_THRESHOLD
+            STATIONARY_THRESHOLD * ((screenHeight + screenWidth) / 2f)
         }
 
-        if (dist > effectiveThreshold) {
-            // In gaze mode, if the micro-drift is minor (under 0.022f) and dwell was active,
-            // decay stationary time gracefully rather than wiping progress instantly to 0.
-            // When reading or shifting gaze to another word/button (dist >= 0.022f), dwell resets
-            // immediately so reading text never fires an accidental click ("Midas Touch" solved).
-            if (isGaze && stationarySinceMs > 0L && dist < 0.022f) {
+        if (distPx > effectiveThresholdPx) {
+            // In gaze mode, minor drift decays stationary time gracefully
+            // rather than wiping progress instantly; deliberate saccades to a
+            // neighbouring word/button reset immediately (Midas-touch guard).
+            if (isGaze && stationarySinceMs > 0L &&
+                kotlin.math.hypot(dx * screenWidth, dy * screenHeight) < 0.022f * screenHeight
+            ) {
                 stationarySinceMs = (stationarySinceMs + 70L).coerceAtMost(timestampMs)
                 return
             }
@@ -1661,6 +1804,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         if (stationarySinceMs == 0L) {
             stationarySinceMs = timestampMs
             dwellMidHapticFired = false
+            dwellContentStamp = contentStampAt(x, y, isGaze)
         }
 
         // Fix A8: the first still frame after a movement decides whether this
@@ -1681,13 +1825,44 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Check if cursor is hovering over the on-screen soft keyboard (IME window).
         // Dwell clicking on keyboard keys causes accidental typing while looking at keys.
-        if (isCursorOverKeyboard(x, y)) {
+        // Fix (verified C7): the window-list binder call used to run on EVERY
+        // stillness sample (~20 Hz); cache it for 100 ms. The IME rarely appears
+        // or moves inside a dwell window.
+        val nowCheckMs = SystemClock.elapsedRealtime()
+        if (nowCheckMs - lastKeyboardWindowCheckMs >= 100L) {
+            lastKeyboardWindowCheckMs = nowCheckMs
+            // Fix (verified C6): test the SAME pixels the tap lands on. Gaze
+            // coords are already screen-normalized; hand coords pass through
+            // the dead-zone/gain mapping the dot and tap use.
+            val kbdPx = if (isGaze) (x * screenWidth)
+            else ActionDispatcher.normalizeToScreenX(x, screenWidth)
+            val kbdPy = if (isGaze) (y * screenHeight)
+            else ActionDispatcher.normalizeToScreenY(y, screenHeight, screenWidth)
+            keyboardWindowOverCursor = isCursorOverKeyboardPixels(kbdPx, kbdPy)
+        }
+        if (keyboardWindowOverCursor) {
             if (hoverActive) {
                 hoverActive = false
                 serviceScope.launch(Dispatchers.Main) { cursorOverlay?.resetHover() }
             }
             serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
             return
+        }
+
+        // Fix (verified E5): content moved under the stationary cursor during
+        // the dwell (dialog appeared, feed auto-advanced) — cancel, never tap
+        // the new content blindly. Restart the dwell on the new content.
+        if (currentPreferences.gesturesEnabled && currentPreferences.dwellEnabled &&
+            stationarySinceMs > 0L && stillMs >= currentPreferences.dwellDurationMs - 50L
+        ) {
+            val currentStamp = contentStampAt(x, y, isGaze)
+            if (currentStamp != null && dwellContentStamp != null && currentStamp != dwellContentStamp) {
+                Timber.d("Dwell cancelled: content changed under the cursor")
+                recordBlockReason(BlockReason.PROTECTED_SCREEN_BLOCKED)
+                resetDwellState()
+                serviceScope.launch(Dispatchers.Main) { cursorOverlay?.setDwellProgress(0f) }
+                return
+            }
         }
 
         if (!hoverActive && stillMs >= HOVER_AFTER_MS) {
@@ -1731,13 +1906,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Checks whether the normalized cursor coordinates fall inside an active Input Method
-     * (soft keyboard) window. Dwell clicks are suspended over keyboards to prevent accidental typing.
+     * Checks whether the cursor PIXEL coordinates fall inside an active Input
+     * Method (soft keyboard) window. Dwell clicks are suspended over keyboards
+     * to prevent accidental typing. Fix (verified C6): callers pass the same
+     * mapped pixels the visual dot and the tap use (hand coords go through the
+     * dead-zone/gain mapping; gaze coords are already direct), instead of raw
+     * normalized coordinates that were ~10% off from the real tap point.
      */
-    private fun isCursorOverKeyboard(normX: Float, normY: Float): Boolean {
+    private fun isCursorOverKeyboardPixels(pxIn: Float, pyIn: Float): Boolean {
         if (screenWidth <= 0 || screenHeight <= 0) return false
-        val px = (normX * screenWidth).toInt()
-        val py = (normY * screenHeight).toInt()
+        val px = pxIn.toInt()
+        val py = pyIn.toInt()
         return try {
             val windowList = windows ?: return false
             val rect = android.graphics.Rect()
@@ -1753,6 +1932,39 @@ class GestureControlAccessibilityService : AccessibilityService() {
             false
         } catch (_: Throwable) {
             false
+        }
+    }
+
+    /**
+     * Fix (verified E5): a cheap fingerprint of what is under the cursor — the
+     * containing window's package/type/bounds plus the deepest node's class
+     * and action flags. Reads accessibility windows at most twice per dwell
+     * (start + fire), so binder cost is negligible while a content swap under
+     * a stationary gaze becomes detectable.
+     */
+    private fun contentStampAt(normX: Float, normY: Float, isGaze: Boolean): String? {
+        if (screenWidth <= 0 || screenHeight <= 0) return null
+        val px = if (isGaze) (normX * screenWidth)
+        else ActionDispatcher.normalizeToScreenX(normX, screenWidth)
+        val py = if (isGaze) (normY * screenHeight)
+        else ActionDispatcher.normalizeToScreenY(normY, screenHeight, screenWidth)
+        return try {
+            val list = windows ?: return null
+            val rect = android.graphics.Rect()
+            var windowPart = ""
+            for (w in list) {
+                w ?: continue
+                w.getBoundsInScreen(rect)
+                if (rect.contains(px.toInt(), py.toInt())) {
+                    windowPart = "${w.root?.packageName ?: ""}|${w.type}|$rect|${w.root?.childCount ?: -1}"
+                    break
+                }
+            }
+            if (windowPart.isEmpty()) return null
+            val node = CursorHitTester.hitTest(list, px, py, packageName)
+            "$windowPart#${node?.className}#${node?.isClickable}#${node?.hasClickAction}#${node?.isEditable}"
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -1855,9 +2067,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Fix (audit #5/#6): re-acquisition priming + blink-intent stillness window.
         private const val GAZE_REACQUIRE_PRIME_FRAMES = 2
-        private const val BLINK_INTENT_STILLNESS_MS = 140L
+        // Fix (verified E1): 140 ms forced a deliberate, slightly unnatural
+        // pre-blink pause or the click was silently dropped. 90 ms still
+        // rejects mid-saccade blinks (saccades last ~30-80 ms) while natural
+        // look-then-blink timing passes; rejected blinks now also surface a
+        // block reason (E2) instead of vanishing.
+        private const val BLINK_INTENT_STILLNESS_MS = 90L
         private const val GAZE_MOVE_EPSILON = 0.008f
-        private const val FIXATION_LOCK_RADIUS = 0.022f
         private const val SACCADE_BREAKOUT_RADIUS = 0.045f
         private const val PRE_BLINK_LOOKBACK_MS = 130L
 

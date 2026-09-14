@@ -38,7 +38,9 @@ data class GestureMapConfig(
             // gesture visible/mappable in the gesture map and gives it the
             // spec'd default. Schema bump so migrate() adds it to existing
             // installs while preserving user customizations.
-            GestureMapEntry("pose_three_fingers", "Three Fingers", GestureAction.VOLUME_UP),
+            // Fix (verified G5): unbound by default — relaxed/transitional
+            // hands read as three extended fingers; no destructive surprise.
+            GestureMapEntry("pose_three_fingers", "Three Fingers", GestureAction.NONE),
             GestureMapEntry("pose_pinch_hold", "Pinch Hold (Drag)", GestureAction.DRAG),
             GestureMapEntry("palm_home", "Palm (Hold)", GestureAction.HOME),
         )

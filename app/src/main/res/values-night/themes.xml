@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fix (verified U5): dark theme keeps LIGHT status-bar glyphs. -->
+    <style name="Theme.AirControl" parent="Theme.AirControl.Base">
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <style name="Theme.AirControl.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimationDuration">300</item>
+        <item name="postSplashScreenTheme">@style/Theme.AirControl</item>
+    </style>
+</resources>

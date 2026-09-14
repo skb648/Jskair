@@ -90,8 +90,12 @@ class AdaptiveFpsController(
             delay(noHandTimeoutMs)
             downgradeJob.set(null)
             // A user presence that came back in the meantime wins.
+            // Fix (verified R4): never scan faster than the current
+            // configured FPS — under thermal SEVERE the configured rate is
+            // 8 fps and the old unconditional jump to 10 fps violated the cap,
+            // keeping an already-hot phone warm while nobody was present.
             if (isUserPresent) return@launch
-            _currentFps.value = scanFps
+            _currentFps.value = minOf(scanFps, configuredFps)
             Timber.d(
                 "No user interaction since %d for %d ms - dropping to scan FPS: %d",
                 timestampMs,
@@ -111,7 +115,7 @@ class AdaptiveFpsController(
             delay(noHandTimeoutMs)
             downgradeJob.set(null)
             if (isUserPresent) return@launch
-            _currentFps.value = scanFps
+            _currentFps.value = minOf(scanFps, configuredFps) // Fix (verified R4)
             Timber.d(
                 "No user interaction since %d for %d ms - dropping to scan FPS: %d",
                 timestampMs,

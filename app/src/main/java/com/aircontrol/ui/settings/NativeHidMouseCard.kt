@@ -26,6 +26,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
@@ -69,9 +71,10 @@ internal fun NativeHidMouseCard(viewModel: SettingsViewModel, enabled: Boolean) 
                 .fillMaxWidth()
                 .padding(Dimens.paddingMedium),
         ) {
+            val hidTitle = stringResource(R.string.settings_native_hid_title)
             Row {
                 Text(
-                    text = stringResource(R.string.settings_native_hid_title),
+                    text = hidTitle,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
@@ -84,6 +87,10 @@ internal fun NativeHidMouseCard(viewModel: SettingsViewModel, enabled: Boolean) 
                         } else {
                             viewModel.updateNativeHidMouseEnabled(want)
                         }
+                    },
+                    // Fix (verified U9): labelled switch for screen readers.
+                    modifier = Modifier.semantics {
+                        contentDescription = hidTitle
                     },
                 )
             }

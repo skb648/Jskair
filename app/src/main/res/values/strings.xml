@@ -49,6 +49,7 @@
     <string name="onboarding_back">Back</string>
     <string name="onboarding_next">Next</string>
     <string name="onboarding_get_started">Get Started</string>
+    <string name="onboarding_skip">Skip for now</string>
     <string name="onboarding_permission_granted">Granted</string>
     <string name="onboarding_open_settings">Open Settings</string>
     <string name="onboarding_page_indicator_desc">Step %1$d of %2$d</string>
@@ -89,6 +90,8 @@
     <string name="onboarding_tutorial_swipe_desc">Scroll or navigate</string>
     <string name="onboarding_tutorial_victory_title">Victory</string>
     <string name="onboarding_tutorial_victory_desc">Media play/pause</string>
+    <string name="onboarding_tutorial_eye_title">👁 Eye tracking (optional)</string>
+    <string name="onboarding_tutorial_eye_desc">Look to move the cursor and blink to click — turn it on anytime in Settings → Eye Tracking</string>
     <string name="onboarding_tutorial_permissions_required">Please complete all permission steps first</string>
 
     <!-- Gesture Map -->
@@ -133,9 +136,14 @@
     <string name="settings_section_eye_tracking">Eye Tracking</string>
     <string name="settings_section_about">About</string>
     <string name="custom_gestures_title">Custom Gestures</string>
+    <string name="custom_gestures_delete_title">Delete gesture?</string>
+    <string name="custom_gestures_delete_body">This permanently removes \"%1$s\" and cannot be undone.</string>
+    <string name="custom_gestures_delete_confirm">Delete</string>
     <string name="gesture_name_label">Gesture Name</string>
     <string name="gesture_description_label">Description (optional)</string>
     <string name="cancel">Cancel</string>
+    <string name="state_on">On</string>
+    <string name="state_off">Off</string>
     <string name="simulate_prefix">Simulate: %s</string>
     <string name="calibration_skip_for_now">Skip for now</string>
     <string name="calibration_complete_button">Complete Calibration</string>
@@ -152,6 +160,8 @@
     <string name="calibration_skip">Skip for now</string>
     <string name="calibration_palm_detect">Hold your open palm in front of the camera</string>
     <string name="calibration_hand_detected">Hand detected!</string>
+    <string name="calibration_preview_illustrative">Illustrative preview — measurement uses your real hand</string>
+    <string name="calibration_hand_lost_hint">Hand not visible — bring your open palm back into frame</string>
     <string name="calibration_proceed">Proceed</string>
     <string name="calibration_measuring">Measuring your hand…</string>
     <string name="calibration_measuring_hint">Keep your hand steady with fingers spread</string>
@@ -181,6 +191,10 @@
     <string name="calibration_error_hint">Could not detect your face. Ensure your face is well-lit and eye tracking is enabled, then retry.</string>
     <string name="gaze_calibration_title">Gaze Calibration</string>
     <string name="gaze_calibration_complete">Calibration complete!</string>
+    <string name="gaze_calibration_ready_title">Ready when you are</string>
+    <string name="gaze_calibration_ready_body">Sit comfortably, hold the phone at a normal distance and look at dot %1$d of %2$d. Tap Start when you are settled — the session never starts by itself.</string>
+    <string name="gaze_calibration_start_button">Start calibration</string>
+    <string name="gaze_calibration_quality">Fit quality: ~%1$d%% of screen error (lower is better)</string>
     <string name="gaze_calibration_look_at">Look at the highlighted dot (%1$d/%2$d)</string>
     <string name="gaze_calibration_hold_still">Collecting gaze… keep your eyes fixed on the dot</string>
     <string name="gaze_calibration_retry">Retry</string>
@@ -270,7 +284,7 @@
     <string name="custom_gestures_record_button">Record hand shape</string>
     <string name="custom_gestures_recording">Recording… hold the shape steady</string>
     <string name="custom_gestures_recorded">✓ Shape recorded — tap to record again</string>
-    <string name="custom_gestures_record_failed">Could not see a stable hand — try again with better lighting.</string>
+    <string name="custom_gestures_record_failed">Could not capture a stable hand — hold your whole hand in frame with good light, then try again.</string>
     <string name="custom_gestures_record_will_use">This gesture will use the recorded shape (the pose options above are ignored).</string>
     <!-- HID POC: Native HID Mouse (experimental). -->
     <string name="settings_section_native_hid">Experimental</string>
@@ -301,8 +315,8 @@
     <string name="settings_sit_back_mode_subtitle">Reach the whole screen without raising your hand</string>
     <string name="settings_reduced_motion">Reduced Motion</string>
     <string name="settings_reduced_motion_subtitle">Disable cursor pulse and glow animations</string>
-    <string name="settings_cursor_gain">Cursor Speed</string>
-    <string name="settings_cursor_gain_hint">How far the pointer travels for a given hand movement</string>
+    <string name="settings_cursor_gain">Cursor Reach (movement gain)</string>
+    <string name="settings_cursor_gain_hint">How far the pointer travels for a given hand movement — distinct from \"Cursor Smoothing\" in the Cursor section</string>
     <string name="settings_eye_is_mouse">Eye is Mouse</string>
     <string name="settings_eye_is_mouse_subtitle">Cursor follows your gaze; pinch to click</string>
     <string name="settings_invert_gaze">Invert Horizontal Gaze</string>
@@ -310,7 +324,7 @@
     <!-- Fix C2/C3: honest hints shown while a calibration is active -->
     <string name="settings_gaze_calibrated_hint">Calibrated — sensitivity and invert apply only before calibration. Re-run calibration to change them.</string>
     <string name="settings_blink_click">Blink to Click</string>
-    <string name="settings_blink_click_subtitle">Blink slowly (300–800ms) to click where you are looking — turns on Eye is Mouse automatically</string>
+    <string name="settings_blink_click_subtitle">Blink deliberately (hold the closure for about a quarter second) to click where you are looking — turns on Eye is Mouse automatically</string>
     <string name="settings_blink_window">Blink Speed (minimum)</string>
     <string name="settings_blink_window_subtitle">Lower = a quicker, more natural blink clicks; higher = fewer accidental clicks</string>
     <string name="settings_percent_value">%d%%</string>

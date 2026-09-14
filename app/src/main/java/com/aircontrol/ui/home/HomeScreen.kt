@@ -58,8 +58,13 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -256,7 +261,11 @@ fun HomeScreen(
                         isPaused = serviceState == ServiceState.PAUSED,
                         onClick = {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            val shouldEnable = serviceState == ServiceState.OFF
+                            // Fix (verified critical #1): a PAUSED tap promised
+                            // "tap to resume" but passed shouldEnable=false,
+                            // which fully STOPPED tracking. PAUSED now resumes
+                            // (same as turning ON from OFF); only ACTIVE stops.
+                            val shouldEnable = serviceState != ServiceState.ACTIVE
                             viewModel.toggleGestures(shouldEnable)
                         },
                         size = 120.dp,
@@ -520,9 +529,18 @@ private fun QuickToggleCard(
     onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val onLabel = stringResource(R.string.state_on)
+    val offLabel = stringResource(R.string.state_off)
     Card(
         modifier = modifier
-            .animateContentSize(),
+            .animateContentSize()
+            // Fix (verified U6): the quick cards are switches but announced
+            // as plain buttons — TalkBack never said on/off for them.
+            .semantics {
+                role = Role.Switch
+                toggleableState = if (enabled) ToggleableState.On else ToggleableState.Off
+                stateDescription = if (enabled) onLabel else offLabel
+            },
         colors = CardDefaults.cardColors(
             containerColor = if (enabled) {
                 ElectricBlue.copy(alpha = 0.12f)

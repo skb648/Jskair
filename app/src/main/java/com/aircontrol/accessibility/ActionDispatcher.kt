@@ -109,7 +109,9 @@ class ActionDispatcher @Inject constructor(
         private const val TAP_DURATION_MS = 15L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
-        private const val DOUBLE_TAP_WINDOW_MS = 350L
+        // Fix (verified C9): 350 ms could not fit two complete pinch cycles
+        // (each pays entry + release debounces), so DOUBLE_TAP never fired.
+        private const val DOUBLE_TAP_WINDOW_MS = 500L
         private const val INTENTIONAL_PINCH_HOLD_MS = 80L
         private const val MIN_MOVING_PINCH_VELOCITY = 0.55f
         private const val MAX_MOVING_PINCH_VELOCITY = 1.10f
@@ -275,11 +277,12 @@ class ActionDispatcher @Inject constructor(
             defaultMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
             defaultMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
             defaultMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
-            // Phase 2 (three-fingers → VOLUME_UP): keep this fallback map in
-            // lock-step with GestureMapConfig.defaultEntries() so the gesture
-            // works even before the first settings emission reaches the
-            // collector overlay. Data-only change; dispatch logic untouched.
-            defaultMap[KEY_POSE_THREE_FINGERS] = GestureAction.VOLUME_UP
+            // Fix (verified G5): three extended fingers is what a relaxed
+            // resting hand (and a palm->fist close) transiently reads as, so
+            // binding it to VOLUME_UP by default cranked the volume on users
+            // who were just resting/closing their hand. Unbound by default;
+            // users who want the gesture map it deliberately in Gesture Map.
+            defaultMap[KEY_POSE_THREE_FINGERS] = GestureAction.NONE
             defaultMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
             defaultMap[KEY_PALM_HOME] = GestureAction.HOME
             return defaultMap
@@ -324,6 +327,9 @@ class ActionDispatcher @Inject constructor(
     // Fix P1: pinch start mapped to pixels, used for the drag-start slop test.
     @Volatile private var pinchStartPixelX = 0f
     @Volatile private var pinchStartPixelY = 0f
+    // Fix (verified C4): last live dot position during a held pinch.
+    @Volatile private var pinchLastX = 0f
+    @Volatile private var pinchLastY = 0f
 
     @Volatile private var lastTapDispatchMs = 0L
     @Volatile private var pendingSecondTap = false
@@ -425,7 +431,27 @@ class ActionDispatcher @Inject constructor(
     ): Boolean {
         if (engineState != GestureEngineState.ARMED &&
             engineState != GestureEngineState.EXECUTING
-        ) return false
+        ) {
+            // Fix (verified E2/G3): the engine still emits during COOLDOWN;
+            // the old silent return both gave the user no explanation AND left
+            // the previous pinch's pinchStartTimeMs live, so a later END could
+            // be misclassified as a long-press. Bookkeeping first, reason
+            // second, then reject.
+            if (event is GestureEvent.Pinch && event.phase == PinchPhase.START) {
+                pinchStartTimeMs = nowMonotonicMs()
+                pinchStartX = cursorX
+                pinchStartY = cursorY
+                pinchStartPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
+                pinchStartPixelY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
+                pinchLastX = pinchStartPixelX
+                pinchLastY = pinchStartPixelY
+                pinchIsDrag = false
+                wasEverDraggingThisPinch = false
+            } else if (engineState == GestureEngineState.COOLDOWN) {
+                reportBlocked(BlockReason.GESTURE_COOLDOWN)
+            }
+            return false
+        }
 
         val service = accessibilityServiceRef.get()
 
@@ -440,6 +466,8 @@ class ActionDispatcher @Inject constructor(
                     wasEverDraggingThisPinch = false
                     pinchStartPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
                     pinchStartPixelY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
+                    pinchLastX = pinchStartPixelX
+                    pinchLastY = pinchStartPixelY
                     return true
                 }
                 PinchPhase.MOVE -> {
@@ -452,6 +480,8 @@ class ActionDispatcher @Inject constructor(
                     }
                     val targetX = mapCursorX(cursorX, screenWidth, fromGaze)
                     val targetY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
+                    pinchLastX = targetX
+                    pinchLastY = targetY
                     if (action == GestureAction.DRAG) {
                         // Fix P1: while the pinch has not moved beyond the slop
                         // radius, this is still a pending TAP — do not start a
@@ -503,7 +533,15 @@ class ActionDispatcher @Inject constructor(
                         maybeReportSuppressed()
                         return false
                     }
-                    return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight, fromGaze)
+                    // Fix (verified C4): if the pinch drifted beyond slop but
+                    // never engaged DRAG (slow drift blocked by the velocity
+                    // gate), the dot moved while the click was pinned at the
+                    // start — land on the dot's actual current position.
+                    val drift = kotlin.math.hypot(pinchLastX - pinchStartPixelX, pinchLastY - pinchStartPixelY)
+                    val slopNow = maxOf(MIN_DRAG_START_SLOP_PX, screenWidth * DRAG_START_SLOP_FRACTION)
+                    val overX = if (drift > slopNow) pinchLastX else null
+                    val overY = if (drift > slopNow) pinchLastY else null
+                    return executeAction(action, pinchStartX, pinchStartY, screenWidth, screenHeight, fromGaze, overX, overY)
                 }
             }
         }
@@ -512,11 +550,19 @@ class ActionDispatcher @Inject constructor(
 
         val action = when (event) {
             is GestureEvent.Swipe -> {
-                // Top bezel downward swipe pulls down Notification Shade (status bar pull)
-                if (cursorY < 0.10f && event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN) {
+                // Top bezel downward swipe pulls down the Notification Shade
+                // ONLY when the user kept the default down-swipe mapping.
+                // Fix (verified G12): the hard override ignored remapping —
+                // anyone who bound swipe-down to, say, Back still got the
+                // shade when the gesture began in the top 10%.
+                val mapped = gestureMap[swipeKey(event.direction)]
+                if (cursorY < 0.10f &&
+                    event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN &&
+                    mapped == GestureAction.SCROLL_DOWN
+                ) {
                     GestureAction.NOTIFICATIONS
                 } else {
-                    gestureMap[swipeKey(event.direction)]
+                    mapped
                 }
             }
             is GestureEvent.PoseTriggered -> {
@@ -568,10 +614,12 @@ class ActionDispatcher @Inject constructor(
         screenWidth: Int,
         screenHeight: Int,
         fromGaze: Boolean = false,
+        overridePixelX: Float? = null,
+        overridePixelY: Float? = null,
     ): Boolean {
         val service = accessibilityServiceRef.get() ?: return false
-        val targetPixelX = mapCursorX(cursorX, screenWidth, fromGaze)
-        val targetPixelY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
+        val targetPixelX = overridePixelX ?: mapCursorX(cursorX, screenWidth, fromGaze)
+        val targetPixelY = overridePixelY ?: mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
 
         return when (action) {
             GestureAction.NONE -> false
@@ -782,21 +830,19 @@ class ActionDispatcher @Inject constructor(
         val effectiveDx = dx * mult
         val effectiveDy = dy * mult
 
-        // Fix U-Reels: provide generous fling distance (40% width, 42% height)
-        // with edge-safe anchoring so swipes in Reels/Shorts/TikTok and web feeds never truncate.
+        // Fix (verified C2): the fling used to be force-relocated into a
+        // "safe band" (12-50% / 50-88% width, 15-48% height) so scrolling
+        // while hovering over a dialog, a split-screen pane or the lower half
+        // of the screen scrolled whatever was behind/beside the cursor. Anchor
+        // the stroke at the cursor itself with only a small edge margin so the
+        // stroke cannot truncate off-screen; the endpoint is clamped too.
+        val marginX = screenWidth * 0.06f
+        val marginY = screenHeight * 0.06f
         val scrollLengthX = screenWidth * 0.40f
         val scrollLengthY = screenHeight * 0.42f
 
-        val safeStartX = when {
-            effectiveDx > 0 -> x.coerceIn(screenWidth * 0.12f, screenWidth * 0.50f)
-            effectiveDx < 0 -> x.coerceIn(screenWidth * 0.50f, screenWidth * 0.88f)
-            else -> x.coerceIn(screenWidth * 0.15f, screenWidth * 0.85f)
-        }
-        val safeStartY = when {
-            effectiveDy > 0 -> y.coerceIn(screenHeight * 0.15f, screenHeight * 0.48f)
-            effectiveDy < 0 -> y.coerceIn(screenHeight * 0.52f, screenHeight * 0.85f)
-            else -> y.coerceIn(screenHeight * 0.20f, screenHeight * 0.80f)
-        }
+        val safeStartX = x.coerceIn(marginX, screenWidth - marginX)
+        val safeStartY = y.coerceIn(marginY, screenHeight - marginY)
 
         val path = Path()
         path.moveTo(safeStartX, safeStartY)

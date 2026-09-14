@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.res.stringResource
@@ -67,6 +69,12 @@ fun SettingSwitchRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // Fix (verified U9): merge label + switch so TalkBack announces
+                // them as one labelled, actionable switch control.
+                .semantics(mergeDescendants = true) {
+                    role = Role.Switch
+                }
+                .clickable { onCheckedChange(!checked) }
                 .padding(horizontal = Dimens.paddingMedium, vertical = Dimens.paddingSmall),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,

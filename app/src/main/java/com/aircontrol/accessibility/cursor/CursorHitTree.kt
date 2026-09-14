@@ -55,8 +55,12 @@ internal interface CursorHitWindowSource {
 
 internal object BoundedCursorTreeWalk {
 
-    /** Absolute cap on nodes visited per hit-test (perf §7/§9). */
-    const val MAX_VISITS = 300
+    /** Absolute cap on nodes visited per hit-test (perf §7/§9).
+     *  Fix (verified C3): 300 could be exhausted on deep Compose/recycler
+     *  trees, returning null (ARROW icon) stochastically even when the raw
+     *  pixel tap below would land on a button; 450 keeps the bounded walk
+     *  cheap while covering real-world tree depths. */
+    const val MAX_VISITS = 450
 
     /** Absolute cap on tree depth per hit-test (malformed/degenerate trees). */
     const val MAX_DEPTH = 28

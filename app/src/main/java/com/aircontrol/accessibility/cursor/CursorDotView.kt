@@ -90,9 +90,6 @@ class CursorDotView(
     fun notifyHover() = Unit
     fun resetHover() = Unit
 
-    /** Subtle short press feedback (spec §12) — small, quick, hotspot-pivoted. */
-    fun notifyTap() = press()
-
     fun pulse() = ripple()
 
     fun ripple() {
@@ -133,16 +130,6 @@ class CursorDotView(
             rippleAlpha = 0
         }
         invalidate()
-    }
-
-    private fun press() {
-        if (reducedMotion || !isAttachedToWindow) return
-        pressAnimator?.cancel()
-        pressAnimator = ValueAnimator.ofFloat(1f, 0.92f, 1f).apply {
-            duration = 120L
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { pressScale = it.animatedValue as Float; invalidate() }
-        }.also { it.start() }
     }
 
     // ---------------- glyph geometry (dp units around hotspot 0,0) ----------------

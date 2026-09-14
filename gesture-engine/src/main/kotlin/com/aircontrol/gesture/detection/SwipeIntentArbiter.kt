@@ -614,12 +614,15 @@ class SwipeIntentArbiter(
          * then special-cased low frame rates down to one; that special case is gone.
          */
         /**
-         * Three moving steps is the least temporal evidence that can distinguish a
-         * direction from a flick: start, somewhere, end. Two steps (three samples) is
-         * what a single-frame tracking teleport produces, and a teleport must never
-         * commit no matter how far it jumped.
+         * Fix (verified G9): was 3 moving steps, which at 10 fps scan cadence
+         * right after idle/thermal recovery needed ~300 ms of motion — the
+         * natural ~200 ms first flick after raising the hand was always
+         * dropped. Two moving steps (three samples), together with the
+         * path-efficiency, heading-drift, resolution and tracking-quality
+         * floors, is still sufficient to reject single-frame teleports while
+         * making the first swipe after a scan-mode gap register.
          */
-        const val MIN_MOVING_STEPS = 3
+        const val MIN_MOVING_STEPS = 2
 
         /**
          * Stillness limit, in hand spans per SECOND, used only to decide when the hand

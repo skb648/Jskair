@@ -44,6 +44,13 @@ data class GazeCalibrationState(
     val isComplete: Boolean = false,
     val error: GazeCalibrationError? = null,
     val prerequisitesChecked: Boolean = false,
+    // Fix (verified critical #5): the session never self-starts. The user
+    // taps Start after they are holding the phone comfortably and looking at
+    // the first dot; previously collection began the instant a face appeared.
+    val awaitingStart: Boolean = true,
+    // Fix (verified critical #5): show the achieved fit quality instead of a
+    // silent success. Null while unknown; normalized p95 error otherwise.
+    val qualityP95: Float? = null,
 )
 
 /**
@@ -75,10 +82,19 @@ class GazeCalibrationViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(GazeCalibrationState())
     val uiState: StateFlow<GazeCalibrationState> = _uiState.asStateFlow()
 
+    // Fit quality of the last successful save (for the complete screen).
+    private var savedP95: Float? = null
+
     // Accumulated calibration data.
-    private val featureSamples = ArrayList<CalibrationSample>(CalibrationTargets.ALL.size * 40)
+    // Per-point sample lists so a Retry can replace one dot without
+    // misaligning or discarding the whole session (verified critical #5).
+    private val featureSamplesPerPoint =
+        ArrayList<MutableList<CalibrationSample>>(CalibrationTargets.ALL.size)
     private val rawGazeAverages = ArrayList<Pair<Float, Float>>(CalibrationTargets.ALL.size)
     private val screenPoints = ArrayList<Pair<Float, Float>>(CalibrationTargets.ALL.size)
+
+    private val featureSamples: List<CalibrationSample>
+        get() = featureSamplesPerPoint.flatten()
 
     init {
         // Fix B-3: while a setup flow is on screen, the accessibility service
@@ -114,8 +130,16 @@ class GazeCalibrationViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 error = if (firstFace == null) GazeCalibrationError.FACE_NOT_VISIBLE else null,
                 prerequisitesChecked = true,
+                // Stay at the Ready gate until the user taps Start.
+                awaitingStart = firstFace != null,
             )
         }
+    }
+
+    /** Fix (verified critical #5): explicit user gate — "Ready? Start". */
+    fun startCollection() {
+        _uiState.value = _uiState.value.copy(awaitingStart = false, error = null)
+        collectCurrentPoint()
     }
 
     /** Re-checks prerequisites (called when the user returns to the screen). */
@@ -135,7 +159,13 @@ class GazeCalibrationViewModel @Inject constructor(
         val state = _uiState.value
         if (state.isCollecting || state.isComplete) return
         if (!state.prerequisitesChecked || state.error != null) return
+        if (state.awaitingStart) return
         val index = state.currentPointIndex
+        // Fix (verified critical #5): a Retry recollects the current dot by
+        // trimming any data already stored at/after this index first, so the
+        // fit inputs never end up misaligned (the old Retry appended a 10th
+        // gaze average to 9 screen points).
+        trimCollectedDataTo(index)
         val target = CalibrationTargets.ALL[index]
         _uiState.value = state.copy(isCollecting = true, error = null)
 
@@ -208,9 +238,12 @@ class GazeCalibrationViewModel @Inject constructor(
                 return@launch
             }
 
-            featureSamples.addAll(samples)
-            rawGazeAverages.add((rawSumX / qualifiedFrames) to (rawSumY / qualifiedFrames))
-            screenPoints.add(target.x to target.y)
+            if (featureSamplesPerPoint.size > index) featureSamplesPerPoint[index] = ArrayList(samples)
+            else featureSamplesPerPoint.add(ArrayList(samples))
+            if (rawGazeAverages.size > index) rawGazeAverages[index] = (rawSumX / qualifiedFrames) to (rawSumY / qualifiedFrames)
+            else rawGazeAverages.add((rawSumX / qualifiedFrames) to (rawSumY / qualifiedFrames))
+            if (screenPoints.size > index) screenPoints[index] = target.x to target.y
+            else screenPoints.add(target.x to target.y)
 
             val next = index + 1
             if (next >= CalibrationTargets.ALL.size) {
@@ -272,6 +305,7 @@ class GazeCalibrationViewModel @Inject constructor(
         if (fit.isSuccess && fit.model != null) {
             settingsRepository.updatePersonalizedGazeCalibration(fit.model.toSerialized())
             anySaved = true
+            savedP95 = fit.model.validationMetrics.p95NormalizedError
             Timber.i(
                 "Personalized gaze calibration saved (%d samples, val p95=%.4f)",
                 fit.model.validationMetrics.sampleCount,
@@ -285,9 +319,27 @@ class GazeCalibrationViewModel @Inject constructor(
         if (fitAffineFallback()) anySaved = true
 
         if (anySaved) {
-            _uiState.value = _uiState.value.copy(isCollecting = false, isComplete = true)
+            _uiState.value = _uiState.value.copy(
+                isCollecting = false,
+                isComplete = true,
+                qualityP95 = savedP95,
+            )
         } else {
-            _uiState.value = _uiState.value.copy(isCollecting = false, error = GazeCalibrationError.FIT_FAILED)
+            _uiState.value = _uiState.value.copy(
+                isCollecting = false,
+                error = GazeCalibrationError.FIT_FAILED,
+            )
+        }
+    }
+
+    /** Drops collected samples at/after [index] so a point can be retried cleanly. */
+    private fun trimCollectedDataTo(index: Int) {
+        while (featureSamplesPerPoint.size > index) featureSamplesPerPoint.removeAt(featureSamplesPerPoint.lastIndex)
+        if (rawGazeAverages.size > index) {
+            repeat(rawGazeAverages.size - index) { rawGazeAverages.removeAt(rawGazeAverages.lastIndex) }
+        }
+        if (screenPoints.size > index) {
+            repeat(screenPoints.size - index) { screenPoints.removeAt(screenPoints.lastIndex) }
         }
     }
 
@@ -334,17 +386,52 @@ class GazeCalibrationViewModel @Inject constructor(
 
     /** Clears the error and retries the current point (explicit user action). */
     fun retryCurrentPoint() {
+        val index = _uiState.value.currentPointIndex
+        trimCollectedDataTo(index)
         // A failure mid-flow often means a hard precondition broke (camera
         // stopped, master switch flipped). Re-verify everything — it is cheap —
-        // instead of blindly sampling into the void.
-        refreshEyeTracking()
+        // then recollect this exact dot; partial data for the other dots is
+        // retained (Fix verified critical #5: the old retry either no-oped via
+        // the prereq re-check or appended mismatched 10th-point data).
+        _uiState.value = _uiState.value.copy(
+            error = null,
+            isCollecting = false,
+            prerequisitesChecked = false,
+            awaitingStart = false,
+        )
+        viewModelScope.launch {
+            val prefs = settingsRepository.userPreferences.first()
+            val blockedBy = when {
+                !prefs.eyeTrackingEnabled -> GazeCalibrationError.EYE_TRACKING_DISABLED
+                !prefs.gesturesEnabled -> GazeCalibrationError.MASTER_SWITCH_OFF
+                !CameraService.isRunning.value -> GazeCalibrationError.CAMERA_NOT_RUNNING
+                else -> null
+            }
+            if (blockedBy != null) {
+                _uiState.value = _uiState.value.copy(error = blockedBy, prerequisitesChecked = true)
+                return@launch
+            }
+            val firstFace = withTimeoutOrNull(FACE_WARMUP_TIMEOUT_MS) {
+                faceTracker.gazeObservations.first { it.faceDetected }
+            }
+            if (firstFace == null) {
+                _uiState.value = _uiState.value.copy(
+                    error = GazeCalibrationError.FACE_NOT_VISIBLE,
+                    prerequisitesChecked = true,
+                )
+                return@launch
+            }
+            _uiState.value = _uiState.value.copy(prerequisitesChecked = true)
+            collectCurrentPoint()
+        }
     }
 
     /** Restarts calibration from scratch. */
     fun restartCalibration() {
-        featureSamples.clear()
+        featureSamplesPerPoint.clear()
         rawGazeAverages.clear()
         screenPoints.clear()
+        savedP95 = null
         _uiState.value = GazeCalibrationState(totalPoints = CalibrationTargets.ALL.size)
         checkPrerequisites()
     }

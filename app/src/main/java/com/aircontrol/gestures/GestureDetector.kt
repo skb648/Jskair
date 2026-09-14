@@ -42,6 +42,8 @@ interface GestureDetector : AutoCloseable {
     val engineState: StateFlow<GestureEngineState>
     val currentPose: StateFlow<Pose>
     val armingProgress: StateFlow<Float>
+    /** True while hand tracking confidence is too low to trust poses/pinches. */
+    val lowConfidence: StateFlow<Boolean>
     fun processHandFrame(frame: HandFrame)
     fun updateSensitivity(sensitivity: Int)
 
@@ -130,6 +132,9 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val _armingProgress = MutableStateFlow(0f)
     override val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
 
+    private val _lowConfidence = MutableStateFlow(false)
+    override val lowConfidence: StateFlow<Boolean> = _lowConfidence.asStateFlow()
+
     private val debugInstrumentation = com.aircontrol.BuildConfig.DEBUG
 
     private val _swipeDebug = MutableStateFlow<DynamicGestureDetector.SwipeDebugInfo?>(null)
@@ -217,6 +222,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             _engineState.value = engine.engineState.value
             _currentPose.value = engine.currentPose.value
             _armingProgress.value = engine.armingProgress.value
+            _lowConfidence.value = engine.lowConfidence.value
             if (debugInstrumentation) publishSwipeDebug()
         } finally {
             frameSerial.unlock()
@@ -304,6 +310,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private fun resetStateFlows() {
         _engineState.value = GestureEngineState.DISARMED
         _currentPose.value = Pose.NONE
+        _lowConfidence.value = false
         _armingProgress.value = 0f
     }
 

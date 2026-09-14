@@ -39,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -80,6 +81,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun OnboardingScreen(
     onGetStarted: () -> Unit,
+    onBack: () -> Unit = {},
     viewModel: OnboardingViewModel = hiltViewModel(),
 ) {
     val permissionStates by viewModel.permissionStates.collectAsState()
@@ -137,8 +139,15 @@ fun OnboardingScreen(
         viewModel.refreshPermissions()
     }
 
-    BackHandler(enabled = pagerState.currentPage != 0) {
-        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+    // Fix (verified critical #3): on page 0, back returns to Home during a
+    // re-run setup (or leaves the app on first launch) instead of killing the
+    // app on every re-run.
+    BackHandler {
+        if (pagerState.currentPage > 0) {
+            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+        } else {
+            onBack()
+        }
     }
 
     Column(
@@ -200,6 +209,13 @@ fun OnboardingScreen(
                 2 -> permissionStates.accessibilityGranted
                 3 -> permissionStates.allGranted // Require camera + accessibility before finishing
                 else -> true
+            },
+            // Fix (verified critical #3): permissions are optional to explore
+            // the app — a privacy-conscious user can skip setup and grant
+            // later from Home/Settings.
+            onSkip = {
+                viewModel.completeOnboarding()
+                onGetStarted()
             },
             onPrevious = {
                 if (pagerState.currentPage > 0) {
@@ -547,12 +563,14 @@ private fun NavigationControls(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onGetStarted: () -> Unit,
+    onSkip: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = Dimens.paddingMedium),
         horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         if (currentPage > 0) {
             OutlinedButton(
@@ -562,27 +580,43 @@ private fun NavigationControls(
                 Text(text = stringResource(R.string.onboarding_back))
             }
         } else {
-            Spacer(modifier = Modifier.width(1.dp))
+            // Fix (verified critical #3): an exit on the very first page made
+            // the funnel inescapable without grants; Skip goes straight to Home.
+            TextButton(onClick = onSkip) {
+                Text(text = stringResource(R.string.onboarding_skip))
+            }
         }
 
-        if (currentPage < pageCount - 1) {
-            FilledTonalButton(
-                onClick = onNext,
-                enabled = canProceed,
-                shape = RoundedCornerShape(Dimens.buttonCornerRadius),
-            ) {
-                Text(text = stringResource(R.string.onboarding_next))
+        androidx.compose.foundation.layout.Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimens.spacing8),
+        ) {
+            // Skip stays available on every gated page until setup is complete.
+            if (!(currentPage == pageCount - 1 && canProceed)) {
+                TextButton(onClick = onSkip) {
+                    Text(text = stringResource(R.string.onboarding_skip))
+                }
             }
-        } else {
-            Button(
-                onClick = onGetStarted,
-                enabled = canProceed,
-                shape = RoundedCornerShape(Dimens.buttonCornerRadius),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                ),
-            ) {
-                Text(text = stringResource(R.string.onboarding_get_started))
+
+            if (currentPage < pageCount - 1) {
+                FilledTonalButton(
+                    onClick = onNext,
+                    enabled = canProceed,
+                    shape = RoundedCornerShape(Dimens.buttonCornerRadius),
+                ) {
+                    Text(text = stringResource(R.string.onboarding_next))
+                }
+            } else {
+                Button(
+                    onClick = onGetStarted,
+                    enabled = canProceed,
+                    shape = RoundedCornerShape(Dimens.buttonCornerRadius),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                    ),
+                ) {
+                    Text(text = stringResource(R.string.onboarding_get_started))
+                }
             }
         }
     }
@@ -895,6 +929,13 @@ private fun GestureTutorialStep(
                 icon = "✌️",
                 title = stringResource(R.string.onboarding_tutorial_victory_title),
                 description = stringResource(R.string.onboarding_tutorial_victory_desc),
+            )
+            // Fix (verified E8): eye tracking was invisible until you found
+            // it at the bottom of Settings — mention it during onboarding.
+            GestureItem(
+                icon = "👁",
+                title = stringResource(R.string.onboarding_tutorial_eye_title),
+                description = stringResource(R.string.onboarding_tutorial_eye_desc),
             )
         }
 

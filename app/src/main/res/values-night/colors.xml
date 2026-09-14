@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fix (verified U5): night splash/window keeps the navy background. -->
+    <color name="window_background">#0D1117</color>
+    <color name="splash_background">#0D1117</color>
+</resources>

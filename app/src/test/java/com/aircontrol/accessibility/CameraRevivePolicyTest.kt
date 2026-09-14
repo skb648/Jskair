@@ -78,9 +78,9 @@ class CameraRevivePolicyTest {
     }
 
     @Test
-    fun `invisible activity defers revival (the 2026-09-07 churn case)`() {
+    fun `invisible activity still revives in the background (verified critical 4 fix)`() {
         assertEquals(
-            CameraRevivePolicy.Decision.DEFER_NOT_VISIBLE,
+            CameraRevivePolicy.Decision.REVIVE_BACKGROUND,
             decide(activityVisible = false),
         )
     }

@@ -64,6 +64,7 @@ import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.theme.ElectricBlue
+import com.aircontrol.ui.theme.ErrorRed
 import com.aircontrol.ui.theme.SuccessGreen
 import com.aircontrol.ui.theme.TextSecondary
 
@@ -141,6 +142,7 @@ fun CalibrationScreen(
                     )
                     CalibrationStep.MEASURING -> MeasuringStep(
                         progress = uiState.measuringProgress,
+                        handDetected = uiState.handDetected,
                     )
                     CalibrationStep.TEST_GESTURES -> TestGesturesStep(
                         completed = uiState.testGesturesCompleted,
@@ -293,6 +295,13 @@ private fun PalmDetectStep(
                             style = MaterialTheme.typography.titleSmall,
                             color = SuccessGreen,
                         )
+                        Spacer(modifier = Modifier.height(Dimens.spacing4))
+                        Text(
+                            text = stringResource(R.string.calibration_preview_illustrative),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
                     }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -334,7 +343,7 @@ private fun PalmDetectStep(
 }
 
 @Composable
-private fun MeasuringStep(progress: Float) {
+private fun MeasuringStep(progress: Float, handDetected: Boolean) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.padding(vertical = Dimens.spacing48),
@@ -377,6 +386,17 @@ private fun MeasuringStep(progress: Float) {
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
         )
+
+        // Fix (verified U7): a lost hand used to freeze the bar silently.
+        if (!handDetected) {
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+            Text(
+                text = stringResource(R.string.calibration_hand_lost_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = ErrorRed,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
 
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 

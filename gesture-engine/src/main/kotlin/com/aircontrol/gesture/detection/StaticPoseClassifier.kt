@@ -170,7 +170,26 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
         ) {
             val thumbTip = landmarks[LandmarkIndex.THUMB_TIP]
             val thumbMcp = landmarks[LandmarkIndex.THUMB_MCP]
-            return if (thumbTip.y < thumbMcp.y) Pose.THUMB_UP else Pose.THUMB_DOWN
+            // Fix (verified G1): the old test `thumbTip.y < thumbMcp.y` used
+            // absolute image-Y, so in landscape (or with rolled wrist) a
+            // physical thumbs-up read as THUMB_DOWN. Project the thumb
+            // direction onto the hand's own middle-finger axis
+            // (wrist -> middle-MCP base), which rotates with the hand.
+            val wrist = landmarks[LandmarkIndex.WRIST]
+            val middleBase = landmarks[LandmarkIndex.MIDDLE_MCP]
+            val axisX = middleBase.x - wrist.x
+            val axisY = middleBase.y - wrist.y
+            val axisLen = sqrt(axisX * axisX + axisY * axisY)
+            val vx = thumbTip.x - thumbMcp.x
+            val vy = thumbTip.y - thumbMcp.y
+            val vLen = sqrt(vx * vx + vy * vy)
+            val aligned = if (axisLen > 1e-6f && vLen > 1e-6f) {
+                (vx * axisX + vy * axisY) / (vLen * axisLen)
+            } else {
+                // Degenerate geometry: fall back to image-Y.
+                if (thumbTip.y < thumbMcp.y) 1f else -1f
+            }
+            return if (aligned >= 0.25f) Pose.THUMB_UP else Pose.THUMB_DOWN
         }
 
         return Pose.NONE

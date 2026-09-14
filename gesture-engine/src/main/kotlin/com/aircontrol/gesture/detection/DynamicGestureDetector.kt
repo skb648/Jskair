@@ -368,7 +368,12 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
                 (prev == SwipeDirection.DOWN && decision.direction == SwipeDirection.UP)
             } ?: false
 
-            if (isOpposite && (timestampMs - lastCommittedTimestampMs < 400L) && decision.score < 0.85f) {
+            // Fix (verified G2): 400 ms swallowed deliberate immediate
+            // direction changes (right-swipe then quick left = back) and made
+            // the second gesture feel randomly dead. 180 ms still filters the
+            // mechanical return-stroke of the same hand motion; anything past
+            // that with a high enough score is a new deliberate gesture.
+            if (isOpposite && (timestampMs - lastCommittedTimestampMs < 180L) && decision.score < 0.80f) {
                 // Suppress accidental recoil stroke
                 clearWindows()
                 wristShape.clear()

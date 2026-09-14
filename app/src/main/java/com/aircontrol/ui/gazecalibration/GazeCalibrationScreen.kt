@@ -60,9 +60,12 @@ fun GazeCalibrationScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Auto-collect only when a NEW point becomes active (not on error changes).
-    LaunchedEffect(state.currentPointIndex, state.prerequisitesChecked) {
-        if (state.prerequisitesChecked && !state.isComplete && state.error == null) {
+    // Auto-collect the next dot, but only AFTER the user's explicit Start
+    // (Fix verified critical #5): no machine-paced surprise collection.
+    LaunchedEffect(state.currentPointIndex, state.prerequisitesChecked, state.awaitingStart) {
+        if (state.prerequisitesChecked && !state.awaitingStart &&
+            !state.isComplete && state.error == null
+        ) {
             viewModel.collectCurrentPoint()
         }
     }
@@ -96,13 +99,36 @@ fun GazeCalibrationScreen(
             when {
                 !state.prerequisitesChecked -> CircularProgressIndicator(color = ElectricBlue)
                 state.isComplete -> {
-                    Text(
-                        text = stringResource(R.string.gaze_calibration_complete),
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = SuccessGreen,
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(32.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.gaze_calibration_complete),
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = SuccessGreen,
+                        )
+                        // Fix (verified critical #5): tell the user how good
+                        // the fit was instead of hiding p95 in the logs.
+                        state.qualityP95?.let { p95 ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = stringResource(
+                                    R.string.gaze_calibration_quality,
+                                    (p95 * 100f).toInt().coerceAtMost(100),
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Button(onClick = onNavigateBack) {
+                            Text(stringResource(R.string.gaze_calibration_go_back))
+                        }
+                    }
                     LaunchedEffect(Unit) {
-                        kotlinx.coroutines.delay(1200)
+                        kotlinx.coroutines.delay(2500)
                         onNavigateBack()
                     }
                 }
@@ -147,6 +173,13 @@ fun GazeCalibrationScreen(
                         }
                     }
                 }
+                state.awaitingStart -> {
+                    ReadyGate(
+                        pointIndex = 0,
+                        totalPoints = state.totalPoints,
+                        onStart = { viewModel.startCollection() },
+                    )
+                }
                 else -> {
                     CalibrationCanvas(
                         targets = GazeCalibrationViewModel.CALIBRATION_TARGET_POINTS,
@@ -176,6 +209,36 @@ private fun gazeErrorText(error: GazeCalibrationError?): String = when (error) {
 }
 
 @Composable
+private fun ReadyGate(
+    pointIndex: Int,
+    totalPoints: Int,
+    onStart: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(32.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.gaze_calibration_ready_title),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.gaze_calibration_ready_body, pointIndex + 1, totalPoints),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(28.dp))
+        Button(onClick = onStart) {
+            Text(stringResource(R.string.gaze_calibration_start_button))
+        }
+    }
+}
+
+@Composable
 private fun CalibrationCanvas(
     targets: List<Pair<Float, Float>>,
     pointIndex: Int,
@@ -200,8 +263,10 @@ private fun CalibrationCanvas(
             // Draw subtle inactive markers so user knows calibration grid without distracting peripheral vision
             offsets.forEachIndexed { i, offset ->
                 if (i != pointIndex) {
+                    // Fix (verified U5): 10% white was invisible on the light
+                    // theme — use a theme-neutral grey visible on both.
                     drawCircle(
-                        color = Color.White.copy(alpha = 0.10f),
+                        color = Color(0xFF8A94A6).copy(alpha = 0.45f),
                         radius = 4.dp.toPx(),
                         center = offset,
                     )

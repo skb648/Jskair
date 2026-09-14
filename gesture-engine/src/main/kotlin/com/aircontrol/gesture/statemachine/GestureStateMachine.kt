@@ -5,6 +5,9 @@ import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.Pose
 import kotlin.concurrent.Volatile
 
+/** Fix (verified G11): holding a volume thumb pose repeats a step at this cadence. */
+private const val HOLD_REPEAT_INTERVAL_MS = 450L
+
 /**
  * State machine governing the gesture engine's armed/disarmed lifecycle.
  *
@@ -66,6 +69,10 @@ class GestureStateMachine(config: GestureEngineConfig) {
      */
     @Volatile
     private var lastExecutedPose: Pose = Pose.NONE
+
+    /** Wall-clock (engine timestamp) of the most recent pose execution. */
+    @Volatile
+    private var lastExecutedPoseMs: Long = 0L
 
     /** Per-frame inputs supplied by [process] (see its parameter docs). */
     private var currentFistLike: Boolean = false
@@ -244,10 +251,22 @@ class GestureStateMachine(config: GestureEngineConfig) {
         // low-confidence mode — a muted gesture must not silently consume the
         // one-shot lastExecutedPose latch (it would then never fire after
         // tracking recovered).
+        // Fix (verified G11): volume thumb poses can be HELD to repeat
+        // (like holding a hardware volume key). After the hold-repeat
+        // interval the same held pose fires again without a neutral cycle —
+        // the old requirement made changing volume several steps a 5-6 s
+        // workout. Only the two volume poses repeat; every other pose keeps
+        // the one-shot latch to prevent accidental ramps.
+        val heldLongEnoughToRepeat =
+            pose == Pose.THUMB_UP || pose == Pose.THUMB_DOWN
+        val isHeldRepeat = heldLongEnoughToRepeat &&
+            pose == lastExecutedPose &&
+            timestampMs - lastExecutedPoseMs >= HOLD_REPEAT_INTERVAL_MS
+
         if (!currentSuppressExecution &&
             pose != Pose.NONE && pose != Pose.OPEN_PALM && pose != Pose.FIST &&
             pose != Pose.PINCH && pose != Pose.POINTING &&
-            pose != lastExecutedPose
+            (pose != lastExecutedPose || isHeldRepeat)
         ) {
             // NOTE: deliberately does NOT call resetFistTracking(). Executing a
             // pose used to restart the fist-disarm hold, so a hand that was
@@ -255,6 +274,7 @@ class GestureStateMachine(config: GestureEngineConfig) {
             // and further away — "fist doesn't turn it off". The hold now only
             // resets when the hand genuinely stops being fist-like.
             lastExecutedPose = pose
+            lastExecutedPoseMs = timestampMs
             transitionTo(GestureEngineState.EXECUTING)
         }
     }
@@ -306,6 +326,7 @@ class GestureStateMachine(config: GestureEngineConfig) {
         currentFistLike = false
         currentSuppressExecution = false
         lastExecutedPose = Pose.NONE
+        lastExecutedPoseMs = 0L
         armingProgress = 0f
     }
 

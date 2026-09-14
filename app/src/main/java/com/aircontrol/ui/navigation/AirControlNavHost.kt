@@ -30,10 +30,24 @@ fun AirControlNavHost(
         popExitTransition = { slideOutHorizontally { it / 3 } },
     ) {
         composable(AirControlRoute.Onboarding.route) {
+            val onboardingContext = androidx.compose.ui.platform.LocalContext.current
             OnboardingScreen(
                 onGetStarted = {
-                    navController.navigate(AirControlRoute.Home.route) {
-                        popUpTo(AirControlRoute.Onboarding.route) { inclusive = true }
+                    // Fix (verified critical #3): in "Re-run setup" Home stays on
+                    // the back stack — pop to it; first launch has nothing to
+                    // pop, so navigate to Home and drop Onboarding.
+                    if (!navController.popBackStack()) {
+                        navController.navigate(AirControlRoute.Home.route) {
+                            popUpTo(AirControlRoute.Onboarding.route) { inclusive = true }
+                        }
+                    }
+                },
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        // First run with an empty stack: normal back = leave app.
+                        runCatching {
+                            (onboardingContext as? android.app.Activity)?.moveTaskToBack(true)
+                        }
                     }
                 },
             )
@@ -50,9 +64,10 @@ fun AirControlNavHost(
                     navController.navigate(AirControlRoute.Calibration.route)
                 },
                 onNavigateToOnboarding = {
-                    navController.navigate(AirControlRoute.Onboarding.route) {
-                        popUpTo(AirControlRoute.Home.route) { inclusive = true }
-                    }
+                    // Fix (verified critical #3): keep Home on the back stack so
+                    // Back/Skip from a re-run setup returns to the app instead
+                    // of exiting.
+                    navController.navigate(AirControlRoute.Onboarding.route)
                 },
                 onNavigateToDebug = {
                     navController.navigate(AirControlRoute.Debug.route)

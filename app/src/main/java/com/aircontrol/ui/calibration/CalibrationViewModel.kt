@@ -182,16 +182,32 @@ class CalibrationViewModel @Inject constructor(
     private fun startGestureVerification() {
         gestureTestJob?.cancel()
         gestureTestJob = viewModelScope.launch {
+            // Fix (verified U8): the OPEN_PALM card used to pass itself — the
+            // hand was already open from the measuring step, so the "test"
+            // never tested anything. Each card now requires a FRESH pose:
+            // first leave the expected pose, then return to it (a real
+            // performed gesture), mirroring what the user must do in practice.
+            var stage = -1
+            var primed = false
             gestureDetector.currentPose.collect { pose ->
-                val expected = when (_uiState.value.testGesturesCompleted) {
+                val expectedIndex = _uiState.value.testGesturesCompleted
+                if (expectedIndex != stage) {
+                    stage = expectedIndex
+                    primed = false
+                }
+                val expected = when (expectedIndex) {
                     0 -> Pose.OPEN_PALM
                     1 -> Pose.FIST
                     2 -> Pose.PINCH
                     else -> null
-                }
+                } ?: return@collect
                 if (pose == expected) {
+                    if (!primed) return@collect
                     if (pose == Pose.PINCH) captureRealPinchDistance()
                     onTestGestureRecognized(pose.name)
+                } else if (pose != Pose.NONE) {
+                    // Any deliberate other pose primes the next recognition.
+                    primed = true
                 }
             }
         }

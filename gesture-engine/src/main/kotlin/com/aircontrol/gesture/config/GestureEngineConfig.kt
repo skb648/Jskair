@@ -289,7 +289,11 @@ data class GestureEngineConfig(
         /** Score units per unit of 1/ease; see [scaledSwipeCandidateScore]. */
         const val SWIPE_SCORE_SENSITIVITY_GAIN = 0.20f
 
-        const val PINCH_RELEASE_HYSTERESIS = 1.45f
+        // Fix (verified G10): 1.45x forced a very wide re-open to finish a
+        // small pinch, so gentle clicks never completed and the click always
+        // landed a beat late. 1.30 still rejects jitter but releases on a
+        // natural small finger separation.
+        const val PINCH_RELEASE_HYSTERESIS = 1.30f
         const val PINCH_HOVER_HYSTERESIS = 1.9f
         const val CALIBRATED_PINCH_MARGIN = 1.15f
     }

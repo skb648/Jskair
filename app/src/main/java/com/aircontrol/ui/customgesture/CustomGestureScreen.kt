@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -67,6 +68,9 @@ fun CustomGestureScreen(
     val customGestures by viewModel.customGestures.collectAsState()
     val creatorState by viewModel.creatorState.collectAsState()
     var showCreator by rememberSaveable { mutableStateOf(false) }
+    // Fix (verified U2): deletion used to fire on a single tap with no
+    // confirmation and no undo — an accidental tap erased a long recording.
+    var pendingDelete by remember { mutableStateOf<com.aircontrol.data.model.CustomGesture?>(null) }
 
     Scaffold(
         topBar = {
@@ -88,6 +92,28 @@ fun CustomGestureScreen(
             )
         },
     ) { padding ->
+        pendingDelete?.let { gesture ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                title = { Text(stringResource(R.string.custom_gestures_delete_title)) },
+                text = {
+                    Text(stringResource(R.string.custom_gestures_delete_body, gesture.name))
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        viewModel.deleteGesture(gesture.id)
+                        pendingDelete = null
+                    }) {
+                        Text(stringResource(R.string.custom_gestures_delete_confirm))
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { pendingDelete = null }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                },
+            )
+        }
         if (showCreator) {
             CustomGestureCreatorPanel(
                 state = creatorState,
@@ -145,9 +171,7 @@ fun CustomGestureScreen(
                                 viewModel.startEditing(gesture)
                                 showCreator = true
                             },
-                            onDelete = {
-                                viewModel.deleteGesture(gesture.id)
-                            },
+                            onDelete = { pendingDelete = gesture },
                         )
                     }
                 }
@@ -197,7 +221,10 @@ private fun CustomGestureItem(
             Switch(
                 checked = gesture.isEnabled,
                 onCheckedChange = onToggle,
-                modifier = Modifier.padding(horizontal = 8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 8.dp)
+                    // Fix (verified U9): give the bare switch an accessible name.
+                    .semantics { contentDescription = gesture.name },
             )
             IconButton(onClick = onEdit) {
                 Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.custom_gestures_edit_cd), modifier = Modifier.size(18.dp))

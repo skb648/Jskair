@@ -55,6 +55,11 @@ class GestureEngine(
     val currentPose: StateFlow<Pose> = _currentPose.asStateFlow()
     private val _armingProgress = MutableStateFlow(0f)
     val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
+    // Fix (verified G6): expose the low-confidence condition so the UI
+    // service can explain why poses/pinches are being muted instead of
+    // rejecting them with no hint at all.
+    private val _lowConfidence = MutableStateFlow(false)
+    val lowConfidence: StateFlow<Boolean> = _lowConfidence.asStateFlow()
 
     private var pinchState = PinchState.IDLE
     private var pinchStateEntryTimeMs = 0L
@@ -161,11 +166,20 @@ class GestureEngine(
             lowConfidenceMode = false
         }
         val lowConfidence = lowConfidenceMode
-        poseClassifier.effectiveDebounceFrames = if (lowConfidence) LOW_CONFIDENCE_DEBOUNCE_FRAMES else config.poseDebounceFrames
+        // Fix (verified G8): the low-confidence debounce was a fixed 7
+        // frames = 583 ms at 12 fps (thermal/dim light), making arming and
+        // poses crawl exactly when tracking was already degraded. Derive the
+        // frame count from the MEASURED frame interval for a constant ~420 ms
+        // time budget at any frame rate.
+        val lowConfDebounceFrames = if (measuredFrameIntervalMs > 0L) {
+            (420f / measuredFrameIntervalMs).toInt().coerceIn(2, 8)
+        } else LOW_CONFIDENCE_DEBOUNCE_FRAMES
+        _lowConfidence.value = lowConfidence
+        poseClassifier.effectiveDebounceFrames = if (lowConfidence) lowConfDebounceFrames else config.poseDebounceFrames
 
         if (input.isDetected) {
             updateMeasuredFrameInterval(timestampMs)
-            poseClassifier.effectiveDebounceFrames = if (lowConfidence) LOW_CONFIDENCE_DEBOUNCE_FRAMES
+            poseClassifier.effectiveDebounceFrames = if (lowConfidence) lowConfDebounceFrames
             else config.debounceFramesFor(measuredFrameIntervalMs)
 
             val palm = CursorAnchor.palm(input)
@@ -178,9 +192,24 @@ class GestureEngine(
             val indexTip = input.landmarks[LandmarkIndex.INDEX_TIP]
             if (prevIndexTipTimestampMs > 0L) {
                 val dtMs = (timestampMs - prevIndexTipTimestampMs).coerceAtLeast(1L)
-                val dx = indexTip.x - prevIndexTipX
+                // Fix (verified G4): the pose/thumb stillness velocity used raw
+                // image-coordinate deltas, so a hand close to the camera looked
+                // 3-5x "faster" than the same motion performed far away —
+                // poses only fired at one magic holding distance. Normalize by
+                // the user's own palm span (wrist -> middle-MCP), like the
+                // swipe detector already does; REFERENCE_SCALE keeps existing
+                // thresholds calibrated at a typical holding distance.
+                val wrist = input.landmarks[LandmarkIndex.WRIST]
+                val middleBase = input.landmarks[LandmarkIndex.MIDDLE_MCP]
+                val aspect = input.frameAspectRatio.takeIf { it.isFinite() && it in 0.4f..2.5f } ?: 1f
+                val handScale = kotlin.math.hypot(
+                    (middleBase.x - wrist.x) * aspect,
+                    middleBase.y - wrist.y,
+                ).coerceIn(0.05f, 0.6f)
+                val dx = (indexTip.x - prevIndexTipX) * aspect
                 val dy = indexTip.y - prevIndexTipY
-                currentVelocity = kotlin.math.sqrt(dx * dx + dy * dy) / (dtMs / 1000f)
+                val raw = kotlin.math.sqrt(dx * dx + dy * dy) / (dtMs / 1000f)
+                currentVelocity = raw / handScale * REFERENCE_HAND_SCALE
             } else currentVelocity = 0f
             prevIndexTipX = indexTip.x
             prevIndexTipY = indexTip.y
@@ -480,13 +509,17 @@ class GestureEngine(
         poseClassifier.reset(); poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames; dynamicDetector.reset(); stateMachine.reset()
         pinchState = PinchState.IDLE; pinchStateEntryTimeMs = 0L; wasPinching = false; currentPinchPhase = null; pinchDragUnlocked = false
         pinchStartX = 0f; pinchStartY = 0f; pinchAnchoredX = 0f; pinchAnchoredY = 0f; lastPinchEndMs = 0L; lastCustomGestureId = null
-        lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
+        lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; _lowConfidence.value = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
         resetPalmTracking(); handStillSinceMs = 0L; thumbPoseSinceMs = 0L; measuredFrameIntervalMs = 0L; prevFrameTimestampMs = 0L; armedSinceMs = 0L
         lastPalmX = 0.5f; lastPalmY = 0.5f; hasPalmPosition = false
         _engineState.value = GestureEngineState.DISARMED; _currentPose.value = Pose.NONE; _armingProgress.value = 0f
     }
 
     companion object {
+        // Typical wrist->middle-MCP span in aspect-corrected normalized image
+        // coordinates; used to keep pose-velocity thresholds calibrated after
+        // hand-size normalization (Fix verified G4).
+        private const val REFERENCE_HAND_SCALE = 0.2f
         // Prevents minor finger closure jitter from triggering accidental drag/selection,
         // while allowing deliberate slide gestures to unlock drag smoothly.
         private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.048f
