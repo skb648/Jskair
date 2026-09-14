@@ -305,7 +305,7 @@ class GazeCalibrationViewModel @Inject constructor(
         if (fit.isSuccess && fit.model != null) {
             settingsRepository.updatePersonalizedGazeCalibration(fit.model.toSerialized())
             anySaved = true
-            savedP95 = fit.model.validationMetrics.p95NormalizedError
+            savedP95 = fit.model.validationMetrics.p95NormalizedError.toFloat()
             Timber.i(
                 "Personalized gaze calibration saved (%d samples, val p95=%.4f)",
                 fit.model.validationMetrics.sampleCount,

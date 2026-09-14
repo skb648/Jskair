@@ -345,13 +345,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
             // Attach dispatcher and register visual and haptic feedback callback.
             actionDispatcher?.attachService(this)
-            actionDispatcher?.onGestureDispatched = { actionName ->
+            actionDispatcher?.onGestureDispatched = dispatched@{ actionName ->
                 // Fix (verified C1): DRAG continuations complete ~28 times per
                 // second; haptic + ripple on every one of them made the phone
                 // buzz continuously and the dot strobe for the whole drag.
                 // Drags already get tint/scale feedback; only discrete actions
                 // tick and ripple.
-                if (actionName == GestureAction.DRAG.name) return@onGestureDispatched
+                if (actionName == GestureAction.DRAG.name) return@dispatched
                 val isClick = actionName.contains("TAP", ignoreCase = true) ||
                     actionName.contains("PINCH", ignoreCase = true) ||
                     actionName.contains("CLICK", ignoreCase = true)
