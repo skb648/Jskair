@@ -54,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.aircontrol.runtime.StageLog
 import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -103,6 +104,7 @@ class CameraService : LifecycleService() {
 
         const val NOTIFICATION_ID = 1001
 
+        private const val STAGE_COMPONENT = "CameraService"
         const val ACTION_START = "com.aircontrol.action.START_TRACKING"
         const val ACTION_STOP = "com.aircontrol.action.STOP_TRACKING"
         const val ACTION_PAUSE = "com.aircontrol.action.PAUSE_TRACKING"
@@ -398,9 +400,14 @@ class CameraService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
 
+        StageLog.success(StageLog.Stage.SERVICE_CREATE, STAGE_COMPONENT, "pid=${android.os.Process.myPid()}")
         val app = applicationContext as? com.aircontrol.AirControlApp
         if (app == null) {
-            Timber.e("AirControlApp not found — stopping service")
+            StageLog.failure(
+                StageLog.Stage.DI_INIT, STAGE_COMPONENT,
+                "applicationContext is ${applicationContext?.javaClass?.name} — not AirControlApp; stopping camera service (accessibility service unaffected)",
+            )
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "di-app-class"))
             stopSelf()
             return
         }
@@ -410,8 +417,10 @@ class CameraService : LifecycleService() {
             handTracker = entryPoint.handTracker()
             faceTracker = entryPoint.faceTracker()
             settingsRepository = entryPoint.settingsRepository()
+            StageLog.success(StageLog.Stage.DI_INIT, STAGE_COMPONENT)
         } catch (e: Exception) {
-            Timber.e(e, "DI failure — stopping service")
+            StageLog.failure(StageLog.Stage.DI_INIT, STAGE_COMPONENT, "stopping camera service (accessibility service unaffected)", e)
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "di-failed"))
             stopSelf()
             return
         }
@@ -608,14 +617,16 @@ class CameraService : LifecycleService() {
             }
         } catch (e: Exception) {
             publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "foreground-start-failed"))
-            Timber.e(e, "startForeground failed")
+            StageLog.failure(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "startForeground(FOREGROUND_SERVICE_TYPE_CAMERA) rejected", e)
             stopSelf()
             return
         }
+        StageLog.success(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "generation=$generation")
 
         acceptingFrames = false
         withContext(Dispatchers.Default) { handTracker.initialize() }
         if (!handTracker.isInitialized()) {
+            StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, STAGE_COMPONENT, "handTracker.isInitialized()=false after initialize(); session FAILED, retry scheduled")
             publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "hand-tracker-not-ready"))
             scheduleCameraRetryLocked(generation)
             updateNotification(isPaused = false, isWaiting = true)
@@ -632,6 +643,11 @@ class CameraService : LifecycleService() {
         }
 
         if (!attemptCameraBindLocked(generation)) {
+            StageLog.failure(
+                StageLog.Stage.CAMERA_INIT_BIND, STAGE_COMPONENT,
+                "bind refused: keyguardLocked=${(getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.isKeyguardLocked} " +
+                    "interactive=${(getSystemService(POWER_SERVICE) as? android.os.PowerManager)?.isInteractive} — WAITING_FOR_CAMERA, retry scheduled",
+            )
             publishState(_state.value.copy(
                 isRunning = false,
                 isPaused = false,
@@ -657,6 +673,7 @@ class CameraService : LifecycleService() {
             generation = generation,
             reason = null,
         ))
+        StageLog.success(StageLog.Stage.CAMERA_INIT_RUNNING, STAGE_COMPONENT, "generation=$generation fps=$configuredFps eye=$eyeTrackingEnabled")
         userPaused = false
         systemPaused = false
         _userPaused.value = false
@@ -1361,6 +1378,7 @@ class CameraService : LifecycleService() {
                             withContext(Dispatchers.Default) {
                                 runCatching { faceTracker.close() }
                                 runCatching { faceTracker.initialize() }
+                                    .onFailure { StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, STAGE_COMPONENT, "rebuild of dead face tracker", it) }
                             }
                         }
                     }
@@ -1414,7 +1432,9 @@ class CameraService : LifecycleService() {
                 runCatching { handTracker.close() }
                 if (eyeTrackingEnabled) runCatching { faceTracker.close() }
                 runCatching { handTracker.initialize() }
+                    .onFailure { StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, STAGE_COMPONENT, "rebuild after stall", it) }
                 if (eyeTrackingEnabled) runCatching { faceTracker.initialize() }
+                    .onFailure { StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, STAGE_COMPONENT, "rebuild after stall", it) }
             }
             frameBitmaps.drain()
             if (handTracker.isInitialized() && attemptCameraBindLocked(generation)) {

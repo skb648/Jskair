@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.aircontrol.runtime.StageLog
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -97,7 +98,7 @@ class HandTrackerImpl @Inject constructor(
             return
         }
         if (!validateModelFile()) {
-            Timber.e("hand_landmarker.task not found in assets")
+            StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
             return
         }
 
@@ -105,13 +106,13 @@ class HandTrackerImpl @Inject constructor(
         // entire process inside OEM graphics drivers before Kotlin can catch an error.
         handLandmarker = tryInitializeWithDelegate(Delegate.CPU)
             ?: run {
-                Timber.e("Failed to initialize HandLandmarker with the portable CPU delegate")
+                StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "HandLandmarker.createFromOptions(CPU) failed", lastInitError)
                 return
             }
 
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
-        Timber.i("HandTracker initialized successfully")
+        StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "hand-initialized",
             android.os.SystemClock.elapsedRealtime(),
@@ -319,11 +320,16 @@ class HandTrackerImpl @Inject constructor(
         )
     }
 
+    /** Last exception from [tryInitializeWithDelegate], for the stage record. */
+    @Volatile private var lastInitError: Throwable? = null
+
     private fun validateModelFile(): Boolean {
         return try {
-            try { context.assets.open(MODEL_FILE).close(); true } catch (_: Exception) { false }
+            context.assets.open(MODEL_FILE).close()
+            true
         } catch (e: Exception) {
-            Timber.e(e, "Error checking hand model file")
+            lastInitError = e
+            Timber.e(e, "Error opening hand model file %s", MODEL_FILE)
             false
         }
     }
@@ -352,12 +358,14 @@ class HandTrackerImpl @Inject constructor(
                 Timber.i("HandLandmarker initialized with %s delegate", delegate)
             }
         } catch (e: Exception) {
+            lastInitError = e
             Timber.w(e, "Failed to initialize with %s delegate, initialization failed", delegate)
             null
         }
     }
 
     companion object {
+        private const val COMPONENT = "HandTrackerImpl"
         private const val MODEL_FILE = "hand_landmarker.task"
         private const val NUM_HANDS = 2
         private const val MIN_DETECTION_CONFIDENCE = 0.40f

@@ -25,6 +25,7 @@ import com.aircontrol.accessibility.cursor.CursorHoverMonitor
 import com.aircontrol.accessibility.cursor.CursorIcon
 import com.aircontrol.accessibility.cursor.HoverResolvePolicy
 import com.aircontrol.tracking.CursorSmoother
+import com.aircontrol.runtime.StageLog
 import com.aircontrol.util.CrashGuard
 import com.aircontrol.util.collectGuarded
 import com.aircontrol.util.launchGuarded
@@ -65,8 +66,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
         SupervisorJob() + Dispatchers.Default + CrashGuard.handler,
     )
 
+    /** Sheds stale hand frames replayed from the transport buffer after a stall. */
+    private val handFreshness = com.aircontrol.tracking.FrameFreshnessPolicy()
+
     /** Camera restart backoff, so a rejected foreground-service start self-heals. */
     @Volatile private var cameraRetryAttempt: Int = 0
+    @Volatile private var cameraDeferralLogged: Boolean = false
     private var cameraWatchdogJob: Job? = null
     private var cameraRetryJob: Job? = null
 
@@ -307,12 +312,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        StageLog.success(StageLog.Stage.SERVICE_CREATE, COMPONENT, "pid=${android.os.Process.myPid()}")
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // Release-visible boot trail (see StageLog). Everything below used to be
+        // Timber.d/i, which is stripped by R8 / filtered by ReleaseTree, so a
+        // stuck stage in a signed build produced *no* logcat output at all.
+        StageLog.success(StageLog.Stage.SERVICE_CONNECTED, COMPONENT, "onServiceConnected")
 
         val app = applicationContext as? com.aircontrol.AirControlApp
         if (app == null) {
-            Timber.e("Application is not AirControlApp — cannot inject")
+            // Not a retryable condition: the process is running a different
+            // Application class (broken merged manifest / wrong flavour). Say so
+            // loudly and stay bound so the failure is diagnosable, never silent.
+            StageLog.failure(
+                StageLog.Stage.DI_INIT, COMPONENT,
+                "applicationContext is ${applicationContext?.javaClass?.name} — not AirControlApp; cannot obtain Hilt entry point",
+            )
+            publishConnectionState(false)
             return
         }
 
@@ -326,8 +347,9 @@ class GestureControlAccessibilityService : AccessibilityService() {
             cursorController = entryPoint.cursorController()
             cameraServiceManager = entryPoint.cameraServiceManager()
             nativeHidMouseController = entryPoint.nativeHidMouseController()
+            StageLog.success(StageLog.Stage.DI_INIT, COMPONENT)
         } catch (e: Throwable) {
-            Timber.e(e, "Failed to inject dependencies into accessibility service")
+            StageLog.failure(StageLog.Stage.DI_INIT, COMPONENT, "attempt=${injectionRetryCount + 1}", e)
             // Fix C-1 (crash on enabling accessibility): never call disableSelf()
             // here. Hilt's singleton graph is only briefly unavailable while the
             // process is cold-starting by the system; disabling the service made the
@@ -338,12 +360,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
 
+        // ---- Core readiness: the accessibility side must come up on its own. ----
+        // Everything the *service itself* needs to perform actions (dispatcher,
+        // keyguard cache, screen metrics, settings collectors) is initialized here.
+        // Camera/tracker/overlay failures further down degrade gracefully and are
+        // reported per stage; they must never make the service look "not started".
         try {
-            // Init keyguard cache.
             val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
             cachedKeyguardLocked = km?.isKeyguardLocked ?: false
 
-            // Attach dispatcher and register visual and haptic feedback callback.
             actionDispatcher?.attachService(this)
             actionDispatcher?.onGestureDispatched = dispatched@{ actionName ->
                 // Fix (verified C1): DRAG continuations complete ~28 times per
@@ -366,52 +391,89 @@ class GestureControlAccessibilityService : AccessibilityService() {
             actionDispatcher?.blockReasonHub?.onChange = { reason ->
                 onBlockReasonChanged(reason)
             }
-
             updateScreenMetrics()
-            createOverlays()
-            startTrackingPipeline()
-            registerScreenStateReceiver()
-
-            isInitializedOk = true
-            startCameraWatchdog()
-
-            // A collector that gave up after all of its retries means part of the
-            // pipeline is dead. Say so out loud instead of silently doing nothing -
-            // that silence is exactly what gets reported as "the app stopped
-            // working" - and clear the hook in onDestroy so it can never outlive
-            // this service instance (it captures `this`).
-            CrashGuard.onFatalLoop = { collector, _ ->
-                serviceScope.launch(Dispatchers.Main) {
-                    runCatching {
-                        Toast.makeText(
-                            this@GestureControlAccessibilityService,
-                            getString(R.string.error_collector_gave_up, collector),
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
-                }
-            }
-
-            // Publish readiness only after every initialization step succeeds.
-            publishConnectionState(true)
-            Timber.i("GestureControlAccessibilityService connected")
+            StageLog.success(StageLog.Stage.DISPATCHER_ATTACH, COMPONENT, "keyguardLocked=$cachedKeyguardLocked ${screenWidth}x$screenHeight")
         } catch (failure: Throwable) {
-            // A malformed OEM WindowManager/receiver implementation must not crash
-            // MainActivity or bounce the user out of onboarding.
-            Timber.e(failure, "Accessibility service initialization failed")
+            StageLog.failure(StageLog.Stage.DISPATCHER_ATTACH, COMPONENT, error = failure)
             CrashGuard.report("accessibility init", failure)
             publishConnectionState(false)
+            runCatching { actionDispatcher?.detachService() }
+                .onFailure { StageLog.failure(StageLog.Stage.DISPATCHER_ATTACH, COMPONENT, "detach after failure", it) }
+            Toast.makeText(this, R.string.accessibility_start_failed_toast, Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // The service is now able to receive events and dispatch actions. Publish
+        // readiness HERE, before the optional stages, so onboarding / the
+        // RuntimeHealthMonitor see "connected" even when the camera cannot start
+        // (Activity not visible, keyguard, permission, FGS rejection) — those are
+        // reported as their own blocked states below, not as "service not running".
+        isInitializedOk = true
+        // Camera/overlay are unknown yet → READY_DEGRADED, which still publishes
+        // connected; their own stage records below describe what is missing.
+        val verdict = ServiceReadinessPolicy.decide(
+            dependenciesInjected = true, dispatcherAttached = true, overlayOk = false, cameraOk = false,
+        )
+        publishConnectionState(ServiceReadinessPolicy.publishesConnected(verdict))
+        StageLog.success(StageLog.Stage.SERVICE_READY, COMPONENT, "verdict=$verdict")
+
+        // ---- Optional stage: overlays. Cursor dot / status pill; the service and
+        // the gesture pipeline work without them (an OEM WindowManager quirk must
+        // not take the accessibility service down).
+        try {
+            createOverlays()
+            StageLog.success(
+                StageLog.Stage.OVERLAY_INIT, COMPONENT,
+                "cursorOverlay=${cursorOverlay != null} cursorEnabled=${currentPreferences.cursorEnabled}",
+            )
+        } catch (failure: Throwable) {
+            StageLog.failure(StageLog.Stage.OVERLAY_INIT, COMPONENT, error = failure)
+            CrashGuard.report("overlay init", failure)
+            runCatching { removeOverlays() }
+                .onFailure { StageLog.failure(StageLog.Stage.OVERLAY_INIT, COMPONENT, "removeOverlays after failure", it) }
+        }
+
+        // ---- Optional stage: tracking pipeline + camera. A failure here is a
+        // degraded state (no cursor movement), reported with its stage; the
+        // watchdog keeps retrying the camera. Never stopSelf/disableSelf.
+        try {
+            startTrackingPipeline()
+            registerScreenStateReceiver()
+            startCameraWatchdog()
+            StageLog.success(
+                StageLog.Stage.PIPELINE_INIT, COMPONENT,
+                "jobs=${pipelineJobs.size} activityVisible=${MainActivity.isVisible} cameraPermission=${cameraPermissionGranted()}",
+            )
+        } catch (failure: Throwable) {
+            StageLog.failure(StageLog.Stage.PIPELINE_INIT, COMPONENT, error = failure)
+            CrashGuard.report("pipeline init", failure)
             runCatching { unregisterScreenStateReceiver() }
             runCatching { stopTrackingPipeline() }
-            runCatching { removeOverlays() }
-            runCatching { actionDispatcher?.detachService() }
-            Toast.makeText(this, R.string.accessibility_start_failed_toast, Toast.LENGTH_LONG).show()
-            // Keep the *overlays* optional but bring the pipeline back: a failure
-            // while adding a cursor view must not leave the service "on" in
-            // Settings yet inert.
-            serviceScope.launch {
+                .onFailure { StageLog.failure(StageLog.Stage.PIPELINE_INIT, COMPONENT, "stopTrackingPipeline after failure", it) }
+            // Bring the pipeline back shortly: a transient failure while installing
+            // collectors must not leave the service "on" in Settings yet inert.
+            serviceScope.launchGuarded("pipeline restart after init failure") {
                 delay(2_000L)
-                if (!isInitializedOk) startTrackingPipeline()
+                startTrackingPipeline()
+                startCameraWatchdog()
+            }
+        }
+
+        // A collector that gave up after all of its retries means part of the
+        // pipeline is dead. Say so out loud instead of silently doing nothing -
+        // that silence is exactly what gets reported as "the app stopped
+        // working" - and clear the hook in onDestroy so it can never outlive
+        // this service instance (it captures `this`).
+        CrashGuard.onFatalLoop = { collector, error ->
+            StageLog.failure(StageLog.Stage.PIPELINE_INIT, COMPONENT, "collector '$collector' gave up", error)
+            serviceScope.launch(Dispatchers.Main) {
+                runCatching {
+                    Toast.makeText(
+                        this@GestureControlAccessibilityService,
+                        getString(R.string.error_collector_gave_up, collector),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             }
         }
     }
@@ -428,6 +490,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun scheduleInjectionRetry() {
         if (injectionRetryCount >= INJECTION_MAX_RETRIES) {
+            StageLog.failure(StageLog.Stage.DI_INIT, COMPONENT, "gave up after $INJECTION_MAX_RETRIES attempts")
             Toast.makeText(this, R.string.injection_failed_toast, Toast.LENGTH_LONG).show()
             return
         }
@@ -660,13 +723,24 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // rather than a frame with the wrong hand, but don't thrash on every
         // frame — use hysteresis via a "last hand seen" tracker.
         pipelineJobs.add(serviceScope.launchGuarded("hand frames", restart = true) {
+            handFreshness.reset()
             handTracker?.handFrames?.collectGuarded("hand frames") { frame ->
+                val nowMs = SystemClock.elapsedRealtime()
+                // Stale-buffer guard (see FrameFreshnessPolicy): after a collector
+                // stall the 64-deep transport replays old frames; feeding them to
+                // the engine as live input rewinds the cursor and corrupts swipe
+                // velocity. Detected frames past the bound are shed; the "hand
+                // lost" frame is always delivered so the engine disarms cleanly.
+                if (!handFreshness.accept(frame.timestampMs, frame.isDetected, nowMs)) {
+                    com.aircontrol.runtime.PerfTelemetry.recordHandFrameShed(nowMs)
+                    return@collectGuarded
+                }
                 // Fix A-20: record hand presence from every detected frame, on the
                 // same monotonic clock the rest of the pipeline uses. Previously the
                 // hint timestamp was only written from ARMED "cursor moved" events
                 // and was then compared against System.currentTimeMillis(), so the
                 // "show your open palm" guidance could never appear for a new user.
-                if (frame.isDetected) lastHandDetectedMs = SystemClock.elapsedRealtime()
+                if (frame.isDetected) lastHandDetectedMs = nowMs
 
                 val preference = currentPreferences.handPreference
                 val shouldProcess = when {
@@ -1284,7 +1358,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // the device is unlocked and the camera is not exclusively held; a
         // platform rejection is caught and rescheduled below.
         if (!MainActivity.isVisible && !allowBackgroundStart) {
-            Timber.v("Foreground camera start deferred: Activity not visible; watchdog will retry")
+            // Rate-limited by design: only the first deferral per service
+            // instance is a stage record; the watchdog logs decision changes.
+            if (!cameraDeferralLogged) {
+                cameraDeferralLogged = true
+                StageLog.failure(
+                    StageLog.Stage.CAMERA_INIT_DEFERRED, COMPONENT,
+                    "Activity not visible; camera FGS start deferred to watchdog/retry (service itself is connected)",
+                )
+            }
             scheduleCameraRetry()
             return
         }
@@ -1296,8 +1378,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         runCatching {
             cameraServiceManager?.startTracking()
             cameraRetryAttempt = 0
+            cameraDeferralLogged = false
             Timber.i("Camera service start requested from accessibility service")
         }.onFailure { error ->
+            StageLog.failure(StageLog.Stage.CAMERA_INIT_FOREGROUND, COMPONENT, "startTracking() rejected; retry scheduled", error)
             CrashGuard.report("camera start", error)
             scheduleCameraRetry()
         }
@@ -2052,6 +2136,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val WATCHDOG_LOG_REPEAT_MS = 60_000L
 
         private const val INJECTION_RETRY_MS = 1_500L
+        private const val COMPONENT = "GestureControlAccessibilityService"
         private const val INJECTION_MAX_RETRIES = 4
 
         private const val STATIONARY_THRESHOLD = 0.008f

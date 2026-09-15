@@ -67,6 +67,7 @@ object PerfTelemetry {
     private var framesDroppedThrottle = 0L
     private var framesDroppedNoTracker = 0L
     private var framesDroppedBackpressure = 0L
+    private var handFramesShedStale = 0L
     private var framesDroppedConversion = 0L
     private var handGateBusy = false
     private var faceGateBusy = false
@@ -139,6 +140,17 @@ object PerfTelemetry {
     @Synchronized
     fun recordFrameDroppedBackpressure() {
         framesDroppedBackpressure++
+    }
+
+    /**
+     * A hand frame reached the consumer too old to be live (replayed from the transport buffer
+     * after a collector stall) and was shed before the gesture engine. Cumulative; a rising count
+     * on a device is direct evidence of consumer-side stalls.
+     */
+    @Synchronized
+    fun recordHandFrameShed(nowMs: Long) {
+        handFramesShedStale++
+        if (handFramesShedStale == 1L || handFramesShedStale % 64L == 0L) addEvent("hand:stale-shed=$handFramesShedStale", nowMs)
     }
 
     /**
@@ -301,6 +313,7 @@ object PerfTelemetry {
         val conversionMaxMs: Long,
         val framesDroppedBackpressure: Long,
         val framesDroppedConversion: Long,
+        val handFramesShedStale: Long,
         val handGateBusy: Boolean,
         val faceGateBusy: Boolean,
         val handRefusals: Long,
@@ -350,6 +363,7 @@ object PerfTelemetry {
             conversionMaxMs = conversionMaxMs,
             framesDroppedBackpressure = framesDroppedBackpressure,
             framesDroppedConversion = framesDroppedConversion,
+            handFramesShedStale = handFramesShedStale,
             handGateBusy = handGateBusy,
             faceGateBusy = faceGateBusy,
             handRefusals = handRefusals,
@@ -391,7 +405,7 @@ object PerfTelemetry {
                 " hand(avg=${s.handInferAvgMs}ms,max=${s.handInferMaxMs}ms)" +
                 " face(avg=${s.faceInferAvgMs}ms,max=${s.faceInferMaxMs}ms)" +
                 " conv(avg=${s.conversionAvgMs}ms,max=${s.conversionMaxMs}ms)" +
-                " drop(backpressure=${s.framesDroppedBackpressure},conversion=${s.framesDroppedConversion})" +
+                " drop(backpressure=${s.framesDroppedBackpressure},conversion=${s.framesDroppedConversion},stale=${s.handFramesShedStale})" +
                 " inFlight(hand=${if (s.handGateBusy) 1 else 0},face=${if (s.faceGateBusy) 1 else 0})" +
                 " refused(hand=${s.handRefusals},face=${s.faceRefusals},expired=${s.expiredReservations})" +
                 " watchdog=${s.watchdogActions}) lifecycle(unavailable=${s.cameraUnavailable}," +
@@ -426,6 +440,7 @@ object PerfTelemetry {
         framesDroppedNoTracker = 0
         framesDroppedBackpressure = 0
         framesDroppedConversion = 0
+        handFramesShedStale = 0
         handGateBusy = false; faceGateBusy = false
         handRefusals = 0; faceRefusals = 0; expiredReservations = 0
         watchdogActions = 0

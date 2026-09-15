@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.aircontrol.runtime.StageLog
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -249,7 +250,7 @@ class FaceTrackerImpl @Inject constructor(
             return
         }
         if (!validateModelFile()) {
-            Timber.e("face_landmarker.task not found in assets")
+            StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
             return
         }
 
@@ -257,12 +258,12 @@ class FaceTrackerImpl @Inject constructor(
         // is optional and only initialized when enabled.
         faceLandmarker = tryInitializeWithDelegate(Delegate.CPU)
             ?: run {
-                Timber.e("Failed to initialize FaceLandmarker with the portable CPU delegate")
+                StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
                 return
             }
         lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
-        Timber.i("FaceTracker initialized successfully")
+        StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
             "face-initialized",
             android.os.SystemClock.elapsedRealtime(),
@@ -681,11 +682,16 @@ class FaceTrackerImpl @Inject constructor(
         // programming error rather than a runtime condition to route around.
     )) { "face landmark frame requires >= ${CanonicalEyes.MIN_LANDMARK_COUNT} landmarks" }
 
+    /** Last exception from [tryInitializeWithDelegate], for the stage record. */
+    @Volatile private var lastInitError: Throwable? = null
+
     private fun validateModelFile(): Boolean {
         return try {
-            try { context.assets.open(MODEL_FILE).close(); true } catch (_: Exception) { false }
+            context.assets.open(MODEL_FILE).close()
+            true
         } catch (e: Exception) {
-            Timber.e(e, "Error checking face model file in assets")
+            lastInitError = e
+            Timber.e(e, "Error opening face model file %s", MODEL_FILE)
             false
         }
     }
@@ -717,12 +723,14 @@ class FaceTrackerImpl @Inject constructor(
                 Timber.i("FaceLandmarker initialized with %s delegate", delegate)
             }
         } catch (e: Exception) {
+            lastInitError = e
             Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, initialization failed", delegate)
             null
         }
     }
 
     companion object {
+        private const val COMPONENT = "FaceTrackerImpl"
         private const val MODEL_FILE = "face_landmarker.task"
         private const val NUM_FACES = 1
         private const val MIN_DETECTION_CONFIDENCE = 0.5f

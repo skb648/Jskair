@@ -148,3 +148,16 @@
     public static *** d(...);
     public static *** v(...);
 }
+
+# ---------------------------------------------------------------------------
+# Release forensics (2026-09): the accessibility service obtains its graph via
+# EntryPoints.get(app, AccessibilityServiceEntryPoint::class.java). Hilt's own
+# consumer rule keeps the interface with allowobfuscation/allowshrinking, which
+# is sufficient today (verified in mapping.txt), but a future R8 upgrade that
+# merges or inlines the interface would break the reflective cast silently in
+# release only. Pin our own entry points by name, narrowly.
+-keep @dagger.hilt.EntryPoint interface com.aircontrol.di.** { *; }
+
+# StageLog is the release-visible boot trail: its WARN/ERROR records must never
+# be treated as side-effect free. (Only Timber.d/v are stripped above; this is
+# documentation of intent, not an extra rule.)
