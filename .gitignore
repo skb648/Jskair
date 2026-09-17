@@ -30,6 +30,11 @@ captures/
 *.keystore
 keystore.properties
 
+# Local environment / secret material
+.env
+.env.*
+!.env.example
+
 # Log files
 *.log
 
