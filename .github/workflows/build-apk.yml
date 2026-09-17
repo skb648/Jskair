@@ -190,11 +190,14 @@ jobs:
           fi
           TMP_DIR="$(mktemp -d)"
           trap 'rm -rf "$TMP_DIR"' EXIT
-          gh release download "$LATEST_TAG" --dir "$TMP_DIR" --pattern '*.apk' --clobber || true
+          if ! gh release download "$LATEST_TAG" --dir "$TMP_DIR" --pattern '*.apk' --clobber; then
+            echo "ERROR: failed to download the APK from latest published release '$LATEST_TAG'."
+            exit 1
+          fi
           PREVIOUS_APK="$(find "$TMP_DIR" -type f -name '*.apk' | head -n 1 || true)"
           if [ -z "$PREVIOUS_APK" ]; then
-            echo "Latest published release '$LATEST_TAG' has no APK asset; cannot derive its versionCode. Attach a release APK for automated monotonic validation."
-            exit 0
+            echo "ERROR: latest published release '$LATEST_TAG' has no APK asset; cannot prove versionCode monotonicity."
+            exit 1
           fi
           PREVIOUS_BADGING="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt dump badging "$PREVIOUS_APK")"
           PREVIOUS_VERSION_CODE="$(printf '%s\n' "$PREVIOUS_BADGING" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p")"
