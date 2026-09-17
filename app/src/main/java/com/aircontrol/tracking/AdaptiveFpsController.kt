@@ -10,11 +10,7 @@ import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.Volatile
 
-/**
- * Controls analysis FPS adaptively. FPS quantization is safety-oriented: when a
- * caller supplies a cap such as 20 FPS, the controller must never round UP to
- * 24 FPS and violate that cap.
- */
+/** Controls adaptive analysis FPS without ever rounding a caller's cap upward. */
 class AdaptiveFpsController(
     private val scope: CoroutineScope,
     configuredFps: Int = DEFAULT_FPS,
@@ -22,7 +18,7 @@ class AdaptiveFpsController(
     private val noHandTimeoutMs: Long = 5000L,
 ) {
     @Volatile
-    private var configuredFps: Int = configuredFps.coerceToSupportedFps()
+    private var configuredFps: Int = coerceToSupportedFps(configuredFps)
 
     private val _currentFps = MutableStateFlow(this.configuredFps)
     val currentFps: StateFlow<Int> = _currentFps
@@ -97,7 +93,7 @@ class AdaptiveFpsController(
 
     fun updateConfiguredFps(fps: Int) {
         val oldConfiguredFps = configuredFps
-        val validFps = fps.coerceToSupportedFps()
+        val validFps = coerceToSupportedFps(fps)
         configuredFps = validFps
         if (_currentFps.value == oldConfiguredFps || _currentFps.value > validFps) {
             _currentFps.value = validFps
@@ -106,19 +102,15 @@ class AdaptiveFpsController(
         com.aircontrol.runtime.PerfTelemetry.recordConfiguredFps(validFps)
     }
 
-    /**
-     * Supported CameraX/MediaPipe operating points. Always choose the highest
-     * supported rate <= requested. Rounding upward is forbidden because this
-     * controller is also used as a thermal/battery cap.
-     */
-    private fun Int.coerceToSupportedFps(): Int {
-        val supported = intArrayOf(5, 10, 15, 24, 30)
-        if (this <= supported.first()) return supported.first()
-        return supported.lastOrNull { it <= this } ?: supported.first()
-    }
-
     companion object {
         private const val DEFAULT_FPS = 24
         private const val SCAN_FPS = 10
+        private val SUPPORTED_FPS = intArrayOf(5, 10, 15, 24, 30)
+
+        /** Highest supported operating point that does not exceed [requested]. */
+        internal fun coerceToSupportedFps(requested: Int): Int {
+            if (requested <= SUPPORTED_FPS.first()) return SUPPORTED_FPS.first()
+            return SUPPORTED_FPS.lastOrNull { it <= requested } ?: SUPPORTED_FPS.first()
+        }
     }
 }
