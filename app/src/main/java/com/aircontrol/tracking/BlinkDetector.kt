@@ -1,48 +1,22 @@
 package com.aircontrol.tracking
 
-/**
- * Blink detection via the Eye Aspect Ratio (EAR).
- *
- * EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
- *
- * When both eyes are open EAR is typically > 0.22 (was 0.20); when closed it drops toward
- * ~0.10. A deliberate blink (both eyes closed for [minBlinkMs]..[maxBlinkMs])
- * emits a single click event via [update].
- */
+/** Blink detection via the Eye Aspect Ratio (EAR). */
 class BlinkDetector(
-    private val earThreshold: Float = 0.170f, // Distinguishes true eye closure from smiles/squints (~0.20-0.24) and glasses reflection
+    private val earThreshold: Float = 0.170f,
     minBlinkMs: Long = 180L,
     maxBlinkMs: Long = 650L,
 ) {
-    // Tunable blink window: 200ms discriminates natural involuntary eye flutters (<180ms)
-    // from intentional click gestures while remaining crisp and instant.
     private var minBlinkMs: Long = minBlinkMs
     private var maxBlinkMs: Long = maxBlinkMs
-
-    // Fix (verified E4): the 0.170 fixed EAR threshold does not fit small
-    // eyes, almond-shaped eyes, astigmatism glasses or facial asymmetry —
-    // natural blinks for those users never crossed it. Track a slow baseline
-    // of the user's open-eye EAR and derive the closure threshold from it
-    // (72% of their personal open value), falling back to the fixed default
-    // until enough confident open frames are seen.
     private var baselineOpenEar: Float = Float.NaN
 
-    /** Effective closure threshold (personalized once calibrated). */
     private fun closureThreshold(): Float {
         if (baselineOpenEar.isNaN()) return earThreshold
         return (baselineOpenEar * 0.72f).coerceIn(0.10f, 0.22f)
     }
 
-    /** Effective re-open threshold with Schmitt hysteresis above closure. */
     private fun openThreshold(): Float = closureThreshold() * 1.15f
 
-    /**
-     * Schmitt-trigger hysteresis: enter closed below earThreshold, but only
-     * leave it once EAR recovers meaningfully above openEarThreshold (25% higher).
-     */
-    private val openEarThreshold: Float = earThreshold * 1.25f
-
-    /** Updates the blink duration window (clamped to a sane band). */
     fun updateConfig(minBlinkMs: Long, maxBlinkMs: Long) {
         this.minBlinkMs = minBlinkMs.coerceIn(120L, 800L)
         this.maxBlinkMs = maxBlinkMs.coerceIn(this.minBlinkMs + 180L, 2_000L)
@@ -54,27 +28,19 @@ class BlinkDetector(
     var lastBlinkClosureStartMs: Long = -1L
         private set
 
-    /**
-     * Feeds the current average EAR. Returns the blink outcome exactly once, when
-     * a blink (eyes closed then reopened) completes:
-     *  - [BlinkResult.CLICK] for a valid blink within the duration window,
-     *  - [BlinkResult.TOO_SHORT] if the closure was too brief,
-     *  - [BlinkResult.TOO_LONG] if the closure was too long (e.g. eyes closed for
-     *    rest — no click, but distinguishable from a normal blink).
-     *  - [BlinkResult.NONE] otherwise (still open / still closed).
-     */
     fun update(ear: Float, timestampMs: Long): BlinkResult {
-        // Hysteresis: enter "closed" below the (personalized) closure
-        // threshold, but only leave once EAR recovers above the derived
-        // re-open threshold.
+        // Invalid CV output is never evidence for a click. Abort any open closure
+        // so a later valid sample cannot accidentally complete a stale blink.
+        if (!ear.isFinite() || ear < 0f) {
+            abortInProgressBlink()
+            return BlinkResult.NONE
+        }
+
         val closeAt = closureThreshold()
         val openAt = openThreshold()
         val closed = if (wasClosed) ear < openAt else ear < closeAt
 
-        // Learn the open-eye baseline only from confidently-open frames and
-        // never while a closure is in progress (a 2 s rest must not drag the
-        // baseline down to "closed").
-        if (!closed && ear > earThreshold * 1.25f && ear.isFinite()) {
+        if (!closed && ear > earThreshold * 1.25f) {
             baselineOpenEar = if (baselineOpenEar.isNaN()) ear
             else baselineOpenEar + (ear - baselineOpenEar) * 0.01f
         }
@@ -83,10 +49,8 @@ class BlinkDetector(
             closedStartMs = timestampMs
             lastBlinkClosureStartMs = timestampMs
             minEarDuringClosure = ear
-        } else if (closed && wasClosed) {
-            if (ear < minEarDuringClosure) {
-                minEarDuringClosure = ear
-            }
+        } else if (closed) {
+            if (ear < minEarDuringClosure) minEarDuringClosure = ear
         }
 
         if (!closed && wasClosed) {
@@ -94,13 +58,10 @@ class BlinkDetector(
             val minEar = minEarDuringClosure
             closedStartMs = -1L
             minEarDuringClosure = 1.0f
+            wasClosed = false
             if (start >= 0L) {
                 val duration = timestampMs - start
-                wasClosed = false
-                // Ensure the closure actually reached full closure depth
-                if (minEar > closeAt) {
-                    return BlinkResult.NONE
-                }
+                if (minEar > closeAt) return BlinkResult.NONE
                 return when {
                     duration < minBlinkMs -> BlinkResult.TOO_SHORT
                     duration > maxBlinkMs -> BlinkResult.TOO_LONG
@@ -112,45 +73,32 @@ class BlinkDetector(
         return BlinkResult.NONE
     }
 
+    /** Resets transient state and the adaptive baseline so it is relearned. */
     fun reset() {
         closedStartMs = -1L
         wasClosed = false
         minEarDuringClosure = 1.0f
         lastBlinkClosureStartMs = -1L
+        baselineOpenEar = Float.NaN
     }
 
-    /** True while a blink (eye closure) is in progress and not yet completed. */
     val hasInProgressBlink: Boolean
         get() = wasClosed
 
     private var abortedBlinkCount = 0
-
-    /** How many in-progress blinks were aborted (Issue 4 metrics). */
     fun abortedBlinkCount(): Int = abortedBlinkCount
 
-    /**
-     * Issue 4: aborts an in-progress blink because the eyes stopped being
-     * observed (face lost / occlusion / tracking gap). A closure that was
-     * interrupted can no longer be assumed continuous, so it must NEVER
-     * complete into a click after re-acquisition. This is a no-op when no
-     * blink is in progress, so transient uncertain frames that occur while
-     * the eyes are open do not disturb the detector at all.
-     */
     fun abortInProgressBlink() {
         if (wasClosed || closedStartMs >= 0L) {
             closedStartMs = -1L
             wasClosed = false
+            minEarDuringClosure = 1.0f
+            lastBlinkClosureStartMs = -1L
             abortedBlinkCount++
         }
     }
 
-    /**
-     * True while the eyes are currently detected as closed. Consumers should
-     * freeze the cursor while this is true — the iris landmarks are unreliable
-     * when the eyelids cover them.
-     */
     fun isClosed(): Boolean = wasClosed
 }
 
-/** Outcome of a completed blink (see [BlinkDetector.update]). */
 enum class BlinkResult { NONE, CLICK, TOO_SHORT, TOO_LONG }
