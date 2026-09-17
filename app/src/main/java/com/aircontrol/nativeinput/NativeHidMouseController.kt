@@ -46,7 +46,7 @@ class NativeHidMouseController @Inject constructor(
     private val reportBuffer = ByteArray(HidMouseDescriptor.REPORT_SIZE)
     private val callbackExecutor: Executor = Executor { it.run() }
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @get:RequiresApi(Build.VERSION_CODES.P)
     private val sdpSettings by lazy {
         BluetoothHidDeviceAppSdpSettings(
             "AirControl Mouse",
@@ -157,7 +157,7 @@ class NativeHidMouseController @Inject constructor(
         hidDevice = null
         connectedHost = null
         if (hid != null) {
-            try { hid.unregisterApp() } catch (se: SecurityException) { Log.w(TAG, "unregisterApp permission") } catch (t: Throwable) { Log.w(TAG, "unregisterApp failed: ${t.message}") }
+            try { hid.unregisterApp() } catch (_: SecurityException) { Log.w(TAG, "unregisterApp permission") } catch (t: Throwable) { Log.w(TAG, "unregisterApp failed: ${t.message}") }
             try { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) } catch (_: Throwable) { }
         }
         try { context.unregisterReceiver(bluetoothStateReceiver) } catch (_: Exception) { }
