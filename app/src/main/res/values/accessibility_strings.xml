@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description_precise">AirControl uses accessibility to perform taps, swipes, navigation, and other enabled actions on your behalf. To make the cursor feel like a native pointer, it may read limited UI metadata under the cursor, such as window bounds and basic accessibility node properties (class, clickable, editable, and supported click actions). This information is processed only on-device, is not recorded or transmitted, and is not used to identify you.</string>
+</resources>
