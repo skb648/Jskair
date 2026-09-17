@@ -1,32 +1,31 @@
 # AirControl Data Safety Disclosure
 
-## Data Collection
-AirControl does **not** collect, transmit, or store any user data.
+## Data Processing Summary
+AirControl performs camera, face, eye, and hand tracking on the Android device. The tracking pipeline does not upload camera or gesture data to a remote server.
 
-| Data Type | Collected | Shared | Purpose |
-|-----------|-----------|--------|---------|
-| Camera feed | No* | No | Processed on-device only for hand tracking |
-| Hand landmarks | No* | No | Computed on-device, never persisted |
-| Gesture events | No | No | Transient, used only for immediate action dispatch |
-| Settings | No† | No | Stored locally in DataStore, never transmitted |
-| Device info | No | No | Not collected |
+| Data / Signal | Remote collection | Remote sharing | Local use | Purpose |
+|---|---|---|---|---|
+| Camera frames | No | No | Transient | Real-time hand/face tracking |
+| Eye landmarks / gaze values | No | No | Transient | Cursor and gaze interaction |
+| Hand landmarks / gesture values | No | No | Transient | Gesture recognition and actions |
+| User preferences | No | No | Yes | Settings and feature configuration |
+| Hand calibration | No | No | Yes | Personalize gesture thresholds |
+| Personalized gaze calibration | No | No | Yes, when created | Personalize gaze mapping |
+| Accessibility UI metadata | No | No | Transient | Native-like cursor feedback / hit testing |
 
-\* Camera frames are processed in real-time by MediaPipe on-device. No frames, images, or video are recorded, stored, or transmitted. Hand landmark coordinates exist only in volatile memory and are discarded after each frame.
+### What stays on the device
+Camera and tracking information can exist in volatile memory while processing. User preferences and calibration state are persisted locally with Android DataStore when the relevant features are used.
 
-† User preferences (sensitivity, gesture mappings, hand size mm/pinch distance for calibration, etc.) are stored — these are device-local measurements, not personal data, and are not classified as "personal data" under Play Data Safety (no identifier) exclusively in the device's local DataStore. No cloud backup or synchronization occurs.
+### Accessibility Service
+AirControl requests accessibility capabilities needed to perform user-configured actions. The service also enables `canRetrieveWindowContent=true` and `flagRetrieveInteractiveWindows` for the native-like cursor path.
 
-## Network Access
-AirControl does not request `android.permission.INTERNET` and has no network capability. All processing is 100% on-device.
+The cursor hit-test reads a bounded subset of accessibility metadata under the pointer, such as window bounds and basic node properties. Raw `AccessibilityNodeInfo` objects are not retained after the lookup. This metadata is not transmitted to remote servers.
 
-## Accessibility Service Usage
-AirControl uses Android's Accessibility Service exclusively for:
-- Dispatching touch gestures (tap, scroll, drag) on behalf of the user
-- Performing global navigation actions (back, home, recents)
-- Adjusting volume and media playback
+### Network Access
+AirControl does not request `android.permission.INTERNET` for its runtime tracking pipeline and does not use a remote inference backend.
 
-The service does **not** read, observe, or collect any window content. The `canRetrieveWindowContent` capability is explicitly set to `false`.
+### Third-Party Libraries
+MediaPipe, CameraX, Hilt, Compose, Coroutines, DataStore, and other dependencies execute according to their Android runtime behavior. AirControl's tracking data flow is local to the device.
 
-## Third-Party Libraries
-- **MediaPipe Hand Landmarker**: Processes camera frames entirely on-device. No data leaves the device.
-- **CameraX**: Camera frame capture only. No recording or transmission.
-- **All other libraries** (Hilt, Compose, Coroutines, DataStore, Timber): Standard Android libraries with no data collection.
+### Release Data-Safety Review
+The declarations in this document must be reviewed against the actual manifest, accessibility-service XML, persistence layer, and release APK whenever those components change. This document does not replace the platform store's own data-safety form or legal review.
