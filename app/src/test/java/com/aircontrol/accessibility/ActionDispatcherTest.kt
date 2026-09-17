@@ -236,43 +236,18 @@ class ActionDispatcherTest {
     }
 
     @Test
-    fun `during calibration only pointer-local actions survive`() {
+    fun `all synthetic actions are suppressed during a setup flow`() {
         com.aircontrol.ui.Suppression.resetForTest()
         com.aircontrol.ui.Suppression.acquire()
         try {
-            // The user has to be able to press the calibration screen's own buttons.
-            for (action in listOf(
-                GestureAction.TAP,
-                GestureAction.DOUBLE_TAP,
-                GestureAction.LONG_PRESS,
-                GestureAction.DRAG,
-                GestureAction.NONE,
-            )) {
-                assertTrue("$action must still work", actionDispatcher.actionAllowed(action))
-            }
-            // Everything that leaves the screen would yank the flow away.
-            for (action in listOf(
-                GestureAction.HOME,
-                GestureAction.BACK,
-                GestureAction.RECENTS,
-                GestureAction.NOTIFICATIONS,
-                GestureAction.QUICK_SETTINGS,
-                GestureAction.VOLUME_UP,
-                GestureAction.VOLUME_DOWN,
-                GestureAction.MEDIA_PLAY_PAUSE,
-                GestureAction.SCREENSHOT,
-                GestureAction.LOCK_SCREEN,
-                GestureAction.SCROLL_UP,
-                GestureAction.SCROLL_DOWN,
-                GestureAction.SCROLL_LEFT,
-                GestureAction.SCROLL_RIGHT,
-            )) {
-                assertFalse("$action must be suppressed", actionDispatcher.actionAllowed(action))
+            assertTrue("NONE is a no-op and is safe", actionDispatcher.actionAllowed(GestureAction.NONE))
+            for (action in GestureAction.values().filter { it != GestureAction.NONE }) {
+                assertFalse("$action must be suppressed while setup owns the UI", actionDispatcher.actionAllowed(action))
             }
         } finally {
             com.aircontrol.ui.Suppression.release()
         }
-        assertTrue("actions resume when the flow closes", actionDispatcher.actionAllowed(GestureAction.HOME))
+        assertTrue("actions resume when the setup flow closes", actionDispatcher.actionAllowed(GestureAction.HOME))
     }
 
     // ========== dispatch() behavior without service attached ==========

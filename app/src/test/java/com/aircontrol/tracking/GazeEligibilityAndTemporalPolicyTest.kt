@@ -23,6 +23,7 @@ class GazeEligibilityAndTemporalPolicyTest {
         poseValid: Boolean = true,
         modelQuality: Float? = null,
         modelAbsent: Boolean = true,
+        eyesUsed: Int = 2,
     ) = GazeUncertainty(
         faceDetected = faceDetected,
         eyeQuality = eyeQuality,
@@ -32,6 +33,7 @@ class GazeEligibilityAndTemporalPolicyTest {
         poseValid = poseValid,
         modelQuality = modelQuality,
         modelAbsent = modelAbsent,
+        eyesUsed = eyesUsed,
     )
 
     // --- Phase 5: each uncertainty source may only veto what it invalidates ---
@@ -88,7 +90,9 @@ class GazeEligibilityAndTemporalPolicyTest {
         val d = GazeEligibilityPolicy.evaluate(
             uncertainty(poseConfidence = null, headAngleDeg = null, poseValid = false),
         )
-        assertEquals(GazeEligibility.ACTIONABLE, d.eligibility)
+        assertEquals(GazeEligibility.VISIBLE, d.eligibility)
+        assertTrue(d.updatesCursor)
+        assertFalse("missing head pose must never permit an action", d.canAct)
     }
 
     @Test fun unreliableModelDowngradesActionNotTracking() {
@@ -113,9 +117,10 @@ class GazeEligibilityAndTemporalPolicyTest {
     }
 
     @Test fun calibrationNeedsPoseAndBothEyesAndOpenLids() {
-        val u = uncertainty(eyeQuality = 0.9f, poseValid = true)
+        val u = uncertainty(eyeQuality = 0.9f, poseValid = true, eyesUsed = 2)
         assertTrue(GazeEligibilityPolicy.calibrationEligible(u, eyeOpenness = 0.3f))
         assertFalse(GazeEligibilityPolicy.calibrationEligible(u.copy(poseValid = false), 0.3f))
+        assertFalse(GazeEligibilityPolicy.calibrationEligible(u.copy(eyesUsed = 1), 0.3f))
         assertFalse(GazeEligibilityPolicy.calibrationEligible(u, eyeOpenness = 0.1f))
         assertFalse(GazeEligibilityPolicy.calibrationEligible(u.copy(eyeQuality = 0.3f), 0.3f))
         assertFalse(GazeEligibilityPolicy.calibrationEligible(u.copy(binocularAgreement = 0.1f), 0.3f))

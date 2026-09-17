@@ -268,7 +268,7 @@
     <!-- Fix (audit #24): the old "Start on Boot / auto-start" wording promised
          automatic start, but Android forbids a background camera start after
          reboot — the app can only post a resume notification. -->
-    <string name="settings_analysis_fps_eye_cap_note">Eye tracking mode caps analysis at 20 FPS (battery and thermal), even when a higher value is selected</string>
+    <string name="settings_analysis_fps_eye_cap_note">Eye tracking mode caps analysis at 30 FPS (battery and thermal), even when a higher value is selected</string>
     <string name="home_warning_notifications_title_v2">Notifications (optional)</string>
     <string name="home_accessibility_connecting_title">Accessibility service connecting…</string>
     <string name="home_accessibility_connecting_message">AirControl is enabled in Android Settings and its service is connecting — this usually takes a few seconds. No action needed.</string>

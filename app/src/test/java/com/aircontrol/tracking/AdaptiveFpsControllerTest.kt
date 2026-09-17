@@ -11,15 +11,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Tests for the adaptive frame-rate controller.
- *
- * These pin the fix for "AirControl says it idles at 5 FPS but the battery still
- * drains": [AdaptiveFpsController.onHandLost] used to cancel and re-launch the
- * downgrade timer on *every* frame without a hand. Frames keep arriving while the
- * camera runs, so each one pushed the deadline 5 s into the future and scan mode
- * never engaged - unless you covered the camera completely.
- */
+/** Tests the adaptive frame-rate controller and its safety invariants. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AdaptiveFpsControllerTest {
 
@@ -35,7 +27,6 @@ class AdaptiveFpsControllerTest {
         runCurrent()
         assertEquals("starts at the configured rate", 24, controller.currentFps.value)
 
-        // 100 frames without a hand, 40 ms apart: 4 seconds of "no hand" so far.
         repeat(100) { i ->
             controller.onHandLost(timestampMs = i * 40L)
             advanceTimeBy(40L)
@@ -43,9 +34,6 @@ class AdaptiveFpsControllerTest {
         }
         assertEquals("4s of no hand is not enough", 24, controller.currentFps.value)
 
-        // Crossing the 5s mark from the *first* lost frame must downgrade, even
-        // though more lost frames keep arriving (each one used to push the
-        // deadline forward, so this is the regression guard).
         repeat(40) { i ->
             controller.onHandLost(timestampMs = 4_000L + i * 40L)
             advanceTimeBy(40L)
@@ -78,7 +66,6 @@ class AdaptiveFpsControllerTest {
         assertEquals("hand back: full rate", 24, controller.currentFps.value)
         assertTrue(controller.isHandDetected.value)
 
-        // ...and staying still for another 10s must not drop the rate.
         advanceTimeBy(10_000L)
         runCurrent()
         assertEquals(24, controller.currentFps.value)
@@ -104,8 +91,6 @@ class AdaptiveFpsControllerTest {
         assertEquals(24, controller.currentFps.value)
         assertFalse(controller.isHandDetected.value)
 
-        // After a reset the next handless frame re-arms the timer (it must not be
-        // permanently disarmed by the reset).
         controller.onHandLost(7_000L)
         advanceTimeBy(5_100L)
         runCurrent()
@@ -113,7 +98,7 @@ class AdaptiveFpsControllerTest {
     }
 
     @Test
-    fun `battery saver style fps changes apply while idle`() = runTest {
+    fun `configured FPS changes apply while full speed`() = runTest {
         val controllerScope = CoroutineScope(StandardTestDispatcher(testScheduler))
         val controller = AdaptiveFpsController(
             scope = controllerScope,
@@ -125,6 +110,27 @@ class AdaptiveFpsControllerTest {
         controller.updateConfiguredFps(15)
         runCurrent()
         assertEquals("at full speed, a new cap applies immediately", 15, controller.currentFps.value)
-        assertEquals("interval follows the rate", 1000L / 15, controller.analysisIntervalMs)
+        assertEquals("15 FPS requires a 67 ms ceiling interval", 67L, controller.analysisIntervalMs)
+        assertTrue("integer interval must not permit more than 15 FPS", 1000.0 / controller.analysisIntervalMs <= 15.0)
+    }
+
+    @Test
+    fun `production quantization never exceeds requested FPS`() {
+        val cases = mapOf(
+            1 to 5,
+            5 to 5,
+            6 to 5,
+            14 to 10,
+            15 to 15,
+            20 to 15,
+            23 to 15,
+            24 to 24,
+            25 to 24,
+            30 to 30,
+            120 to 30,
+        )
+        cases.forEach { (requested, expected) ->
+            assertEquals("requested=$requested", expected, AdaptiveFpsController.coerceToSupportedFps(requested))
+        }
     }
 }

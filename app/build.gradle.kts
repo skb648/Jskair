@@ -5,20 +5,18 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-val versionCodeBase = 1
-val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
-val resolvedVersionCode = versionCodeFromEnv ?: versionCodeBase
+val versionCodeBase = 2
+val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 0
+val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+// A manually supplied VERSION_CODE may customize the sequence, but it may never
+// lower a CI version. This keeps release versionCode monotonic on every CI run.
+val resolvedVersionCode = maxOf(versionCodeBase, versionCodeFromEnv, ciRunNumber)
+require(resolvedVersionCode > 0) { "versionCode must be positive" }
 
 android {
     namespace = "com.aircontrol"
     compileSdk = 37
-
     signingConfigs {
-        // CI fix: debug.keystore is developer-local (gitignored), so a hard
-        // reference made `:app:validateSigningDebug` FAIL on every clean
-        // checkout — the debug APK could not be built by CI at all. The config
-        // is now only wired up when the file is actually present; otherwise the
-        // build falls back to Android's own auto-generated debug key.
         create("debugConfig") {
             val debugKs = file("${rootDir}/debug.keystore")
             if (debugKs.exists()) {
@@ -38,7 +36,6 @@ android {
             enableV4Signing = true
         }
     }
-
     defaultConfig {
         applicationId = "com.aircontrol"
         minSdk = 26
@@ -47,7 +44,6 @@ android {
         versionName = "1.0.1"
         testInstrumentationRunner = "com.aircontrol.HiltTestRunner"
     }
-
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -64,49 +60,30 @@ android {
             }
         }
         debug {
-            // Only use the custom debug key when it exists on this machine.
-            if (file("${rootDir}/debug.keystore").exists()) {
-                signingConfig = signingConfigs.getByName("debugConfig")
-            }
+            if (file("${rootDir}/debug.keystore").exists()) signingConfig = signingConfigs.getByName("debugConfig")
             isMinifyEnabled = false
             isDebuggable = true
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
     }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = false
     }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
+    buildFeatures { compose = true; buildConfig = true }
     packaging {
         resources {
-            excludes += setOf(
-                "META-INF/AL2.0",
-                "META-INF/LGPL2.1",
-                "META-INF/DEPENDENCIES",
-                "META-INF/LICENSE",
-                "META-INF/LICENSE.txt",
-                "META-INF/NOTICE",
-                "META-INF/NOTICE.txt",
-            )
+            excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1", "META-INF/DEPENDENCIES", "META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt")
         }
         jniLibs { useLegacyPackaging = false }
     }
-
     lint {
         warningsAsErrors = false
         abortOnError = true
         checkDependencies = true
     }
-
     testOptions {
         unitTests {
             isIncludeAndroidResources = true

@@ -109,28 +109,15 @@ class ActionDispatcher @Inject constructor(
         private const val TAP_DURATION_MS = 15L
         private const val LONG_PRESS_DURATION_MS = 500L
         private const val DOUBLE_TAP_GAP_MS = 100L
-        // Fix (verified C9): 350 ms could not fit two complete pinch cycles
-        // (each pays entry + release debounces), so DOUBLE_TAP never fired.
         private const val DOUBLE_TAP_WINDOW_MS = 500L
         private const val INTENTIONAL_PINCH_HOLD_MS = 80L
         private const val MIN_MOVING_PINCH_VELOCITY = 0.55f
         private const val MAX_MOVING_PINCH_VELOCITY = 1.10f
         private const val TAP_PATH_DISPLACEMENT_PX = 3f
-        // Fix: each drag step duration optimized from 48ms to 36ms so dragging tracks hand tightly.
         private const val DRAG_STEP_DURATION_MS = 36L
         private const val DRAG_END_DURATION_MS = 120L
         private const val HAPTIC_TICK_MS = 15L
-
         private const val MAX_DRAG_STEP_FRACTION = 0.15f
-
-        // Fix P1: a pinch-held-MOVE must travel this far (fraction of screen
-        // width) before the dispatcher starts a DRAG stroke. Previously the
-        // first MOVE frame — which the engine emits on EVERY frame of a held
-        // pinch, moving or not — started a continued drag stroke immediately,
-        // and Pinch END then saw isDragging and returned *without* dispatching
-        // the tap. Every "tap" was really an abandoned drag stroke
-        // (DOWN…CANCEL), which apps and OEMs treat inconsistently: the
-        // "pinch registers visually but nothing clicks" complaint.
         private const val DRAG_START_SLOP_FRACTION = 0.025f
         private const val MIN_DRAG_START_SLOP_PX = 12f
         private const val MIN_DRAG_VELOCITY_PX_MS = 0.10f
@@ -142,13 +129,12 @@ class ActionDispatcher @Inject constructor(
         const val KEY_POSE_PINCH = "pose_pinch"
         const val KEY_POSE_POINTING = "pose_pointing"
         const val KEY_POSE_VICTORY = "pose_victory"
-    const val KEY_POSE_THUMB_UP = "pose_thumb_up"
-    const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
-    const val KEY_POSE_THREE_FINGERS = "pose_three_fingers"
+        const val KEY_POSE_THUMB_UP = "pose_thumb_up"
+        const val KEY_POSE_THUMB_DOWN = "pose_thumb_down"
+        const val KEY_POSE_THREE_FINGERS = "pose_three_fingers"
         const val KEY_POSE_PINCH_HOLD = "pose_pinch_hold"
         const val KEY_PALM_HOME = "palm_home"
 
-        // Issue 15: modality identities for cross-modality tap ownership.
         const val TAP_OWNER_HAND = "hand_gesture"
         const val TAP_OWNER_BLINK = "blink"
         const val TAP_OWNER_GAZE_DWELL = "gaze_dwell"
@@ -162,54 +148,16 @@ class ActionDispatcher @Inject constructor(
             invertScrollDirection = invert
         }
 
-        /** Fix U-13b: mild edge acceleration — see [applyEdgeAcceleration]. */
         const val EDGE_ACCEL_COEFF = 0.16f
-
-        /** Horizontal camera margin folded away before mapping to the screen. */
         const val SIDE_MARGIN = 0.08f
-
-        /**
-         * Fix U-13a ("notification bar tak pahunchna mushkil"): the top 20% of the
-         * camera frame was a dead zone, so the whole upper strip of the screen —
-         * including the notification shade handle — could only be reached by
-         * pushing the hand towards the top edge of the frame, where tracking is
-         * worst. 6% is enough to absorb the tracker's noisy top border while
-         * leaving the shade comfortably reachable.
-         */
         const val TOP_DEAD_ZONE = 0.06f
-
-        /** Sit-back (TV) mode variant of [TOP_DEAD_ZONE]. */
         const val TOP_DEAD_ZONE_SIT_BACK = 0.03f
 
-        /**
-         * Fix B1: the pointer-gain factor derived from the "Cursor Speed"
-         * setting. 0 → 0.5× (slow, precise), 50 (default) → 1.0× (unchanged
-         * from the previous fixed behaviour), 100 → 1.5× (fast). The gain is
-         * applied around the screen centre after the dead-zone mapping, so the
-         * screen edges stay reachable at every gain (results are clamped).
-         */
         private fun pointerGainFactor(): Float = 0.5f + cursorGain.coerceIn(0f, 1f)
 
-        /**
-         * Fix A2: gaze coordinates are already screen-normalized (either the
-         * calibrated affine/personalized output or the gain+invert applied in
-         * the service). They must be mapped straight to pixels — routing them
-         * through the hand mapping's margins and dead zones shifted the whole
-         * eye cursor up by ~21% of the screen even after a perfect calibration.
-         */
         fun normalizeDirect(norm: Float, screenDim: Int): Float =
-            if (screenDim <= 0) 0f else norm.coerceIn(0f, 1f) * screenDim
+            if (screenDim <= 0 || !norm.isFinite()) 0f else norm.coerceIn(0f, 1f) * screenDim
 
-        /**
-         * Non-linear edge acceleration: 1:1 linear in center for precision pointing,
-         * with mild cubic acceleration near boundaries so corners and edges are
-         * reached without arm strain.
-         *
-         * Fix U-13b: the coefficient was 0.38, which made the cursor visibly
-         * sprint in the outer third — the user reached the corner but could not
-         * land on a small button there ("aim kharab kar deta hai"). 0.16 keeps the
-         * reachability benefit while roughly halving the aim error near the edges.
-         */
         private fun applyEdgeAcceleration(norm: Float): Float {
             val u = ((norm - 0.5f) * 2f).coerceIn(-1f, 1f)
             val absU = kotlin.math.abs(u)
@@ -219,7 +167,7 @@ class ActionDispatcher @Inject constructor(
         }
 
         fun normalizeToScreenX(normX: Float, screenWidth: Int): Float {
-            if (screenWidth <= 0) return 0f
+            if (screenWidth <= 0 || !normX.isFinite()) return 0f
             val margin = SIDE_MARGIN
             val active = 1.0f - 2f * margin
             val clamped = normX.coerceIn(0f, 1f)
@@ -230,15 +178,12 @@ class ActionDispatcher @Inject constructor(
         }
 
         fun normalizeToScreenY(normY: Float, screenHeight: Int, screenWidth: Int = 0): Float {
-            if (screenHeight <= 0) return 0f
+            if (screenHeight <= 0 || !normY.isFinite()) return 0f
             val topDeadZone = if (sitBackModeEnabled) TOP_DEAD_ZONE_SIT_BACK else TOP_DEAD_ZONE
             val active = 1.0f - topDeadZone
             val clamped = normY.coerceIn(0f, 1f)
             val mapped = ((clamped - topDeadZone) / active).coerceIn(0f, 1f)
             val accelerated = applyEdgeAcceleration(mapped)
-            // Aspect ratio parity adjustment:
-            // Tall screens (19:9 to 21:9) make raw vertical movement >2x faster than horizontal travel.
-            // Balance vertical acceleration so physical hand travel feels natural and isotropic.
             val aspectCorrection = if (screenWidth > 0 && screenHeight > screenWidth) {
                 val aspect = screenHeight.toFloat() / screenWidth.toFloat()
                 (1.5f / aspect).coerceIn(0.72f, 1.0f)
@@ -277,11 +222,6 @@ class ActionDispatcher @Inject constructor(
             defaultMap[KEY_POSE_VICTORY] = GestureAction.MEDIA_PLAY_PAUSE
             defaultMap[KEY_POSE_THUMB_UP] = GestureAction.VOLUME_UP
             defaultMap[KEY_POSE_THUMB_DOWN] = GestureAction.VOLUME_DOWN
-            // Fix (verified G5): three extended fingers is what a relaxed
-            // resting hand (and a palm->fist close) transiently reads as, so
-            // binding it to VOLUME_UP by default cranked the volume on users
-            // who were just resting/closing their hand. Unbound by default;
-            // users who want the gesture map it deliberately in Gesture Map.
             defaultMap[KEY_POSE_THREE_FINGERS] = GestureAction.NONE
             defaultMap[KEY_POSE_PINCH_HOLD] = GestureAction.DRAG
             defaultMap[KEY_PALM_HOME] = GestureAction.HOME
@@ -289,24 +229,15 @@ class ActionDispatcher @Inject constructor(
         }
     }
 
-    @Volatile
-    private var customGesturesList: List<CustomGesture> = emptyList()
-
-    @Volatile
-    private var currentPose: Pose = Pose.NONE
-
-    // Issue 15: deterministic cross-modality tap ownership (one intent → one action).
+    @Volatile private var customGesturesList: List<CustomGesture> = emptyList()
+    @Volatile private var currentPose: Pose = Pose.NONE
     private val tapOwnership = InputOwnershipPolicy()
-
-    // Issue 10: shared interaction block-reason hub; the service records gaze/
-    // face-side reasons into the same hub and relays effective changes to UI.
     val blockReasonHub = BlockReasonHub()
 
     private fun reportBlocked(reason: BlockReason) {
         blockReasonHub.record(reason, nowMonotonicMs())
     }
 
-    /** Reports suppression when a setup flow (calibration…) owns the screen. */
     private fun maybeReportSuppressed() {
         if (Suppression.isSuppressed()) reportBlocked(BlockReason.SUPPRESSED_DURING_CALIBRATION)
     }
@@ -317,20 +248,15 @@ class ActionDispatcher @Inject constructor(
     @Volatile private var lastDragEndMs = 0L
     @Volatile private var dragCurrentX = 0f
     @Volatile private var dragCurrentY = 0f
-
     @Volatile private var pinchStartTimeMs = 0L
     @Volatile private var pinchStartX = 0f
     @Volatile private var pinchStartY = 0f
     @Volatile private var pinchStartVelocity = 0f
     @Volatile private var pinchIsDrag = false
-
-    // Fix P1: pinch start mapped to pixels, used for the drag-start slop test.
     @Volatile private var pinchStartPixelX = 0f
     @Volatile private var pinchStartPixelY = 0f
-    // Fix (verified C4): last live dot position during a held pinch.
     @Volatile private var pinchLastX = 0f
     @Volatile private var pinchLastY = 0f
-
     @Volatile private var lastTapDispatchMs = 0L
     @Volatile private var pendingSecondTap = false
     @Volatile private var pendingSecondTapJob: Job? = null
@@ -348,29 +274,23 @@ class ActionDispatcher @Inject constructor(
     fun attachService(service: AccessibilityService) {
         accessibilityServiceRef = WeakReference(service)
         audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-
         settingsJobs.forEach { it.cancel() }
         settingsJobs.clear()
         serviceScope?.cancel()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CrashGuard.handler)
         serviceScope = scope
-
         settingsJobs.add(scope.launchGuarded("dispatcher settings", restart = true) {
             settingsRepository.userPreferences.collectGuarded("dispatcher settings") { prefs ->
                 currentPreferences = prefs
             }
         })
-
         settingsJobs.add(scope.launchGuarded("gesture map", restart = true) {
             settingsRepository.gestureMapConfig.collectGuarded("gesture map") { config ->
                 val newMap = buildDefaultMap()
-                config.entries.forEach { entry ->
-                    newMap[entry.key] = entry.action
-                }
+                config.entries.forEach { entry -> newMap[entry.key] = entry.action }
                 gestureMapRef.set(newMap)
             }
         })
-
         settingsJobs.add(scope.launchGuarded("custom gestures", restart = true) {
             settingsRepository.customGestures.collectGuarded("custom gestures") { gestures ->
                 customGesturesList = gestures.filter { it.isEnabled }
@@ -384,6 +304,7 @@ class ActionDispatcher @Inject constructor(
         serviceScope?.cancel()
         serviceScope = null
         resetTransientGestureState()
+        tapOwnership.reset()
         accessibilityServiceRef.clear()
         audioManager = null
     }
@@ -395,20 +316,23 @@ class ActionDispatcher @Inject constructor(
         lastTapDispatchMs = 0L
         lastDragStroke = null
         isDragging = false
+        wasEverDraggingThisPinch = false
         pinchIsDrag = false
         pinchStartTimeMs = 0L
+        pinchStartVelocity = 0f
         pinchStartPixelX = 0f
         pinchStartPixelY = 0f
+        pinchLastX = 0f
+        pinchLastY = 0f
+        dragCurrentX = 0f
+        dragCurrentY = 0f
     }
 
     internal fun actionAllowed(action: GestureAction): Boolean {
         if (!currentPreferences.gesturesEnabled) return false
-        if (Suppression.isSuppressed()) {
-            return action == GestureAction.TAP ||
-                action == GestureAction.DOUBLE_TAP ||
-                action == GestureAction.LONG_PRESS ||
-                action == GestureAction.DRAG ||
-                action == GestureAction.NONE
+        if (Suppression.isSuppressed() && action != GestureAction.NONE) {
+            maybeReportSuppressed()
+            return false
         }
         return true
     }
@@ -420,23 +344,9 @@ class ActionDispatcher @Inject constructor(
         cursorY: Float,
         screenWidth: Int,
         screenHeight: Int,
-        /**
-         * Fix A3: true when the coordinates come from the eye/gaze cursor.
-         * Gaze coordinates are screen-normalized and must be mapped straight
-         * to pixels (see [normalizeDirect]) instead of through the hand's
-         * dead-zone mapping — the previous mismatch made eye-mode pinch clicks
-         * land where the *hand* was, not where the user was looking.
-         */
         fromGaze: Boolean = false,
     ): Boolean {
-        if (engineState != GestureEngineState.ARMED &&
-            engineState != GestureEngineState.EXECUTING
-        ) {
-            // Fix (verified E2/G3): the engine still emits during COOLDOWN;
-            // the old silent return both gave the user no explanation AND left
-            // the previous pinch's pinchStartTimeMs live, so a later END could
-            // be misclassified as a long-press. Bookkeeping first, reason
-            // second, then reject.
+        if (engineState != GestureEngineState.ARMED && engineState != GestureEngineState.EXECUTING) {
             if (event is GestureEvent.Pinch && event.phase == PinchPhase.START) {
                 pinchStartTimeMs = nowMonotonicMs()
                 pinchStartX = cursorX
@@ -454,7 +364,6 @@ class ActionDispatcher @Inject constructor(
         }
 
         val service = accessibilityServiceRef.get()
-
         if (event is GestureEvent.Pinch) {
             when (event.phase) {
                 PinchPhase.START -> {
@@ -474,30 +383,20 @@ class ActionDispatcher @Inject constructor(
                     if (service == null) return false
                     val customPinchHold = matchCustomGesture(Pose.PINCH)
                     val action = customPinchHold ?: gestureMap[KEY_POSE_PINCH_HOLD] ?: GestureAction.DRAG
-                    if (!actionAllowed(action)) {
-                        maybeReportSuppressed()
-                        return false
-                    }
+                    if (!actionAllowed(action)) return false
                     val targetX = mapCursorX(cursorX, screenWidth, fromGaze)
                     val targetY = mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
                     pinchLastX = targetX
                     pinchLastY = targetY
                     if (action == GestureAction.DRAG) {
-                        // Fix P1: while the pinch has not moved beyond the slop
-                        // radius, this is still a pending TAP — do not start a
-                        // drag stroke. A clean tap is dispatched on END below.
                         if (!isDragging) {
                             val slop = maxOf(MIN_DRAG_START_SLOP_PX, screenWidth * DRAG_START_SLOP_FRACTION)
                             val dx = targetX - pinchStartPixelX
                             val dy = targetY - pinchStartPixelY
                             val dist = kotlin.math.sqrt(dx * dx + dy * dy)
                             if (dist < slop) return true
-                            // Fix #3: Long-press vs Drag protection: If the displacement is slow/small tremor while holding,
-                            // don't prematurely break into a drag stroke.
                             val elapsedMs = nowMonotonicMs() - pinchStartTimeMs
-                            if (elapsedMs > 200L && (dist / elapsedMs) < MIN_DRAG_VELOCITY_PX_MS) {
-                                return true
-                            }
+                            if (elapsedMs > 200L && (dist / elapsedMs) < MIN_DRAG_VELOCITY_PX_MS) return true
                         }
                         return dispatchDrag(service, targetX, targetY, screenWidth, screenHeight)
                     }
@@ -513,30 +412,17 @@ class ActionDispatcher @Inject constructor(
                     if (service == null) return false
                     val holdDurationMs = now - pinchStartTimeMs
                     if (isAccidentalMovingPinch(pinchStartVelocity, holdDurationMs)) {
-                        // Fix U-6b: this rejection used to be completely silent —
-                        // the user pinched, nothing happened, and nothing told them
-                        // why ("kabhi chalta hai kabhi nahi"). It now reports a
-                        // readable reason to the status pill like every other block.
                         reportBlocked(BlockReason.PINCH_MOVED_TOO_FAST)
                         return false
                     }
                     val customPinchAction = matchCustomGesture(Pose.PINCH)
                     val baseAction = customPinchAction ?: gestureMap[KEY_POSE_PINCH] ?: GestureAction.TAP
-                    // Fix #3: If the user deliberately held a motionless pinch for >= LONG_PRESS_DURATION_MS,
-                    // dispatch LONG_PRESS rather than an accidental quick tap
                     val action = if (baseAction == GestureAction.TAP && holdDurationMs >= LONG_PRESS_DURATION_MS) {
                         GestureAction.LONG_PRESS
                     } else {
                         baseAction
                     }
-                    if (!actionAllowed(action)) {
-                        maybeReportSuppressed()
-                        return false
-                    }
-                    // Fix (verified C4): if the pinch drifted beyond slop but
-                    // never engaged DRAG (slow drift blocked by the velocity
-                    // gate), the dot moved while the click was pinned at the
-                    // start — land on the dot's actual current position.
+                    if (!actionAllowed(action)) return false
                     val drift = kotlin.math.hypot(pinchLastX - pinchStartPixelX, pinchLastY - pinchStartPixelY)
                     val slopNow = maxOf(MIN_DRAG_START_SLOP_PX, screenWidth * DRAG_START_SLOP_FRACTION)
                     val overX = if (drift > slopNow) pinchLastX else null
@@ -550,11 +436,6 @@ class ActionDispatcher @Inject constructor(
 
         val action = when (event) {
             is GestureEvent.Swipe -> {
-                // Top bezel downward swipe pulls down the Notification Shade
-                // ONLY when the user kept the default down-swipe mapping.
-                // Fix (verified G12): the hard override ignored remapping —
-                // anyone who bound swipe-down to, say, Back still got the
-                // shade when the gesture began in the top 10%.
                 val mapped = gestureMap[swipeKey(event.direction)]
                 if (cursorY < 0.10f &&
                     event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN &&
@@ -584,28 +465,15 @@ class ActionDispatcher @Inject constructor(
             else -> currentPose
         }
 
-        if (!actionAllowed(action)) {
-            maybeReportSuppressed()
-            return false
-        }
-
+        if (!actionAllowed(action)) return false
         return executeAction(action, cursorX, cursorY, screenWidth, screenHeight, fromGaze)
     }
 
-    /**
-     * Maps a cursor coordinate to pixels. Fix D6: inputs are ALWAYS
-     * screen-normalized [0,1] — the old `value in 0f..1f` range sniffing
-     * remapped genuine pixel values that happened to lie in 0..1, and mis-
-     * classified normalized edge values; the source (gaze vs hand) is now an
-     * explicit flag instead of a guess from the magnitude.
-     */
     private fun mapCursorX(cursorX: Float, screenWidth: Int, fromGaze: Boolean): Float =
-        if (fromGaze) normalizeDirect(cursorX, screenWidth)
-        else normalizeToScreenX(cursorX, screenWidth)
+        if (fromGaze) normalizeDirect(cursorX, screenWidth) else normalizeToScreenX(cursorX, screenWidth)
 
     private fun mapCursorY(cursorY: Float, screenHeight: Int, fromGaze: Boolean, screenWidth: Int = 0): Float =
-        if (fromGaze) normalizeDirect(cursorY, screenHeight)
-        else normalizeToScreenY(cursorY, screenHeight, screenWidth)
+        if (fromGaze) normalizeDirect(cursorY, screenHeight) else normalizeToScreenY(cursorY, screenHeight, screenWidth)
 
     private fun executeAction(
         action: GestureAction,
@@ -617,6 +485,10 @@ class ActionDispatcher @Inject constructor(
         overridePixelX: Float? = null,
         overridePixelY: Float? = null,
     ): Boolean {
+        // Defensive second check closes the race where a setup-flow suppression
+        // starts between dispatch()'s policy check and execution of the Android
+        // accessibility action.
+        if (!actionAllowed(action)) return false
         val service = accessibilityServiceRef.get() ?: return false
         val targetPixelX = overridePixelX ?: mapCursorX(cursorX, screenWidth, fromGaze)
         val targetPixelY = overridePixelY ?: mapCursorY(cursorY, screenHeight, fromGaze, screenWidth)
@@ -635,42 +507,25 @@ class ActionDispatcher @Inject constructor(
             GestureAction.VOLUME_UP -> pressVolume(true)
             GestureAction.VOLUME_DOWN -> pressVolume(false)
             GestureAction.MEDIA_PLAY_PAUSE -> pressMediaPlayPause()
-            // Issue 14: unsupported actions FAIL HONESTLY — they are never
-            // silently substituted with an unrelated action (the old fallbacks
-            // sent screenshot → notifications and lock → home on API < 28).
             GestureAction.SCREENSHOT -> {
                 if (!ActionCapabilityChecker.isSupported(GestureAction.SCREENSHOT, Build.VERSION.SDK_INT)) {
                     reportBlocked(BlockReason.ACTION_UNSUPPORTED)
                     return false
                 }
-                performGlobalAction(
-                    service,
-                    AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT,
-                    GestureAction.SCREENSHOT,
-                )
+                performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT, GestureAction.SCREENSHOT)
             }
             GestureAction.LOCK_SCREEN -> {
                 if (!ActionCapabilityChecker.isSupported(GestureAction.LOCK_SCREEN, Build.VERSION.SDK_INT)) {
                     reportBlocked(BlockReason.ACTION_UNSUPPORTED)
                     return false
                 }
-                performGlobalAction(
-                    service,
-                    AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN,
-                    GestureAction.LOCK_SCREEN,
-                )
+                performGlobalAction(service, AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, GestureAction.LOCK_SCREEN)
             }
-            // Issue 15: every tap-like action flows through the cross-modality
-            // ownership policy (see InputOwnershipPolicy).
-            GestureAction.TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) {
-                dispatchTap(service, targetPixelX, targetPixelY)
-            } else {
+            GestureAction.TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) dispatchTap(service, targetPixelX, targetPixelY) else {
                 reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
                 true
             }
-            GestureAction.DOUBLE_TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) {
-                dispatchDoubleTap(service, targetPixelX, targetPixelY)
-            } else {
+            GestureAction.DOUBLE_TAP -> if (acquireTapOwnership(TAP_OWNER_HAND)) dispatchDoubleTap(service, targetPixelX, targetPixelY) else {
                 reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
                 true
             }
@@ -679,29 +534,16 @@ class ActionDispatcher @Inject constructor(
         }
     }
 
-    /**
-     * Issue 15: true if [source] may fire a tap right now (and marks it as
-     * fired). The deterministic cross-modality ownership policy lives in
-     * [InputOwnershipPolicy] — the first modality to actually arrive owns the
-     * slot; other modalities are refused within the serialization window.
-     */
     private fun acquireTapOwnership(source: String): Boolean =
         tapOwnership.tryAcquire(source, nowMonotonicMs())
 
-    /**
-     * Blink taps are gaze-only: their coordinates are screen-normalized and are
-     * mapped directly to pixels (Fix A1/A2 — previously they landed on the
-     * frozen (0.5, 0.5) cursor state, i.e. always the screen centre).
-     */
     fun dispatchBlinkTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int): Boolean {
         if (!currentPreferences.blinkClickEnabled) return false
-        val service = accessibilityServiceRef.get()
-        if (service == null) {
+        val service = accessibilityServiceRef.get() ?: run {
             reportBlocked(BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE)
             return false
         }
         if (!actionAllowed(GestureAction.TAP)) return false
-        // Issue 15: blink taps must never collide with a just-fired dwell/pinch tap.
         if (!acquireTapOwnership(TAP_OWNER_BLINK)) {
             reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
             return true
@@ -711,28 +553,16 @@ class ActionDispatcher @Inject constructor(
         return dispatchTap(service, pxX, pxY)
     }
 
-    fun dispatchDwellTap(
-        normX: Float,
-        normY: Float,
-        screenWidth: Int,
-        screenHeight: Int,
-        /** Fix A2: dwell ticks from the gaze cursor map directly; hand-path dwell keeps the hand mapping. */
-        fromGaze: Boolean = false,
-    ): Boolean {
-        val service = accessibilityServiceRef.get()
-        if (service == null) {
+    fun dispatchDwellTap(normX: Float, normY: Float, screenWidth: Int, screenHeight: Int, fromGaze: Boolean = false): Boolean {
+        val service = accessibilityServiceRef.get() ?: run {
             reportBlocked(BlockReason.ACCESSIBILITY_SERVICE_UNAVAILABLE)
             return false
         }
         if (!actionAllowed(GestureAction.TAP)) return false
-        // Issue 15: dwell (gaze or hand) must never collide with a just-fired tap
-        // from another modality.
         if (!acquireTapOwnership(if (fromGaze) TAP_OWNER_GAZE_DWELL else TAP_OWNER_HAND_DWELL)) {
             reportBlocked(BlockReason.ANOTHER_MODALITY_ACTED)
             return true
         }
-        // Fix D6: coordinates are always screen-normalized — no pixel/normalized
-        // range guessing.
         val pxX = if (fromGaze) normalizeDirect(normX, screenWidth) else normalizeToScreenX(normX, screenWidth)
         val pxY = if (fromGaze) normalizeDirect(normY, screenHeight) else normalizeToScreenY(normY, screenHeight, screenWidth)
         return dispatchTap(service, pxX, pxY)
@@ -742,18 +572,11 @@ class ActionDispatcher @Inject constructor(
         if (!currentPreferences.stationaryClickEnabled) return false
         if (holdDurationMs >= INTENTIONAL_PINCH_HOLD_MS) return false
         val norm = currentPreferences.sensitivity.coerceIn(0, 100) / 100f
-        val allowedVelocity = MIN_MOVING_PINCH_VELOCITY +
-            norm * (MAX_MOVING_PINCH_VELOCITY - MIN_MOVING_PINCH_VELOCITY)
+        val allowedVelocity = MIN_MOVING_PINCH_VELOCITY + norm * (MAX_MOVING_PINCH_VELOCITY - MIN_MOVING_PINCH_VELOCITY)
         return startVelocity > allowedVelocity
     }
 
-    private fun nowMonotonicMs(): Long {
-        return try {
-            SystemClock.elapsedRealtime()
-        } catch (_: Throwable) {
-            System.currentTimeMillis()
-        }
-    }
+    private fun nowMonotonicMs(): Long = runCatching { SystemClock.elapsedRealtime() }.getOrElse { System.currentTimeMillis() }
 
     private fun matchCustomGesture(pose: Pose): GestureAction? {
         val customPose = when (pose) {
@@ -768,15 +591,12 @@ class ActionDispatcher @Inject constructor(
             Pose.FOUR_FINGERS -> CustomGesturePose.FOUR_FINGERS
             Pose.NONE -> null
         } ?: return null
-
         return customGesturesList.find { gesture ->
             when (val trigger = gesture.triggerPose) {
-                is CustomGestureTrigger.PoseWithDirection ->
-                    trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
+                is CustomGestureTrigger.PoseWithDirection -> trigger.pose == customPose && trigger.direction == CustomGestureDirection.NONE
                 is CustomGestureTrigger.FingerCount -> {
                     val fingers = FINGERS_PER_POSE[pose] ?: return@find false
-                    fingers.size == trigger.extendedFingers &&
-                        (trigger.whichFingers.isEmpty() || fingers == trigger.whichFingers)
+                    fingers.size == trigger.extendedFingers && (trigger.whichFingers.isEmpty() || fingers == trigger.whichFingers)
                 }
                 is CustomGestureTrigger.LandmarkTemplateTrigger -> false
             }
@@ -793,8 +613,7 @@ class ActionDispatcher @Inject constructor(
     }
 
     private fun dispatchTap(service: AccessibilityService, x: Float, y: Float): Boolean {
-        val path = Path()
-        path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
+        val path = Path().apply { moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f)) }
         return submitGesture(service, GestureDescription.Builder().addStroke(
             GestureDescription.StrokeDescription(path, 0, TAP_DURATION_MS)
         ).build(), GestureAction.TAP)
@@ -818,8 +637,7 @@ class ActionDispatcher @Inject constructor(
     }
 
     private fun dispatchLongPress(service: AccessibilityService, x: Float, y: Float): Boolean {
-        val path = Path()
-        path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
+        val path = Path().apply { moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f)) }
         return submitGesture(service, GestureDescription.Builder().addStroke(
             GestureDescription.StrokeDescription(path, 0, LONG_PRESS_DURATION_MS)
         ).build(), GestureAction.LONG_PRESS)
@@ -829,41 +647,32 @@ class ActionDispatcher @Inject constructor(
         val mult = if (invertScrollDirection) -1f else 1f
         val effectiveDx = dx * mult
         val effectiveDy = dy * mult
-
-        // Fix (verified C2): the fling used to be force-relocated into a
-        // "safe band" (12-50% / 50-88% width, 15-48% height) so scrolling
-        // while hovering over a dialog, a split-screen pane or the lower half
-        // of the screen scrolled whatever was behind/beside the cursor. Anchor
-        // the stroke at the cursor itself with only a small edge margin so the
-        // stroke cannot truncate off-screen; the endpoint is clamped too.
         val marginX = screenWidth * 0.06f
         val marginY = screenHeight * 0.06f
         val scrollLengthX = screenWidth * 0.40f
         val scrollLengthY = screenHeight * 0.42f
-
         val safeStartX = x.coerceIn(marginX, screenWidth - marginX)
         val safeStartY = y.coerceIn(marginY, screenHeight - marginY)
-
-        val path = Path()
-        path.moveTo(safeStartX, safeStartY)
-        path.lineTo(
-            (safeStartX + effectiveDx * scrollLengthX).coerceIn(0f, screenWidth.toFloat()),
-            (safeStartY + effectiveDy * scrollLengthY).coerceIn(0f, screenHeight.toFloat()),
-        )
+        val path = Path().apply {
+            moveTo(safeStartX, safeStartY)
+            lineTo(
+                (safeStartX + effectiveDx * scrollLengthX).coerceIn(0f, screenWidth.toFloat()),
+                (safeStartY + effectiveDy * scrollLengthY).coerceIn(0f, screenHeight.toFloat()),
+            )
+        }
         return submitGesture(
             service,
             GestureDescription.Builder().addStroke(
                 GestureDescription.StrokeDescription(path, 0, SCROLL_DURATION_MS)
             ).build(),
-            if (effectiveDx > 0) GestureAction.SCROLL_RIGHT else if (effectiveDx < 0) GestureAction.SCROLL_LEFT else if (effectiveDy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP
+            if (effectiveDx > 0) GestureAction.SCROLL_RIGHT else if (effectiveDx < 0) GestureAction.SCROLL_LEFT else if (effectiveDy > 0) GestureAction.SCROLL_DOWN else GestureAction.SCROLL_UP,
         )
     }
 
     private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float, screenWidth: Int, screenHeight: Int): Boolean {
         wasEverDraggingThisPinch = true
         if (!isDragging) {
-            val path = Path()
-            path.moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f))
+            val path = Path().apply { moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f)) }
             lastDragStroke = GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
             isDragging = submitGesture(service, GestureDescription.Builder().addStroke(lastDragStroke!!).build(), GestureAction.DRAG)
             dragCurrentX = x
@@ -874,24 +683,17 @@ class ActionDispatcher @Inject constructor(
             pinchIsDrag = isDragging
             return isDragging
         }
-
-        // Fix B3: the per-step clamp used a hardcoded 1080px "screen". On 2K/QHD
-        // panels the steps were far too small (sluggish drags); on low-res panels
-        // too large (skippy drags). Use the real panel dimensions, per axis.
         val maxStepX = screenSafeStep(screenWidth.toFloat())
         val maxStepY = screenSafeStep(screenHeight.toFloat())
         val deltaX = (x - dragCurrentX).coerceIn(-maxStepX, maxStepX)
         val deltaY = (y - dragCurrentY).coerceIn(-maxStepY, maxStepY)
         if (deltaX == 0f && deltaY == 0f) return true
-        // Fix (audit #13): the clamp was computed but thrown away — the stroke
-        // jumped straight to the RAW target, so fast drags skipped across the
-        // path. Continue the stroke by the CLAMPED step and track the clamped
-        // position, so the injected path is exactly the smooth path we intended.
         val nextX = dragCurrentX + deltaX
         val nextY = dragCurrentY + deltaY
-        val path = Path()
-        path.moveTo(dragCurrentX, dragCurrentY)
-        path.lineTo(nextX, nextY)
+        val path = Path().apply {
+            moveTo(dragCurrentX, dragCurrentY)
+            lineTo(nextX, nextY)
+        }
         val nextStroke = lastDragStroke?.continueStroke(path, 0L, DRAG_STEP_DURATION_MS, true)
             ?: GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
         val submitted = submitGesture(service, GestureDescription.Builder().addStroke(nextStroke).build(), GestureAction.DRAG)
@@ -915,17 +717,7 @@ class ActionDispatcher @Inject constructor(
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
                     Timber.w("Gesture cancelled: %s", action)
-                    // Protected screen or permission dialog blocked accessibility touch injection.
-                    // DRAG continuations can be cancelled by framework queue congestion during fast
-                    // sweeps; do not report false-alarm security blockage for normal drag resets.
-                    if (action != GestureAction.DRAG) {
-                        reportBlocked(BlockReason.PROTECTED_SCREEN_BLOCKED)
-                    }
-                    // Fix (audit #16): a cancelled Android stroke while the user
-                    // is STILL pinching is recovered on the next move —
-                    // resetDragState() clears isDragging, and dispatchDrag's
-                    // !isDragging branch starts a fresh stroke at the current
-                    // position, so the drag resumes instead of silently dying.
+                    if (action != GestureAction.DRAG) reportBlocked(BlockReason.PROTECTED_SCREEN_BLOCKED)
                     if (action == GestureAction.DRAG) resetDragState()
                 }
             }, null)
@@ -965,7 +757,7 @@ class ActionDispatcher @Inject constructor(
             audio.adjustStreamVolume(
                 AudioManager.STREAM_MUSIC,
                 if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-                AudioManager.FLAG_SHOW_UI
+                AudioManager.FLAG_SHOW_UI,
             )
             _dispatchedEvents.tryEmit(action.name)
             onGestureDispatched?.invoke(action.name)
