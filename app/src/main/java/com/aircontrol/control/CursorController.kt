@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -49,16 +50,29 @@ class CursorControllerImpl @Inject constructor() : CursorController {
         // Stable palm anchor with a modest index-tip contribution for natural
         // pointing. All arithmetic stays primitive and allocation-free.
         val indexTip = lm[8]
-        val anchorX = (palmX * 0.80f + indexTip.x * INDEX_TIP_BLEND).coerceIn(0f, 1f)
-        val anchorY = (palmY * 0.80f + indexTip.y * INDEX_TIP_BLEND).coerceIn(0f, 1f)
+        val anchorX = (palmX * 0.80f + indexTip.x * INDEX_TIP_BLEND).takeIf(Float::isFinite)?.coerceIn(0f, 1f)
+            ?: return
+        val anchorY = (palmY * 0.80f + indexTip.y * INDEX_TIP_BLEND).takeIf(Float::isFinite)?.coerceIn(0f, 1f)
+            ?: return
 
-        val pinned = pinnedClickPosition()
-        val finalX = pinned?.first ?: anchorX
-        val finalY = pinned?.second ?: anchorY
+        val pinned = pinnedPacked.get()
+        val finalX: Float
+        val finalY: Float
+        if (pinned != UNPINNED) {
+            finalX = Float.fromBits((pinned ushr 32).toInt())
+            finalY = Float.fromBits(pinned.toInt())
+        } else {
+            finalX = anchorX
+            finalY = anchorY
+        }
         _cursorState.update { it.copy(x = finalX, y = finalY, isVisible = true) }
     }
 
     override fun updatePosition(x: Float, y: Float) {
+        if (!x.isFinite() || !y.isFinite()) {
+            hide()
+            return
+        }
         _cursorState.update {
             it.copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f), isVisible = true)
         }
@@ -79,30 +93,35 @@ class CursorControllerImpl @Inject constructor() : CursorController {
     }
 
     override fun hide() {
-        _cursorState.update { it.copy(isVisible = false) }
+        _cursorState.update { it.copy(isVisible = false, isPressed = false) }
         clearPinClick()
     }
 
-    @Volatile private var pinnedX: Float? = null
-    @Volatile private var pinnedY: Float? = null
+    /** Packed x/y state avoids a Pair allocation on the high-frequency cursor path. */
+    private val pinnedPacked = AtomicLong(UNPINNED)
 
     fun pinClickPosition(x: Float, y: Float) {
-        pinnedX = x
-        pinnedY = y
+        if (!x.isFinite() || !y.isFinite()) {
+            clearPinClick()
+            return
+        }
+        val packed = (Float.floatToRawIntBits(x.coerceIn(0f, 1f)).toLong() shl 32) or
+            (Float.floatToRawIntBits(y.coerceIn(0f, 1f)).toLong() and 0xffffffffL)
+        pinnedPacked.set(packed)
     }
 
     fun pinnedClickPosition(): Pair<Float, Float>? {
-        val x = pinnedX ?: return null
-        val y = pinnedY ?: return null
-        return x to y
+        val packed = pinnedPacked.get()
+        if (packed == UNPINNED) return null
+        return Float.fromBits((packed ushr 32).toInt()) to Float.fromBits(packed.toInt())
     }
 
     fun clearPinClick() {
-        pinnedX = null
-        pinnedY = null
+        pinnedPacked.set(UNPINNED)
     }
 
     companion object {
         private const val INDEX_TIP_BLEND = 0.20f
+        private const val UNPINNED = Long.MIN_VALUE
     }
 }
