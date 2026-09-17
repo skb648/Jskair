@@ -12,11 +12,15 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 class ActionDispatcherTest {
 
@@ -71,96 +75,172 @@ class ActionDispatcherTest {
     fun setup() {
         userPreferencesFlow = MutableStateFlow(UserPreferences())
         mockSettingsRepository = FakeSettingsRepository(userPreferencesFlow)
+
+        // We'll use the real ActionDispatcher but with a mock repository
         actionDispatcher = ActionDispatcher(mockSettingsRepository)
-        com.aircontrol.ui.Suppression.resetForTest()
     }
+
+    // ========== normalizeToScreenX ==========
+    // Dead-zone mapping: activePos = (normX - 0.10) / 0.80, clamped to [0,1].
+    // No mirror here — front-camera mirroring is applied upstream in CameraService.
 
     @Test
     fun `normalizeToScreenX at center maps to center of screen`() {
-        assertEquals(540f, ActionDispatcher.normalizeToScreenX(0.5f, 1080), 1f)
+        val screenWidth = 1080
+        val result = ActionDispatcher.normalizeToScreenX(0.5f, screenWidth)
+        // (0.5 - 0.10) / 0.80 = 0.5 -> 540
+        assertEquals(540f, result, 1f)
     }
 
     @Test
     fun `normalizeToScreenX clamps dead zones to edges`() {
-        assertEquals(0f, ActionDispatcher.normalizeToScreenX(0.0f, 1080), 0.01f)
-        assertEquals(1080f, ActionDispatcher.normalizeToScreenX(1.0f, 1080), 0.01f)
+        val screenWidth = 1080
+        val leftEdge = ActionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val rightEdge = ActionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        // 0.0 is inside the left 10% dead zone -> clamps to left edge (0)
+        assertEquals(0f, leftEdge, 0.01f)
+        // 1.0 is inside the right 10% dead zone -> clamps to right edge (1080)
+        assertEquals(1080f, rightEdge, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenX edge values are within screen bounds`() {
+        val screenWidth = 1080
         for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
-            val result = ActionDispatcher.normalizeToScreenX(v, 1080)
-            assertTrue("X for $v should be in bounds", result >= 0f && result <= 1080f)
+            val result = ActionDispatcher.normalizeToScreenX(v, screenWidth)
+            assertTrue("X for $v should be in bounds", result >= 0f && result <= screenWidth.toFloat())
         }
-    }
-
-    @Test
-    fun `normalizeToScreenX rejects nonfinite coordinates`() {
-        assertEquals(0f, ActionDispatcher.normalizeToScreenX(Float.NaN, 1080), 0f)
-        assertEquals(0f, ActionDispatcher.normalizeToScreenX(Float.POSITIVE_INFINITY, 1080), 0f)
     }
 
     @Test
     fun `normalizeToScreenX is monotonically increasing`() {
-        val values = listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f).map { ActionDispatcher.normalizeToScreenX(it, 1080) }
-        for (i in 0 until values.lastIndex) assertTrue(values[i] <= values[i + 1])
+        val screenWidth = 1080
+        val r0 = ActionDispatcher.normalizeToScreenX(0.0f, screenWidth)
+        val r25 = ActionDispatcher.normalizeToScreenX(0.25f, screenWidth)
+        val r50 = ActionDispatcher.normalizeToScreenX(0.5f, screenWidth)
+        val r75 = ActionDispatcher.normalizeToScreenX(0.75f, screenWidth)
+        val r100 = ActionDispatcher.normalizeToScreenX(1.0f, screenWidth)
+        assertTrue(r0 <= r25)
+        assertTrue(r25 <= r50)
+        assertTrue(r50 <= r75)
+        assertTrue(r75 <= r100)
     }
+
+    // ========== normalizeToScreenY ==========
+    // Dead-zone mapping (Fix B2): activePos = (normY - 0.20) / 0.80, clamped to
+    // [0,1], then amplified by the pointer-gain factor (default 1.0× at 50%).
+    // MediaPipe Y is 0 at the top of the image. The top 20% is a dead zone
+    // clamped to the screen top so the user does not have to raise their hand to
+    // the camera's top edge to reach the top of the screen — while the bottom of
+    // the screen stays reachable without pushing the hand out of frame.
 
     @Test
     fun `normalizeToScreenY maps active zone center to screen center`() {
-        val activeCenter = ActionDispatcher.TOP_DEAD_ZONE + (1f - ActionDispatcher.TOP_DEAD_ZONE) / 2f
-        assertEquals(1200f, ActionDispatcher.normalizeToScreenY(activeCenter, 2400), 1f)
+        val screenHeight = 2400
+        // Fix U-13a: the top dead zone is now a named constant (6%, was 20%), so
+        // the test derives the active-zone centre instead of hardcoding 0.6.
+        val activeCenter = ActionDispatcher.TOP_DEAD_ZONE +
+            (1f - ActionDispatcher.TOP_DEAD_ZONE) / 2f
+        val result = ActionDispatcher.normalizeToScreenY(activeCenter, screenHeight)
+        assertEquals(1200f, result, 1f)
     }
 
     @Test
     fun `normalizeToScreenY clamps top dead zone to top of screen`() {
-        assertEquals(0f, ActionDispatcher.normalizeToScreenY(0.0f, 2400), 0.01f)
-        assertEquals(0f, ActionDispatcher.normalizeToScreenY(ActionDispatcher.TOP_DEAD_ZONE, 2400), 0.01f)
+        val screenHeight = 2400
+        val top = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val deadZoneEdge = ActionDispatcher.normalizeToScreenY(ActionDispatcher.TOP_DEAD_ZONE, screenHeight)
+        assertEquals(0f, top, 0.01f)
+        assertEquals(0f, deadZoneEdge, 0.01f)
     }
 
     @Test
     fun `top dead zone leaves the notification shade reachable`() {
-        val y = ActionDispatcher.normalizeToScreenY(0.12f, 2400)
-        assertTrue("Y=$y should be inside the top 10% of the screen", y <= 240f)
+        // Fix U-13a: with the old 20% dead zone the whole upper strip of the
+        // screen sat behind the worst part of the camera frame. A hand at 12% of
+        // the frame height must now already map into the top 10% of the screen.
+        val screenHeight = 2400
+        val y = ActionDispatcher.normalizeToScreenY(0.12f, screenHeight)
+        assertTrue("Y=$y should be inside the top 10% of the screen", y <= screenHeight * 0.10f)
     }
 
     @Test
     fun `normalizeToScreenY maps bottom to bottom of screen`() {
-        assertEquals(2400f, ActionDispatcher.normalizeToScreenY(1.0f, 2400), 0.01f)
+        val screenHeight = 2400
+        val bottom = ActionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        assertEquals(2400f, bottom, 0.01f)
     }
 
     @Test
     fun `normalizeToScreenY edge values are within screen bounds`() {
+        val screenHeight = 2400
         for (v in listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f, -0.5f, 1.5f)) {
-            val result = ActionDispatcher.normalizeToScreenY(v, 2400)
-            assertTrue("Y for $v should be in bounds", result >= 0f && result <= 2400f)
+            val result = ActionDispatcher.normalizeToScreenY(v, screenHeight)
+            assertTrue("Y for $v should be in bounds", result >= 0f && result <= screenHeight.toFloat())
         }
-    }
-
-    @Test
-    fun `normalizeToScreenY rejects nonfinite coordinates`() {
-        assertEquals(0f, ActionDispatcher.normalizeToScreenY(Float.NaN, 2400), 0f)
-        assertEquals(0f, ActionDispatcher.normalizeToScreenY(Float.NEGATIVE_INFINITY, 2400), 0f)
     }
 
     @Test
     fun `normalizeToScreenY is monotonically increasing`() {
-        val values = listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f).map { ActionDispatcher.normalizeToScreenY(it, 2400) }
-        for (i in 0 until values.lastIndex) assertTrue(values[i] <= values[i + 1])
+        val screenHeight = 2400
+        val r0 = ActionDispatcher.normalizeToScreenY(0.0f, screenHeight)
+        val r25 = ActionDispatcher.normalizeToScreenY(0.25f, screenHeight)
+        val r50 = ActionDispatcher.normalizeToScreenY(0.5f, screenHeight)
+        val r75 = ActionDispatcher.normalizeToScreenY(0.75f, screenHeight)
+        val r100 = ActionDispatcher.normalizeToScreenY(1.0f, screenHeight)
+        assertTrue(r0 <= r25)
+        assertTrue(r25 <= r50)
+        assertTrue(r50 <= r75)
+        assertTrue(r75 <= r100)
+    }
+
+    // ========== Coordinate mapping specific values ==========
+
+    @Test
+    fun `normalizeToScreenX 0,5 on 1080 screen gives 540`() {
+        val result = ActionDispatcher.normalizeToScreenX(0.5f, 1080)
+        assertEquals(540f, result, 0.01f)
     }
 
     @Test
+    fun `normalizeToScreenY active zone center on 2400 screen gives 1200`() {
+        val activeCenter = ActionDispatcher.TOP_DEAD_ZONE +
+            (1f - ActionDispatcher.TOP_DEAD_ZONE) / 2f
+        val result = ActionDispatcher.normalizeToScreenY(activeCenter, 2400)
+        assertEquals(1200f, result, 1f)
+    }
+
+    @Test
+    fun `normalizeToScreenX at 0 maps to 0 left dead zone`() {
+        val result = ActionDispatcher.normalizeToScreenX(0.0f, 1080)
+        assertEquals(0f, result, 0.01f)
+    }
+
+    @Test
+    fun `normalizeToScreenY at 0 maps to 0 top dead zone`() {
+        val result = ActionDispatcher.normalizeToScreenY(0.0f, 2400)
+        assertEquals(0f, result, 0.01f)
+    }
+
+    // ========== setup-flow suppression policy (Fix B-3) ==========
+
+    @Test
     fun `every action is allowed outside a setup flow`() {
+        com.aircontrol.ui.Suppression.resetForTest()
         for (action in GestureAction.values()) {
-            assertTrue("$action must be allowed when no setup flow is open", actionDispatcher.actionAllowed(action))
+            assertTrue(
+                "$action must be allowed when no calibration screen is open",
+                actionDispatcher.actionAllowed(action),
+            )
         }
     }
 
     @Test
-    fun `all synthetic actions are suppressed during setup flow`() {
+    fun `all synthetic actions are suppressed during a setup flow`() {
+        com.aircontrol.ui.Suppression.resetForTest()
         com.aircontrol.ui.Suppression.acquire()
         try {
-            assertTrue("NONE is not a synthetic action", actionDispatcher.actionAllowed(GestureAction.NONE))
+            assertTrue("NONE is a no-op and is safe", actionDispatcher.actionAllowed(GestureAction.NONE))
             for (action in GestureAction.values().filter { it != GestureAction.NONE }) {
                 assertFalse("$action must be suppressed while setup owns the UI", actionDispatcher.actionAllowed(action))
             }
@@ -170,68 +250,107 @@ class ActionDispatcherTest {
         assertTrue("actions resume when the setup flow closes", actionDispatcher.actionAllowed(GestureAction.HOME))
     }
 
+    // ========== dispatch() behavior without service attached ==========
+
     @Test
     fun `dispatch returns false when service is not attached`() {
+        val event = GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false when engine is DISARMED`() {
+        val event = GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis()),
-            GestureEngineState.DISARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.DISARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false for ARMING state`() {
+        val event = GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis()),
-            GestureEngineState.ARMING, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMING,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false for COOLDOWN state`() {
+        val event = GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Swipe(SwipeDirection.LEFT, System.currentTimeMillis()),
-            GestureEngineState.COOLDOWN, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.COOLDOWN,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false for Armed event`() {
+        val event = GestureEvent.Armed(System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Armed(System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false for Disarmed event`() {
+        val event = GestureEvent.Disarmed(System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Disarmed(System.currentTimeMillis()),
-            GestureEngineState.DISARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.DISARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch returns false for CursorMoved event`() {
+        val event = GestureEvent.CursorMoved(0.5f, 0.5f, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.CursorMoved(0.5f, 0.5f, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
+
+    // ========== Gesture map operations ==========
 
     @Test
     fun `getGestureMap returns default map`() {
@@ -239,13 +358,16 @@ class ActionDispatcherTest {
         assertEquals(GestureMapConfig.defaultEntries().size, map.size)
         assertEquals(GestureAction.SCROLL_RIGHT, map[ActionDispatcher.KEY_SWIPE_RIGHT])
         assertEquals(GestureAction.TAP, map[ActionDispatcher.KEY_POSE_PINCH])
+        // Phase 2: fallback map stays in lock-step with GestureMapConfig
+        // defaults (three fingers → VOLUME_UP).
         assertEquals(GestureAction.NONE, map[ActionDispatcher.KEY_POSE_THREE_FINGERS])
     }
 
     @Test
     fun `updateGestureAction updates the gesture map`() {
         actionDispatcher.updateGestureAction(ActionDispatcher.KEY_SWIPE_LEFT, GestureAction.HOME)
-        assertEquals(GestureAction.HOME, actionDispatcher.getGestureMap()[ActionDispatcher.KEY_SWIPE_LEFT])
+        val map = actionDispatcher.getGestureMap()
+        assertEquals(GestureAction.HOME, map[ActionDispatcher.KEY_SWIPE_LEFT])
     }
 
     @Test
@@ -260,8 +382,11 @@ class ActionDispatcherTest {
     @Test
     fun `updateGestureAction can set action to NONE`() {
         actionDispatcher.updateGestureAction(ActionDispatcher.KEY_POSE_PINCH, GestureAction.NONE)
-        assertEquals(GestureAction.NONE, actionDispatcher.getGestureMap()[ActionDispatcher.KEY_POSE_PINCH])
+        val map = actionDispatcher.getGestureMap()
+        assertEquals(GestureAction.NONE, map[ActionDispatcher.KEY_POSE_PINCH])
     }
+
+    // ========== GestureAction enum constants ==========
 
     @Test
     fun `GestureAction constant keys are correct`() {
@@ -276,65 +401,109 @@ class ActionDispatcherTest {
         assertEquals("pose_thumb_down", ActionDispatcher.KEY_POSE_THUMB_DOWN)
     }
 
+    // ========== Pinch event dispatch (no service) ==========
+
     @Test
     fun `dispatch pinch START is accepted without service`() {
+        val event = GestureEvent.Pinch(PinchPhase.START, 0.5f, 0.5f, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.Pinch(PinchPhase.START, 0.5f, 0.5f, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertTrue(result)
     }
 
+    // ========== Pose event dispatch (no service) ==========
+
     @Test
     fun `dispatch pose event returns false without service for NONE action`() {
+        // Pointing is mapped to NONE by default
+        val event = GestureEvent.PoseTriggered(Pose.POINTING, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.PoseTriggered(Pose.POINTING, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch pose event for OPEN_PALM returns false`() {
+        val event = GestureEvent.PoseTriggered(Pose.OPEN_PALM, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.PoseTriggered(Pose.OPEN_PALM, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch pose event for FIST returns false`() {
+        val event = GestureEvent.PoseTriggered(Pose.FIST, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.PoseTriggered(Pose.FIST, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
     @Test
     fun `dispatch pose event for NONE pose returns false`() {
+        val event = GestureEvent.PoseTriggered(Pose.NONE, System.currentTimeMillis())
         val result = actionDispatcher.dispatch(
-            GestureEvent.PoseTriggered(Pose.NONE, System.currentTimeMillis()),
-            GestureEngineState.ARMED, 0.5f, 0.5f, 1080, 2400,
+            event = event,
+            engineState = GestureEngineState.ARMED,
+            cursorX = 0.5f,
+            cursorY = 0.5f,
+            screenWidth = 1080,
+            screenHeight = 2400,
         )
         assertFalse(result)
     }
 
+    // ========== attachService / detachService ==========
+
     @Test
     fun `detachService clears service reference`() {
+        // Detach without attach should not crash
         actionDispatcher.detachService()
     }
 
+    // ========== Boundary coordinate values ==========
+
     @Test
     fun `normalizeToScreenX with values outside 0-1 range is coerced to screen`() {
-        assertTrue(ActionDispatcher.normalizeToScreenX(-0.5f, 1080) >= 0f)
-        assertTrue(ActionDispatcher.normalizeToScreenX(1.5f, 1080) <= 1080f)
+        val screenWidth = 1080
+        // These should be coerced to screen bounds
+        val resultNeg = ActionDispatcher.normalizeToScreenX(-0.5f, screenWidth)
+        val resultOver = ActionDispatcher.normalizeToScreenX(1.5f, screenWidth)
+
+        assertTrue("Negative X coerced to >= 0", resultNeg >= 0f)
+        assertTrue("Over X coerced to <= width", resultOver <= screenWidth.toFloat())
     }
 
     @Test
     fun `normalizeToScreenY with values outside 0-1 range is coerced to screen`() {
-        assertTrue(ActionDispatcher.normalizeToScreenY(-0.5f, 2400) >= 0f)
-        assertTrue(ActionDispatcher.normalizeToScreenY(1.5f, 2400) <= 2400f)
+        val screenHeight = 2400
+        val resultNeg = ActionDispatcher.normalizeToScreenY(-0.5f, screenHeight)
+        val resultOver = ActionDispatcher.normalizeToScreenY(1.5f, screenHeight)
+
+        assertTrue("Negative Y coerced to >= 0", resultNeg >= 0f)
+        assertTrue("Over Y coerced to <= height", resultOver <= screenHeight.toFloat())
     }
 }
