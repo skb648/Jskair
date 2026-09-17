@@ -18,16 +18,7 @@ data class CursorState(
 interface CursorController {
     val cursorState: StateFlow<CursorState>
     fun updatePosition(handFrame: HandFrame)
-
-    /**
-     * Fix A1: direct normalized-position update for cursor sources that do not
-     * carry a full 21-landmark hand frame (gaze/eye cursor). The previous design
-     * fed a synthetic 1-landmark HandFrame into [updatePosition], which failed
-     * `isDetected` and called hide() — so the stored position stayed frozen at
-     * (0.5, 0.5) forever and blink-to-click always tapped the screen centre.
-     */
     fun updatePosition(x: Float, y: Float)
-
     fun performClick()
     fun releaseClick()
     fun show()
@@ -36,10 +27,7 @@ interface CursorController {
 
 @Singleton
 class CursorControllerImpl @Inject constructor() : CursorController {
-
-    private val _cursorState = MutableStateFlow(
-        CursorState(0.5f, 0.5f, false, false),
-    )
+    private val _cursorState = MutableStateFlow(CursorState(0.5f, 0.5f, false, false))
     override val cursorState: StateFlow<CursorState> = _cursorState
 
     override fun updatePosition(handFrame: HandFrame) {
@@ -47,54 +35,29 @@ class CursorControllerImpl @Inject constructor() : CursorController {
             hide()
             return
         }
-
-        /*
-         * Cursor anchor deliberately uses the PALM, not the index fingertip.
-         *
-         * The fingertip moves dramatically during pinch/swipe/drag. Using it as
-         * the pointer anchor makes the cursor fight the gesture recognizer: a
-         * click gesture moves the pointer while the user is trying to hold it
-         * still. A palm anchor is much more stable and leaves finger motion free
-         * for gesture intent.
-         *
-         * We use the four MCP joints for the main palm centre and blend in the
-         * wrist. MCPs are less affected by finger articulation; the wrist keeps
-         * the anchor natural when the hand is rotated.
-         */
         val lm = handFrame.landmarks
         if (lm.size < HandFrame.LANDMARK_COUNT) return
 
-        val mcp = listOf(lm[5], lm[9], lm[13], lm[17])
-        val mcpX = mcp.sumOf { it.x.toDouble() }.toFloat() / mcp.size
-        val mcpY = mcp.sumOf { it.y.toDouble() }.toFloat() / mcp.size
+        // Allocation-free palm center. This runs on every analyzed hand frame;
+        // avoid listOf(), iteration lambdas, sumOf(), and boxing on the hot path.
+        val mcpX = (lm[5].x + lm[9].x + lm[13].x + lm[17].x) * 0.25f
+        val mcpY = (lm[5].y + lm[9].y + lm[13].y + lm[17].y) * 0.25f
         val wrist = lm[0]
+        val palmX = mcpX * 0.70f + wrist.x * 0.30f
+        val palmY = mcpY * 0.70f + wrist.y * 0.30f
 
-        // 70% MCP centre + 30% wrist = stable palm anchor without a floating feel.
-        val palmX = (mcpX * 0.70f + wrist.x * 0.30f).coerceIn(0f, 1f)
-        val palmY = (mcpY * 0.70f + wrist.y * 0.30f).coerceIn(0f, 1f)
-
-        // Fix (audit #15): humans point with their fingertip, so a pure palm
-        // anchor reads as "the cursor is a little behind my finger". Blend 20%
-        // of the (static, pointing-hand) index tip into the palm anchor: the
-        // cursor drifts toward the fingertip the user is thinking with, while
-        // the palm keeps 80% of its stability during pinch/swipe articulation.
+        // Stable palm anchor with a modest index-tip contribution for natural
+        // pointing. All arithmetic stays primitive and allocation-free.
         val indexTip = lm[8]
-        val anchorX = (palmX * (1f - INDEX_TIP_BLEND) + indexTip.x * INDEX_TIP_BLEND).coerceIn(0f, 1f)
-        val anchorY = (palmY * (1f - INDEX_TIP_BLEND) + indexTip.y * INDEX_TIP_BLEND).coerceIn(0f, 1f)
+        val anchorX = (palmX * 0.80f + indexTip.x * INDEX_TIP_BLEND).coerceIn(0f, 1f)
+        val anchorY = (palmY * 0.80f + indexTip.y * INDEX_TIP_BLEND).coerceIn(0f, 1f)
 
         val pinned = pinnedClickPosition()
         val finalX = pinned?.first ?: anchorX
         val finalY = pinned?.second ?: anchorY
-
-        _cursorState.update {
-            it.copy(x = finalX, y = finalY, isVisible = true)
-        }
+        _cursorState.update { it.copy(x = finalX, y = finalY, isVisible = true) }
     }
 
-    /**
-     * Fix A1: gaze/synthetic cursors update the position directly. Coordinates
-     * are screen-normalized [0,1] and are made visible immediately.
-     */
     override fun updatePosition(x: Float, y: Float) {
         _cursorState.update {
             it.copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f), isVisible = true)
@@ -140,7 +103,6 @@ class CursorControllerImpl @Inject constructor() : CursorController {
     }
 
     companion object {
-        /** Fix (audit #15): fingertip blend weight — see updatePosition(HandFrame). */
         private const val INDEX_TIP_BLEND = 0.20f
     }
 }
