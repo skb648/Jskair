@@ -5,7 +5,6 @@ import kotlin.math.max
 
 /** The authoritative coordinate-space contract for the gaze pipeline. */
 object GazeCoordinateContract {
-    /** Analysis bitmap is mirrored once; the landmark pipeline compensates once. */
     const val ANALYSIS_MIRRORED_HORIZONTALLY = true
 }
 
@@ -42,20 +41,12 @@ data class GazeObservation(
     val quality: Float,
     val poseValid: Boolean,
     val poseConfidence: Float = 0f,
-    /** Cross-eye agreement in [0,1], using BOTH horizontal and vertical geometry. */
     val binocularAgreement: Float = 0f,
     val featureVector: CalibrationFeatureVector?,
     val timestampMs: Long,
     val faceDetected: Boolean,
 )
 
-/**
- * Converts per-eye iris geometry into a shared viewer-space gaze signal.
- *
- * The two eyes are first expressed in the same canonical coordinate system. The
- * cross-eye consistency score now checks horizontal AND vertical disagreement;
- * using only X could let a vertically corrupted eye pass the action gate.
- */
 data class RawIrisGaze(
     val h: Float,
     val v: Float,
@@ -70,6 +61,10 @@ data class RawIrisGaze(
         get() = h.isFinite() && v.isFinite() && eyesUsed in 1..2
 }
 
+/**
+ * Converts per-eye iris geometry into a shared viewer-space gaze signal.
+ * Cross-eye consistency checks horizontal AND vertical disagreement.
+ */
 object RawIrisGazeExtractor {
     private const val HORIZONTAL_HALF_APERTURE = 0.5f
     private const val MIN_EYE_QUALITY = 0.05f
@@ -77,8 +72,8 @@ object RawIrisGazeExtractor {
     private const val SPREAD_FULL_REJECT = 1.0f
 
     fun from(features: BinocularEyeFeatures): RawIrisGaze? {
-        val left = features.left?.takeIf { isUsable(it) }
-        val right = features.right?.takeIf { isUsable(it) }
+        val left = features.left?.takeIf(::isUsable)
+        val right = features.right?.takeIf(::isUsable)
         if (left == null && right == null) return null
 
         var weightedX = 0f
@@ -112,16 +107,14 @@ object RawIrisGazeExtractor {
             val rightX = right.irisViewerX / HORIZONTAL_HALF_APERTURE
             val leftY = left.irisViewerY / max(left.eyelidOpening * 0.5f, MIN_VERTICAL_HALF_APERTURE)
             val rightY = right.irisViewerY / max(right.eyelidOpening * 0.5f, MIN_VERTICAL_HALF_APERTURE)
-
             val agreementX = 1f - (abs(leftX - rightX) / SPREAD_FULL_REJECT).coerceIn(0f, 1f)
             val agreementY = 1f - (abs(leftY - rightY) / SPREAD_FULL_REJECT).coerceIn(0f, 1f)
-            // Both axes must agree. min() is intentionally conservative:
-            // a single badly estimated axis cannot hide behind a good axis.
             minOf(agreementX, agreementY)
         } else {
-            // Monocular gaze can move the cursor, but it has no cross-eye proof.
-            // GazeEligibilityPolicy separately makes this non-actionable.
-            0.5f
+            // 0 is an explicit "no binocular cross-check" sentinel. Monocular
+            // gaze may move the cursor but can never satisfy an action/calibration
+            // gate that requires bilateral evidence.
+            0f
         }
 
         return RawIrisGaze(
