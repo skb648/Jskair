@@ -280,8 +280,8 @@ class ActionDispatcher @Inject constructor(
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CrashGuard.handler)
         serviceScope = scope
         settingsJobs.add(scope.launchGuarded("dispatcher settings", restart = true) {
-            settingsRepository.userPreferences.collectGuarded("dispatcher settings") {
-                currentPreferences = it
+            settingsRepository.userPreferences.collectGuarded("dispatcher settings") { prefs ->
+                currentPreferences = prefs
             }
         })
         settingsJobs.add(scope.launchGuarded("gesture map", restart = true) {
@@ -304,6 +304,7 @@ class ActionDispatcher @Inject constructor(
         serviceScope?.cancel()
         serviceScope = null
         resetTransientGestureState()
+        tapOwnership.reset()
         accessibilityServiceRef.clear()
         audioManager = null
     }
@@ -315,10 +316,16 @@ class ActionDispatcher @Inject constructor(
         lastTapDispatchMs = 0L
         lastDragStroke = null
         isDragging = false
+        wasEverDraggingThisPinch = false
         pinchIsDrag = false
         pinchStartTimeMs = 0L
+        pinchStartVelocity = 0f
         pinchStartPixelX = 0f
         pinchStartPixelY = 0f
+        pinchLastX = 0f
+        pinchLastY = 0f
+        dragCurrentX = 0f
+        dragCurrentY = 0f
     }
 
     internal fun actionAllowed(action: GestureAction): Boolean {
@@ -430,17 +437,26 @@ class ActionDispatcher @Inject constructor(
         val action = when (event) {
             is GestureEvent.Swipe -> {
                 val mapped = gestureMap[swipeKey(event.direction)]
-                if (cursorY < 0.10f && event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN && mapped == GestureAction.SCROLL_DOWN) {
+                if (cursorY < 0.10f &&
+                    event.direction == com.aircontrol.gesture.model.SwipeDirection.DOWN &&
+                    mapped == GestureAction.SCROLL_DOWN
+                ) {
                     GestureAction.NOTIFICATIONS
-                } else mapped
+                } else {
+                    mapped
+                }
             }
             is GestureEvent.PoseTriggered -> {
                 val custom = matchCustomGesture(event.pose)
                 custom ?: gestureMap[poseKey(event.pose)]
             }
             is GestureEvent.PalmHome -> gestureMap[KEY_PALM_HOME]
-            is GestureEvent.CustomGestureTriggered -> customGesturesList.firstOrNull { it.id == event.gestureId && it.isEnabled }?.action
-            is GestureEvent.CursorMoved, is GestureEvent.Armed, is GestureEvent.Disarmed -> GestureAction.NONE
+            is GestureEvent.CustomGestureTriggered -> customGesturesList
+                .firstOrNull { it.id == event.gestureId && it.isEnabled }
+                ?.action
+            is GestureEvent.CursorMoved,
+            is GestureEvent.Armed,
+            is GestureEvent.Disarmed -> GestureAction.NONE
             is GestureEvent.Pinch -> GestureAction.NONE
         } ?: GestureAction.NONE
 
@@ -469,6 +485,9 @@ class ActionDispatcher @Inject constructor(
         overridePixelX: Float? = null,
         overridePixelY: Float? = null,
     ): Boolean {
+        // Defensive second check closes the race where a setup-flow suppression
+        // starts between dispatch()'s policy check and execution of the Android
+        // accessibility action.
         if (!actionAllowed(action)) return false
         val service = accessibilityServiceRef.get() ?: return false
         val targetPixelX = overridePixelX ?: mapCursorX(cursorX, screenWidth, fromGaze)
