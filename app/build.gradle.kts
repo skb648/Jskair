@@ -5,20 +5,15 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Release/update safety: explicit VERSION_CODE wins; CI falls back to the
-// workflow run number so every CI-built artifact has a monotonically increasing
-// Android versionCode. Local builds retain a stable baseline.
 val versionCodeBase = 2
 val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
 val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-val resolvedVersionCode = versionCodeFromEnv ?: ciRunNumber ?: versionCodeBase
-
+val resolvedVersionCode = versionCodeFromEnv ?: maxOf(versionCodeBase, ciRunNumber ?: 0)
 require(resolvedVersionCode > 0) { "versionCode must be positive" }
 
 android {
     namespace = "com.aircontrol"
     compileSdk = 37
-
     signingConfigs {
         create("debugConfig") {
             val debugKs = file("${rootDir}/debug.keystore")
@@ -39,7 +34,6 @@ android {
             enableV4Signing = true
         }
     }
-
     defaultConfig {
         applicationId = "com.aircontrol"
         minSdk = 26
@@ -48,7 +42,6 @@ android {
         versionName = "1.0.1"
         testInstrumentationRunner = "com.aircontrol.HiltTestRunner"
     }
-
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -65,48 +58,30 @@ android {
             }
         }
         debug {
-            if (file("${rootDir}/debug.keystore").exists()) {
-                signingConfig = signingConfigs.getByName("debugConfig")
-            }
+            if (file("${rootDir}/debug.keystore").exists()) signingConfig = signingConfigs.getByName("debugConfig")
             isMinifyEnabled = false
             isDebuggable = true
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
     }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = false
     }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
+    buildFeatures { compose = true; buildConfig = true }
     packaging {
         resources {
-            excludes += setOf(
-                "META-INF/AL2.0",
-                "META-INF/LGPL2.1",
-                "META-INF/DEPENDENCIES",
-                "META-INF/LICENSE",
-                "META-INF/LICENSE.txt",
-                "META-INF/NOTICE",
-                "META-INF/NOTICE.txt",
-            )
+            excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1", "META-INF/DEPENDENCIES", "META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt")
         }
         jniLibs { useLegacyPackaging = false }
     }
-
     lint {
         warningsAsErrors = false
         abortOnError = true
         checkDependencies = true
     }
-
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
