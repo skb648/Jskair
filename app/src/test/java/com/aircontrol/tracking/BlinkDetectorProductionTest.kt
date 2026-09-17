@@ -11,8 +11,17 @@ class BlinkDetectorProductionTest {
         detector.update(0.08f, 1050L)
         detector.update(Float.NaN, 1100L)
         assertFalse(detector.isClosed())
-        assertEquals(BlinkResult.NONE, detector.update(0.08f, 1200L))
+        assertEquals(BlinkResult.NONE, detector.update(0.40f, 1200L))
         assertFalse(detector.isClosed())
+    }
+
+    @Test fun infiniteEarCannotCompleteBlink() {
+        val detector = BlinkDetector()
+        detector.update(0.40f, 1000L)
+        detector.update(0.08f, 1050L)
+        detector.update(Float.POSITIVE_INFINITY, 1100L)
+        assertFalse(detector.isClosed())
+        assertEquals(BlinkResult.NONE, detector.update(0.40f, 1200L))
     }
 
     @Test fun resetClearsInProgressBlinkAndBaseline() {
