@@ -10,9 +10,10 @@ data class GazeUncertainty(
     val poseValid: Boolean,
     val modelQuality: Float?,
     val modelAbsent: Boolean,
-    val eyesUsed: Int = 2,
+    /** Number of usable eyes that contributed to the current gaze sample. */
+    val eyesUsed: Int = 0,
 ) {
-    val eyesCorrupted: Boolean get() = eyeQuality < GazeEligibilityPolicy.SEVERE_EYE_CORRUPTION
+    val eyesCorrupted: Boolean get() = !eyeQuality.isFinite() || eyeQuality < GazeEligibilityPolicy.SEVERE_EYE_CORRUPTION
 }
 
 enum class GazeEligibility {
@@ -28,8 +29,11 @@ enum class GazeEligibility {
 }
 
 /**
- * Separates cursor visibility from action safety. A frame may be useful for
- * positioning the cursor without being trustworthy enough to click.
+ * Separates cursor visibility from action safety.
+ *
+ * This policy is deliberately fail-closed for action eligibility: missing,
+ * malformed, non-finite, monocular, stale, or otherwise insufficient evidence
+ * can never be promoted to ACTIONABLE by a default or an invalid number.
  */
 object GazeEligibilityPolicy {
     const val ACTION_QUALITY = 0.45f
@@ -41,20 +45,34 @@ object GazeEligibilityPolicy {
     const val BINOCULAR_DISAGREEMENT_FLOOR = 0.25f
     const val CALIBRATION_MIN_EAR = 0.16f
     const val CALIBRATION_AGREEMENT = 0.5f
-    /** A pose that cannot meet this floor is display-only, never actionable. */
     const val ACTION_POSE_CONFIDENCE_FLOOR = 0.55f
 
     fun evaluate(u: GazeUncertainty): Decision {
-        if (!u.faceDetected) return Decision(GazeEligibility.NOTHING, GazeDiagnostics.RejectionReason.FACE_LOST)
-        if (u.eyesCorrupted) return Decision(GazeEligibility.NOTHING, GazeDiagnostics.RejectionReason.LOW_EYE_QUALITY)
+        if (!u.faceDetected) {
+            return Decision(GazeEligibility.NOTHING, GazeDiagnostics.RejectionReason.FACE_LOST)
+        }
+
+        if (!u.eyeQuality.isFinite() || !u.binocularAgreement.isFinite() ||
+            u.poseConfidence?.isFinite() == false || u.headAngleDeg?.isFinite() == false ||
+            u.modelQuality?.isFinite() == false
+        ) {
+            return Decision(GazeEligibility.NOTHING, GazeDiagnostics.RejectionReason.INVALID_FEATURE_VECTOR)
+        }
+
+        if (u.eyesCorrupted) {
+            return Decision(GazeEligibility.NOTHING, GazeDiagnostics.RejectionReason.LOW_EYE_QUALITY)
+        }
 
         val canShow = u.eyeQuality >= VISIBLE_QUALITY &&
             (u.headAngleDeg == null || u.headAngleDeg <= VISIBLE_HEAD_LIMIT_DEG)
         if (!canShow) {
             return Decision(
                 GazeEligibility.UPDATE_ONLY,
-                if (u.eyeQuality < VISIBLE_QUALITY) GazeDiagnostics.RejectionReason.LOW_EYE_QUALITY
-                else GazeDiagnostics.RejectionReason.LOW_POSE_QUALITY,
+                if (u.eyeQuality < VISIBLE_QUALITY) {
+                    GazeDiagnostics.RejectionReason.LOW_EYE_QUALITY
+                } else {
+                    GazeDiagnostics.RejectionReason.LOW_POSE_QUALITY
+                },
             )
         }
 
@@ -62,15 +80,14 @@ object GazeEligibilityPolicy {
         val modelUnreliable = !u.modelAbsent && (u.modelQuality ?: 0f) < MODEL_QUALITY_FLOOR
         val disagreement = u.binocularAgreement < BINOCULAR_DISAGREEMENT_FLOOR
         val poseUnreliable = !u.poseValid || (u.poseConfidence ?: 0f) < ACTION_POSE_CONFIDENCE_FLOOR
-        // One-eye gaze is useful for cursor movement but never sufficient evidence
-        // for a blind action. It must be confirmed by both eyes.
-        val monocular = u.eyesUsed < 2
+        val notBilateral = u.eyesUsed != 2
+
         val canAct = u.eyeQuality >= ACTION_QUALITY &&
             !headTooTurnedToAct &&
             !modelUnreliable &&
             !disagreement &&
             !poseUnreliable &&
-            !monocular
+            !notBilateral
 
         return if (canAct) {
             Decision(GazeEligibility.ACTIONABLE, null)
@@ -81,7 +98,7 @@ object GazeEligibilityPolicy {
                     u.eyeQuality < ACTION_QUALITY -> GazeDiagnostics.RejectionReason.CONFIDENCE_REJECTED
                     poseUnreliable || headTooTurnedToAct -> GazeDiagnostics.RejectionReason.LOW_POSE_QUALITY
                     modelUnreliable -> GazeDiagnostics.RejectionReason.MODEL_REJECTED
-                    disagreement || monocular -> GazeDiagnostics.RejectionReason.INVALID_FEATURE_VECTOR
+                    disagreement || notBilateral -> GazeDiagnostics.RejectionReason.INVALID_FEATURE_VECTOR
                     else -> GazeDiagnostics.RejectionReason.INVALID_FEATURE_VECTOR
                 },
             )
@@ -89,11 +106,15 @@ object GazeEligibilityPolicy {
     }
 
     fun calibrationEligible(u: GazeUncertainty, eyeOpenness: Float): Boolean =
-        u.faceDetected && u.poseValid &&
+        u.faceDetected &&
+            u.eyesUsed == 2 &&
+            u.poseValid &&
+            u.eyeQuality.isFinite() &&
+            u.binocularAgreement.isFinite() &&
+            eyeOpenness.isFinite() &&
             u.eyeQuality >= ACTION_QUALITY &&
             eyeOpenness > CALIBRATION_MIN_EAR &&
-            u.binocularAgreement >= CALIBRATION_AGREEMENT &&
-            u.eyesUsed >= 2
+            u.binocularAgreement >= CALIBRATION_AGREEMENT
 
     data class Decision(
         val eligibility: GazeEligibility,
