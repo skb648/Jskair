@@ -5,20 +5,21 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-val versionCodeBase = 1
+// Release/update safety: explicit VERSION_CODE wins; CI falls back to the
+// workflow run number so every CI-built artifact has a monotonically increasing
+// Android versionCode. Local builds retain a stable baseline.
+val versionCodeBase = 2
 val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
-val resolvedVersionCode = versionCodeFromEnv ?: versionCodeBase
+val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+val resolvedVersionCode = versionCodeFromEnv ?: ciRunNumber ?: versionCodeBase
+
+require(resolvedVersionCode > 0) { "versionCode must be positive" }
 
 android {
     namespace = "com.aircontrol"
     compileSdk = 37
 
     signingConfigs {
-        // CI fix: debug.keystore is developer-local (gitignored), so a hard
-        // reference made `:app:validateSigningDebug` FAIL on every clean
-        // checkout — the debug APK could not be built by CI at all. The config
-        // is now only wired up when the file is actually present; otherwise the
-        // build falls back to Android's own auto-generated debug key.
         create("debugConfig") {
             val debugKs = file("${rootDir}/debug.keystore")
             if (debugKs.exists()) {
@@ -64,7 +65,6 @@ android {
             }
         }
         debug {
-            // Only use the custom debug key when it exists on this machine.
             if (file("${rootDir}/debug.keystore").exists()) {
                 signingConfig = signingConfigs.getByName("debugConfig")
             }
