@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.RequiresApi
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.Executor
 import javax.inject.Inject
@@ -25,19 +26,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Experimental: turns this device into a Bluetooth HID mouse using the public
- * android.bluetooth.BluetoothHidDevice API (Android 9 / API 28+).
- *
- * IMPORTANT (see NativeHidMouse-POC.md):
- *  - This whole path is opt-in and ISOLATED. It never touches the existing
- *    accessibility/dispatchGesture control path, and no cursor is rendered.
- *  - The RECEIVER device's Android input system owns the cursor. This class
- *    only transports relative mouse reports.
- *  - OEM support varies (Samsung/Xiaomi/etc. may restrict HID Device mode).
- *    Every failure degrades to a clean [NativeHidMouseStatus] — never a crash.
- *
- * Independently implemented against the public Android SDK documentation;
- * no third-party code copied (PhonePad was NOT used as source — license risk).
+ * Experimental Bluetooth HID mouse path. Public BluetoothHidDevice APIs are
+ * available from Android 9 / API 28; all entry points are guarded so the app's
+ * minSdk 26 remains valid and unsupported devices degrade to a clean state.
  */
 private const val TAG = "NativeHidController"
 
@@ -45,7 +36,6 @@ private const val TAG = "NativeHidController"
 class NativeHidMouseController @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : NativeMouseInput {
-
     private val _status = MutableStateFlow(NativeHidMouseStatus(state = NativeHidMouseState.OFF))
     val status: StateFlow<NativeHidMouseStatus> = _status.asStateFlow()
 
@@ -53,32 +43,25 @@ class NativeHidMouseController @Inject constructor(
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHost: BluetoothDevice? = null
     private var wantActive = false
-
-    /** Reused report buffer — one allocation for the whole session. */
     private val reportBuffer = ByteArray(HidMouseDescriptor.REPORT_SIZE)
-
     private val callbackExecutor: Executor = Executor { it.run() }
 
+    @RequiresApi(Build.VERSION_CODES.P)
     private val sdpSettings by lazy {
         BluetoothHidDeviceAppSdpSettings(
-            /* name = */ "AirControl Mouse",
-            /* description = */ "AirControl hand-tracking mouse (experimental)",
-            /* provider = */ "AirControl",
-            /* subclass = */ BluetoothHidDevice.SUBCLASS1_MOUSE,
-            /* descriptors = */ HidMouseDescriptor.DESCRIPTOR,
+            "AirControl Mouse",
+            "AirControl hand-tracking mouse (experimental)",
+            "AirControl",
+            BluetoothHidDevice.SUBCLASS1_MOUSE,
+            HidMouseDescriptor.DESCRIPTOR,
         )
     }
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             Log.i(TAG, "HID app status: registered=$registered host=${pluggedDevice?.address}")
-            if (registered) {
-                setState(NativeHidMouseState.REGISTERED)
-            } else if (wantActive) {
-                // Unregistered while the user wants the feature — OEM refusal or
-                // profile teardown. Report it; do not retry-loop.
-                setState(NativeHidMouseState.ERROR, "HID app unregistered (OEM/profile limitation)")
-            }
+            if (registered) setState(NativeHidMouseState.REGISTERED)
+            else if (wantActive) setState(NativeHidMouseState.ERROR, "HID app unregistered (OEM/profile limitation)")
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
@@ -88,33 +71,18 @@ class NativeHidMouseController @Inject constructor(
                     connectedHost = device
                     setState(NativeHidMouseState.CONNECTED, host = device)
                 }
-                BluetoothProfile.STATE_CONNECTING ->
-                    setState(NativeHidMouseState.CONNECTING, host = device)
-                BluetoothProfile.STATE_DISCONNECTING ->
-                    setState(NativeHidMouseState.CONNECTED, host = device)
+                BluetoothProfile.STATE_CONNECTING -> setState(NativeHidMouseState.CONNECTING, host = device)
+                BluetoothProfile.STATE_DISCONNECTING -> setState(NativeHidMouseState.CONNECTED, host = device)
                 else -> {
                     connectedHost = null
                     if (wantActive) setState(NativeHidMouseState.REGISTERED) else setState(NativeHidMouseState.OFF)
                 }
             }
         }
-
-        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
-            Log.d(TAG, "onGetReport (type=$type id=$id) — not implemented")
-        }
-
-        override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) {
-            Log.d(TAG, "onSetReport (type=$type id=$id)")
-        }
-
-        override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) {
-            Log.d(TAG, "onSetProtocol (protocol=$protocol)")
-        }
-
-        override fun onInterruptData(device: BluetoothDevice, reportId: Byte, data: ByteArray?) {
-            Log.d(TAG, "onInterruptData (reportId=$reportId)")
-        }
-
+        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) { Log.d(TAG, "onGetReport type=$type id=$id") }
+        override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) { Log.d(TAG, "onSetReport type=$type id=$id") }
+        override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) { Log.d(TAG, "onSetProtocol protocol=$protocol") }
+        override fun onInterruptData(device: BluetoothDevice, reportId: Byte, data: ByteArray?) { Log.d(TAG, "onInterruptData reportId=$reportId") }
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
             Log.i(TAG, "Virtual cable unplugged by ${device.address}")
             connectedHost = null
@@ -127,8 +95,8 @@ class NativeHidMouseController @Inject constructor(
             if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                 BluetoothAdapter.STATE_ON -> {
-                    Log.i(TAG, "Bluetooth on — (re)trying HID registration")
-                    if (wantActive) registerProxy()
+                    Log.i(TAG, "Bluetooth on — trying HID registration")
+                    if (wantActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) registerProxy()
                 }
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                     Log.w(TAG, "Bluetooth off — HID path suspended")
@@ -140,14 +108,12 @@ class NativeHidMouseController @Inject constructor(
         }
     }
 
-    /** True when the platform exposes the public BluetoothHidDevice API (API 28+). */
     val isHidApiAvailable: Boolean
         get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
-    /** Feature toggle ON: detect capabilities and try to register. Safe to call repeatedly. */
     @Synchronized
     fun start() {
-        if (wantActive) return // already started; stop() resets the latch
+        if (wantActive) return
         wantActive = true
         if (!isHidApiAvailable) {
             setState(NativeHidMouseState.UNSUPPORTED, "BluetoothHidDevice requires Android 9+ (API 28); device runs API ${Build.VERSION.SDK_INT}")
@@ -161,17 +127,14 @@ class NativeHidMouseController @Inject constructor(
         }
         try {
             context.registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
-        } catch (_: Exception) {
-            // Already registered or OEM restriction on receiver registration.
-        }
+        } catch (_: Exception) { }
         if (adapter?.isEnabled != true) {
             setState(NativeHidMouseState.AVAILABLE, "Bluetooth is off — turn it on to register the HID mouse")
             return
         }
-        registerProxy()
+        registerProxyIfSupported()
     }
 
-    /** Feature toggle OFF: unregister the HID app and release the proxy. */
     @Synchronized
     fun stop() {
         wantActive = false
@@ -179,26 +142,13 @@ class NativeHidMouseController @Inject constructor(
         hidDevice = null
         connectedHost = null
         if (hid != null) {
-            try {
-                hid.unregisterApp()
-            } catch (se: SecurityException) {
-                Log.w(TAG, "unregisterApp needs BLUETOOTH_CONNECT: ${se.message}")
-            } catch (t: Throwable) {
-                Log.w(TAG, "unregisterApp failed: ${t.message}")
-            }
-            try {
-                adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid)
-            } catch (_: Throwable) {
-            }
+            try { hid.unregisterApp() } catch (se: SecurityException) { Log.w(TAG, "unregisterApp permission: ${se.message}") } catch (t: Throwable) { Log.w(TAG, "unregisterApp failed: ${t.message}") }
+            try { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) } catch (_: Throwable) { }
         }
-        try {
-            context.unregisterReceiver(bluetoothStateReceiver)
-        } catch (_: Exception) {
-        }
+        try { context.unregisterReceiver(bluetoothStateReceiver) } catch (_: Exception) { }
         setState(NativeHidMouseState.OFF)
     }
 
-    /** Bonded (system-paired) devices usable as the HID host/receiver. */
     @SuppressLint("MissingPermission")
     @Synchronized
     fun bondedHosts(): List<HidHostInfo> {
@@ -209,46 +159,31 @@ class NativeHidMouseController @Inject constructor(
                 .map { HidHostInfo(name = it.name ?: it.address, address = it.address) }
                 .sortedBy { it.name.lowercase() }
         } catch (se: SecurityException) {
-            Log.w(TAG, "bondedDevices needs BLUETOOTH_CONNECT: ${se.message}")
+            Log.w(TAG, "bondedDevices permission: ${se.message}")
             emptyList()
         }
     }
 
-    /** Initiate the HID connection to an already system-paired host. */
     @Synchronized
     fun connectHost(address: String) {
         val adapter = this.adapter ?: return setStateSafe(NativeHidMouseState.ERROR, "Bluetooth adapter unavailable")
         val hid = hidDevice ?: return setStateSafe(NativeHidMouseState.ERROR, "HID device not registered yet")
-        val device = try {
-            adapter.getRemoteDevice(address)
-        } catch (t: Throwable) {
-            return setStateSafe(NativeHidMouseState.ERROR, "Invalid host address: $address")
-        }
+        val device = try { adapter.getRemoteDevice(address) } catch (t: Throwable) { return setStateSafe(NativeHidMouseState.ERROR, "Invalid host address") }
         try {
             setState(NativeHidMouseState.CONNECTING, host = device)
             val ok = hid.connect(device)
-            if (!ok) setState(NativeHidMouseState.ERROR, "HID connect() returned false (OEM may refuse the HID Device role)")
-        } catch (se: SecurityException) {
-            setState(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission: ${se.message}")
-        } catch (t: Throwable) {
-            setState(NativeHidMouseState.ERROR, "HID connect failed: ${t.message}")
-        }
+            if (!ok) setStateSafe(NativeHidMouseState.ERROR, "HID connect() returned false (OEM may refuse the HID Device role)")
+        } catch (se: SecurityException) { setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission") }
+          catch (t: Throwable) { setStateSafe(NativeHidMouseState.ERROR, "HID connect failed: ${t.message}") }
     }
 
     @Synchronized
     fun disconnectHost() {
         val hid = hidDevice ?: return
         val host = connectedHost ?: return
-        try {
-            hid.disconnect(host)
-        } catch (se: SecurityException) {
-            Log.w(TAG, "disconnect needs BLUETOOTH_CONNECT: ${se.message}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "disconnect failed: ${t.message}")
-        }
+        try { hid.disconnect(host) } catch (se: SecurityException) { Log.w(TAG, "disconnect permission: ${se.message}") } catch (t: Throwable) { Log.w(TAG, "disconnect failed: ${t.message}") }
     }
 
-    /** [NativeMouseInput] — called per hand frame by the adapter; never blocks. */
     @Synchronized
     override fun move(dx: Int, dy: Int): Boolean {
         if (dx == 0 && dy == 0) return true
@@ -259,7 +194,7 @@ class NativeHidMouseController @Inject constructor(
         return try {
             hid.sendReport(host, HidMouseDescriptor.REPORT_ID, reportBuffer)
         } catch (se: SecurityException) {
-            setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission: ${se.message}")
+            setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission")
             false
         } catch (t: Throwable) {
             Log.w(TAG, "sendReport failed: ${t.message}")
@@ -267,33 +202,32 @@ class NativeHidMouseController @Inject constructor(
         }
     }
 
-    // ------------------- internals -------------------
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun registerProxyIfSupported() = registerProxy()
 
+    @RequiresApi(Build.VERSION_CODES.P)
     private fun registerProxy() {
         if (hidDevice != null) return
         setState(NativeHidMouseState.REGISTERING)
         val listener = object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                val hid = proxy as? BluetoothHidDevice
-                if (hid == null) {
-                    setStateSafe(NativeHidMouseState.ERROR, "HID_DEVICE proxy is not a BluetoothHidDevice")
+                val hid = proxy as? BluetoothHidDevice ?: run {
+                    setStateSafe(NativeHidMouseState.ERROR, "HID_DEVICE proxy unavailable")
                     return
                 }
                 hidDevice = hid
                 try {
                     val ok = hid.registerApp(sdpSettings, qosSettings(), qosSettings(), callbackExecutor, hidCallback)
-                    if (!ok) setStateSafe(NativeHidMouseState.ERROR, "registerApp returned false (OEM may block the HID Device role)")
+                    if (!ok) setStateSafe(NativeHidMouseState.ERROR, "registerApp returned false (OEM may block HID Device role)")
                 } catch (se: SecurityException) {
-                    setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission: ${se.message}")
+                    setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission")
                 } catch (t: Throwable) {
                     setStateSafe(NativeHidMouseState.ERROR, "registerApp failed: ${t.message}")
                 }
             }
-
             override fun onServiceDisconnected(profile: Int) {
                 Log.w(TAG, "HID profile service disconnected")
-                hidDevice = null
-                connectedHost = null
+                hidDevice = null; connectedHost = null
                 if (wantActive) setStateSafe(NativeHidMouseState.AVAILABLE, "Bluetooth HID service disconnected — toggle the feature to retry")
             }
         }
@@ -302,22 +236,22 @@ class NativeHidMouseController @Inject constructor(
                 setState(NativeHidMouseState.ERROR, "getProfileProxy failed (HID Device role unavailable on this build)")
             }
         } catch (se: SecurityException) {
-            setState(NativeHidMouseState.ERROR, "Missing Bluetooth permission: ${se.message}")
+            setState(NativeHidMouseState.ERROR, "Missing Bluetooth permission")
         } catch (t: Throwable) {
             setState(NativeHidMouseState.ERROR, "getProfileProxy failed: ${t.message}")
         }
     }
 
-    private fun qosSettings(): BluetoothHidDeviceAppQosSettings? =
-        try {
-            BluetoothHidDeviceAppQosSettings(
-                BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
-                0, 0, 0, 0, 0,
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "QoS settings unavailable: ${t.message}")
-            null
-        }
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun qosSettings(): BluetoothHidDeviceAppQosSettings? = try {
+        BluetoothHidDeviceAppQosSettings(
+            BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
+            0, 0, 0, 0, 0,
+        )
+    } catch (t: Throwable) {
+        Log.w(TAG, "QoS settings unavailable: ${t.message}")
+        null
+    }
 
     private fun setState(state: NativeHidMouseState, reason: String? = null, host: BluetoothDevice? = null) {
         _status.value = NativeHidMouseStatus(
@@ -329,7 +263,6 @@ class NativeHidMouseController @Inject constructor(
         Log.i(TAG, "state=$state reason=$reason host=${host?.address}")
     }
 
-    /** Callbacks arrive on binder threads; state writes must be thread-safe. */
     private fun setStateSafe(state: NativeHidMouseState, reason: String? = null, host: BluetoothDevice? = null) {
         Handler(Looper.getMainLooper()).post { setState(state, reason, host) }
     }
@@ -341,8 +274,6 @@ class NativeHidMouseController @Inject constructor(
         BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
         else -> "UNKNOWN($state)"
     }
-
 }
 
-/** A system-paired device selectable as the HID host (receiver). */
 data class HidHostInfo(val name: String, val address: String)
