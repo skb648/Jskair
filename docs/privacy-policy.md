@@ -1,47 +1,45 @@
 # AirControl Privacy Policy
 
-**Last updated: June 11, 2026**
+**Last updated: September 17, 2026**
 
 ## Overview
-AirControl is built with a privacy-first architecture. This policy explains our data practices—which are minimal by design.
+AirControl is designed to process camera and interaction signals locally on the Android device. This policy describes what is processed, what is stored locally, and what is not transmitted to remote servers.
 
-## Data We Collect
-**None.** AirControl does not collect, transmit, store on remote servers, or share any personal data whatsoever.
+## Camera and Tracking Data
+Camera frames are processed on-device for real-time hand and face tracking. AirControl does not record, upload, or transmit camera frames, images, video, eye landmarks, hand landmarks, or gesture frames to a remote server.
 
-## On-Device Processing
-AirControl processes camera data **entirely on your device** using Google's MediaPipe Hand Landmarker. This processing happens in real-time:
-- Camera frames are analyzed for hand landmark positions
-- Hand positions are classified into gestures
-- Gestures are mapped to device actions via the Accessibility Service
-
-**No camera frames, images, video, or hand position data is ever:**
-- Recorded or saved
-- Transmitted to any server
-- Shared with any third party
-- Used for any purpose other than real-time gesture recognition
+Tracking values may exist transiently in volatile memory while the app is running. They are discarded as the processing pipeline advances unless explicitly represented by user settings or calibration state described below.
 
 ## Local Data Storage
-AirControl stores the following data **locally on your device only**:
-- User preferences (sensitivity, hand preference, gesture mappings, etc.)
-- Onboarding completion status
-- Calibration data (hand size, pinch distance)
+AirControl stores limited configuration data locally on the device, including:
+- user preferences such as sensitivity, hand preference, enabled features, and gesture mappings;
+- onboarding state;
+- hand calibration measurements; and
+- personalized gaze calibration data when the user creates it.
 
-This data is stored using Android's DataStore and is never backed up to or synchronized with any cloud service.
+This information is stored locally through Android DataStore. AirControl does not synchronize these settings with a remote server.
 
 ## Network Access
-AirControl does not request the `INTERNET` permission. The app has no network capability and cannot transmit data even if it wanted to.
+The app does not request the `android.permission.INTERNET` permission and does not use a remote backend for its tracking or gesture-processing pipeline. The application code and release manifest explicitly remove inherited network permissions where applicable.
 
 ## Accessibility Service
-AirControl uses Android's Accessibility Service solely to perform gesture actions on the user's behalf. We do not read, observe, collect, or transmit any on-screen content. The `canRetrieveWindowContent` capability is explicitly disabled.
+AirControl uses Android's Accessibility Service to perform enabled taps, swipes, drags, navigation, volume/media actions, and other user-configured actions.
 
-## Third-Party Services
-AirControl does not use any third-party analytics, advertising, or data collection services. Period.
+The service also has `canRetrieveWindowContent=true` and `flagRetrieveInteractiveWindows` because the optional native-like cursor can inspect a bounded accessibility view of the location under the cursor. The cursor hit-test reads limited UI metadata such as window bounds and basic node properties (for example class, clickable, editable, enabled, and supported click action). The app does not retain raw `AccessibilityNodeInfo` objects after the lookup.
+
+This accessibility metadata is processed locally. It is not uploaded to a remote service and is not intended to identify the user.
+
+## Third-Party Processing
+MediaPipe and CameraX run as local application dependencies. AirControl does not send tracking data to an analytics, advertising, or cloud inference provider.
+
+## Security and Secrets
+Release signing credentials are supplied through the build/release environment rather than committed to application source code. Private keys and passwords should never be added to the repository.
 
 ## Children's Privacy
-Since we collect no data, our practices are inherently compliant with children's privacy regulations (COPPA, GDPR-K).
+The application is not designed as an online service and does not transmit tracking data to remote servers. Local settings and calibration information can still exist on the device, so users should manage device access appropriately.
 
 ## Changes to This Policy
-If we ever change our data practices (we don't plan to), we will update this policy and notify users through the app.
+This policy should be updated whenever the application's data flows, local persistence, accessibility capabilities, or network behavior materially changes.
 
 ## Contact
-For privacy questions, open an issue on our GitHub repository.
+For privacy questions, open an issue on the GitHub repository.
