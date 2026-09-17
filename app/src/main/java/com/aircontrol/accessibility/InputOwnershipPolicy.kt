@@ -4,8 +4,8 @@ package com.aircontrol.accessibility
  * Deterministic cross-modality tap ownership (Issue 15).
  *
  * With eye + hand + blink + dwell all enabled, one physical intent could be
- * observed by several modalities at once and produce several taps (blink while
- * pinching, dwell while blinking, …). This policy serializes tap-like actions:
+ * observed by several modalities at once and produce several taps. This policy
+ * serializes tap-like actions:
  *
  * - Every tap-like request carries a modality [source] (e.g. "hand_pinch",
  *   "blink", "dwell").
@@ -36,10 +36,17 @@ class InputOwnershipPolicy(
      * Attempts to acquire the tap slot for [source] at [nowMs] (monotonic).
      * Returns true when the tap may fire, false when another modality fired
      * within the serialization window.
+     *
+     * Access is synchronized because gesture events, gaze, blink, and dwell are
+     * collected on independent coroutine dispatchers and may race. Without a
+     * single critical section, two modalities could both observe the same
+     * previous owner and both acquire the slot.
      */
+    @Synchronized
     fun tryAcquire(source: String, nowMs: Long): Boolean {
         val previous = lastSource
-        if (previous != null && previous != source && nowMs - lastAcquiredAtMs < serializationWindowMs) {
+        val delta = nowMs - lastAcquiredAtMs
+        if (previous != null && previous != source && delta in 0 until serializationWindowMs) {
             refusedCount++
             return false
         }
@@ -49,17 +56,22 @@ class InputOwnershipPolicy(
     }
 
     /** Monotonic timestamp of the last acquired tap. */
+    @Synchronized
     fun lastAcquiredAt(): Long = lastAcquiredAtMs
 
     /** Modality that owns the most recent tap slot (null until the first acquire). */
+    @Synchronized
     fun lastSource(): String? = lastSource
 
     /** How many cross-modality taps were refused since construction. */
+    @Synchronized
     fun refusedCount(): Long = refusedCount
 
     /** Force-resets ownership (service interrupt / teardown). */
+    @Synchronized
     fun reset() {
         lastSource = null
         lastAcquiredAtMs = Long.MIN_VALUE / 2
+        refusedCount = 0L
     }
 }
