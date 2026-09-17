@@ -203,7 +203,6 @@
     <string name="gaze_calibration_go_back">Go Back</string>
     <string name="gaze_calibration_calibrated">Calibrated ✓ — tap to re-run</string>
     <string name="gaze_calibration_run">Run the 9-point gaze calibration</string>
-    <!-- Fix C4: specific, actionable calibration failures -->
     <string name="gaze_calibration_error_master_off">Gestures are switched off. Turn the master switch on the Home screen back on, then return here.</string>
     <string name="gaze_calibration_error_camera">Tracking is not running. Go back, make sure gestures are on and the camera is active, then return here.</string>
     <string name="gaze_calibration_error_face">Your face is not visible. Hold the phone at arm\'s length in good light so both eyes are clearly visible, then retry.</string>
@@ -265,20 +264,14 @@
     <string name="settings_status_pill_subtitle">Show armed/disarmed indicator</string>
     <string name="settings_battery_saver_subtitle">Reduce FPS when idle to save battery</string>
     <string name="settings_start_on_boot_subtitle">After a reboot, Android needs your tap: AirControl shows a resume notification instead of auto-starting the camera</string>
-    <!-- Fix (audit #24): the old "Start on Boot / auto-start" wording promised
-         automatic start, but Android forbids a background camera start after
-         reboot — the app can only post a resume notification. -->
-    <string name="settings_analysis_fps_eye_cap_note">Eye tracking mode caps analysis at 20 FPS (battery and thermal), even when a higher value is selected</string>
+    <string name="settings_analysis_fps_eye_cap_note">Eye tracking mode caps analysis at 30 FPS (battery and thermal), even when a higher value is selected</string>
     <string name="home_warning_notifications_title_v2">Notifications (optional)</string>
     <string name="home_accessibility_connecting_title">Accessibility service connecting…</string>
     <string name="home_accessibility_connecting_message">AirControl is enabled in Android Settings and its service is connecting — this usually takes a few seconds. No action needed.</string>
-    <!-- Fix (audit #23): Enabled vs Ready for the gaze pipeline. -->
     <string name="home_gaze_ready">👁 Face detected — eye tracking live</string>
     <string name="home_gaze_waiting">👁 Looking for your face…</string>
-    <!-- Fix (audit #21/#22/#12): input ownership + calibration staleness hints. -->
     <string name="settings_gaze_hybrid_note">Hybrid mode: your eyes move the cursor, and any enabled click (pinch, dwell or blink) performs the tap.</string>
     <string name="settings_gaze_recalibrate_hint">If gaze accuracy drops after changing your position, lighting or glasses, run the calibration again.</string>
-    <!-- Fix (user test): custom hand-shape recording. -->
     <string name="custom_gestures_record_section">Or record your own hand shape</string>
     <string name="custom_gestures_record_hint">Hold your hand in the desired shape in front of the front camera and keep it still — the shape is averaged over ~2 seconds.</string>
     <string name="custom_gestures_record_button">Record hand shape</string>
@@ -286,7 +279,6 @@
     <string name="custom_gestures_recorded">✓ Shape recorded — tap to record again</string>
     <string name="custom_gestures_record_failed">Could not capture a stable hand — hold your whole hand in frame with good light, then try again.</string>
     <string name="custom_gestures_record_will_use">This gesture will use the recorded shape (the pose options above are ignored).</string>
-    <!-- HID POC: Native HID Mouse (experimental). -->
     <string name="settings_section_native_hid">Experimental</string>
     <string name="settings_native_hid_title">Native HID Mouse (Bluetooth)</string>
     <string name="settings_native_hid_subtitle">Use your phone as a wireless air-mouse for an external PC, Mac, Tablet or Smart TV via Bluetooth HID. The connected PC/TV displays the native cursor.</string>
@@ -321,7 +313,6 @@
     <string name="settings_eye_is_mouse_subtitle">Cursor follows your gaze; pinch to click</string>
     <string name="settings_invert_gaze">Invert Horizontal Gaze</string>
     <string name="settings_invert_gaze_subtitle">Flip left/right if gaze direction feels reversed</string>
-    <!-- Fix C2/C3: honest hints shown while a calibration is active -->
     <string name="settings_gaze_calibrated_hint">Calibrated — sensitivity and invert apply only before calibration. Re-run calibration to change them.</string>
     <string name="settings_blink_click">Blink to Click</string>
     <string name="settings_blink_click_subtitle">Blink deliberately (hold the closure for about a quarter second) to click where you are looking — turns on Eye is Mouse automatically</string>
@@ -338,95 +329,28 @@
     <!-- Custom gestures screen -->
     <string name="custom_gestures_empty_title">No custom gestures yet</string>
     <string name="custom_gestures_empty_subtitle">Tap + to create a custom gesture</string>
-    <string name="custom_gestures_edit_title">Edit Gesture</string>
-    <string name="custom_gestures_create_title">Create Gesture</string>
-    <string name="custom_gestures_update_button">Update</string>
-    <string name="custom_gestures_create_button">Create</string>
-    <string name="custom_gestures_item_cd">Gesture: %1$s, %2$s</string>
-    <string name="custom_gestures_enabled">enabled</string>
-    <string name="custom_gestures_disabled">disabled</string>
-    <string name="custom_gestures_edit_cd">Edit</string>
-    <string name="custom_gestures_delete_cd">Delete</string>
-    <string name="custom_gestures_back_cd">Back</string>
-    <string name="custom_gestures_add_cd">Add gesture</string>
-    <string name="custom_gestures_trigger_arrow"> → </string>
-    <string name="custom_gestures_trigger_plus"> + </string>
-    <string name="custom_gestures_fingers_count">%d fingers</string>
-    <string name="custom_gestures_template_prefix">Template: %s</string>
 
-    <!-- Custom gesture pose names -->
-    <string name="pose_open_palm">Open Palm</string>
-    <string name="pose_fist">Fist</string>
-    <string name="pose_pinch">Pinch</string>
-    <string name="pose_pointing">Pointing</string>
-    <string name="pose_victory">Victory (Peace)</string>
-    <string name="pose_thumb_up">Thumb Up</string>
-    <string name="pose_thumb_down">Thumb Down</string>
-    <string name="pose_three_fingers">Three Fingers</string>
-    <string name="pose_four_fingers">Four Fingers</string>
+    <!-- Status / diagnostics -->
+    <string name="status_armed">Armed</string>
+    <string name="status_disarmed">Disarmed</string>
+    <string name="status_low_confidence">Tracking uncertain — move your hand into clearer view</string>
+    <string name="status_camera_retrying">Camera temporarily unavailable — retrying</string>
+    <string name="status_camera_paused">Camera paused</string>
+    <string name="status_camera_locked">Screen is locked</string>
+    <string name="status_thermal_reduced">Tracking speed reduced due to heat</string>
+    <string name="status_action_blocked">Action blocked</string>
+    <string name="status_action_blocked_reason">%s</string>
 
-    <!-- Custom gesture direction names -->
-    <string name="direction_none">No Direction</string>
-    <string name="direction_left">Swipe Left</string>
-    <string name="direction_right">Swipe Right</string>
-    <string name="direction_up">Swipe Up</string>
-    <string name="direction_down">Swipe Down</string>
+    <!-- Debug / phase 1 -->
+    <string name="debug_eye_status">Eyes: %1$s · %2$s</string>
+    <string name="debug_eye_quality">Eye quality: %1$d%% / %2$d%%</string>
+    <string name="debug_binocular_agreement">Binocular: %1$d%%</string>
+    <string name="debug_head_pose">Head pose: %1$s (%2$d%%)</string>
+    <string name="debug_gaze_eligibility">Gaze: %s</string>
+    <string name="debug_gaze_rejection">Reason: %s</string>
+    <string name="debug_gaze_cursor">Cursor: %1$.3f, %2$.3f</string>
 
-    <!-- Gesture action display names -->
-    <string name="action_none">None</string>
-    <string name="action_scroll_up">Scroll Up</string>
-    <string name="action_scroll_down">Scroll Down</string>
-    <string name="action_scroll_left">Scroll Left</string>
-    <string name="action_scroll_right">Scroll Right</string>
-    <string name="action_back">Back</string>
-    <string name="action_home">Home</string>
-    <string name="action_recents">Recents</string>
-    <string name="action_notifications">Notifications</string>
-    <string name="action_quick_settings">Quick Settings</string>
-    <string name="action_volume_up">Volume Up</string>
-    <string name="action_volume_down">Volume Down</string>
-    <string name="action_media_play_pause">Play/Pause</string>
-    <string name="action_screenshot">Screenshot</string>
-    <string name="action_lock_screen">Lock Screen</string>
-    <string name="action_tap">Tap</string>
-    <string name="action_double_tap">Double Tap</string>
-    <string name="action_long_press">Long Press</string>
-    <string name="action_drag">Drag</string>
-
-    <!-- Gesture map -->
-    <string name="gesture_map_dismiss_cd">Dismiss gesture options</string>
-    <string name="gesture_map_select_action_prompt">Select Action</string>
-    <string name="gesture_map_selected_cd">Selected</string>
-
-    <!-- Debug -->
-    <string name="debug_handedness_left">L</string>
-    <string name="debug_handedness_right">R</string>
-    <string name="debug_handedness_unknown">-</string>
-    <string name="debug_no_hand_detected">No hand detected</string>
-    <string name="debug_skeleton_cd_detected">Hand skeleton with %1$d landmarks, confidence %2$d percent</string>
-
-    <!-- Calibration measurement progress content description -->
-    <string name="calibration_measurement_progress_cd">Measurement progress %1$d%%</string>
-    <string name="accessibility_start_failed_toast">AirControl accessibility could not start. Return to the app and retry.</string>
-    <string name="error_collector_gave_up">AirControl: the %1$s component stopped responding. Turn AirControl off and on again in Accessibility settings if gestures keep failing.</string>
-
-    <!-- Issue 10: status-pill block-reason hints (change-only, never per frame) -->
-    <string name="block_reason_waiting_for_hand">Show an open palm to arm</string>
-    <string name="block_reason_hand_not_confident">Hand tracking is uncertain</string>
-    <string name="block_reason_eye_not_stable">Keep looking at the target</string>
-    <string name="block_reason_face_lost">Face not visible</string>
-    <string name="block_reason_blink_too_short">Blink was too quick</string>
-    <string name="block_reason_blink_too_long">Eyes were closed too long</string>
-    <string name="block_reason_blink_during_movement">Eyes still moving</string>
-    <string name="block_reason_waiting_for_gaze_to_settle">Let your gaze settle</string>
-    <string name="block_reason_cursor_not_armed">Cursor not ready yet</string>
-    <string name="block_reason_gesture_cooldown">Slow down — still cooling down</string>
-    <string name="block_reason_drag_threshold_not_reached">Move further to drag</string>
-    <string name="block_reason_suppressed_calibration">Calibration in progress</string>
-    <string name="block_reason_another_modality_acted">Another input just acted</string>
-    <string name="block_reason_action_unsupported">Not supported on this device</string>
-    <string name="block_reason_service_unavailable">Accessibility service unavailable</string>
-    <string name="block_reason_pinch_moved_too_fast">Hand moved while pinching — hold a bit steadier</string>
-    <string name="block_reason_protected_screen_blocked">Protected screen: gestures blocked by system security</string>
-    <string name="block_reason_generic">Action blocked</string>
+    <!-- About -->
+    <string name="about_title">About AirControl</string>
+    <string name="about_description">Hands-free device control using real-time computer vision.</string>
 </resources>
