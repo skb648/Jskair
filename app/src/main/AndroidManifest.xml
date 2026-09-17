@@ -23,12 +23,11 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-    <!-- Fix #88: specialUse removed (we never pass SPECIAL_USE to startForeground and
-         it triggers a Play policy declaration for zero functional gain). -->
+    <!-- specialUse is intentionally not requested; the foreground service is camera-only. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- MediaPipe tasks-core transitively contributes Google Data Transport permissions.
-         AirControl performs all inference on-device, so remove them from the final APK. -->
+    <!-- MediaPipe tasks-core may contribute network permissions transitively.
+         AirControl removes them because its inference/tracking path is on-device. -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
 
@@ -41,14 +40,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.AirControl">
-        <!-- Fix #45: removed networkSecurityConfig since we don't have INTERNET. -->
 
-        <!-- Fix #98: add a dedicated SettingsActivity alias so system a11y settings
-             don't land on the splash-themed MainActivity. We'll just mark this
-             activity with launchDocument=always to ensure it routes into settings.
-             Simpler: set android:settingsActivity pointing to a SettingsActivity.
-             Since there is no separate SettingsActivity, we re-use MainActivity
-             with an extra that navigates to the Settings route. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -76,7 +68,6 @@
             android:exported="false"
             android:foregroundServiceType="camera"
             android:stopWithTask="false" />
-        <!-- Fix #88: foregroundServiceType is camera only; removed specialUse + property. -->
 
         <service
             android:name=".accessibility.GestureControlAccessibilityService"
@@ -89,13 +80,12 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
-            <!-- Fix #46: set canRetrieveWindowContent correctly. We don't read window
-                 content; remove the contradictory flags in the config XML. -->
+            <!-- The service intentionally retrieves limited accessibility metadata for
+                 native-like cursor hit testing; see accessibility_service_config.xml. -->
         </service>
 
-        <!-- Fix #17: receiver is NOT directBootAware and does NOT listen for
-             LOCKED_BOOT_COMPLETED, so it never runs pre-unlock and can safely
-             use credential-encrypted DataStore. -->
+        <!-- The receiver is not directBootAware and listens only for BOOT_COMPLETED,
+             so it does not access credential-encrypted state before user unlock. -->
         <receiver
             android:name=".receiver.BootCompletedReceiver"
             android:exported="true"
