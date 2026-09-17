@@ -105,8 +105,8 @@ class CursorControllerImpl @Inject constructor() : CursorController {
             clearPinClick()
             return
         }
-        val packed = (Float.floatToRawIntBits(x.coerceIn(0f, 1f)).toLong() shl 32) or
-            (Float.floatToRawIntBits(y.coerceIn(0f, 1f)).toLong() and 0xffffffffL)
+        val packed = (java.lang.Float.floatToRawIntBits(x.coerceIn(0f, 1f)).toLong() shl 32) or
+            (java.lang.Float.floatToRawIntBits(y.coerceIn(0f, 1f)).toLong() and 0xffffffffL)
         pinnedPacked.set(packed)
     }
 
