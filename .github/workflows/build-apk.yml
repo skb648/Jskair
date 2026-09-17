@@ -16,7 +16,7 @@ env:
 
 jobs:
   verify:
-    name: Unit tests and compilation
+    name: Static checks and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -27,9 +27,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # android-actions/setup-android@v3 currently fails on ubuntu-latest
-      # ("Failed to find package 'tools'" with cmdline-tools 16). The runner
-      # image already ships an Android SDK; use it directly.
       - name: Install Android SDK packages
         run: |
           SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -37,18 +34,20 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           SDKMANAGER="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" --install "$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" platform-tools
+          "$SDKMANAGER" --install "$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" platform-tools emulator
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
       - name: Make Gradle executable
         run: chmod +x ./gradlew
+      - name: Lint
+        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
       - name: Unit tests
         run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :gesture-engine:test
       - name: Compile instrumented test sources
         run: ./gradlew --no-daemon --stacktrace :app:compileDebugAndroidTestKotlin
 
-  build-debug:
-    name: Build debug APK
+  instrumentation:
+    name: Instrumentation tests
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -60,9 +59,39 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # android-actions/setup-android@v3 currently fails on ubuntu-latest
-      # ("Failed to find package 'tools'" with cmdline-tools 16). The runner
-      # image already ships an Android SDK; use it directly.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run Android instrumentation tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: Pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest
+
+  build-debug:
+    name: Build debug APK
+    needs: [verify, instrumentation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Install Android SDK packages
         run: |
           SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -81,7 +110,10 @@ jobs:
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt" dump badging "$APK" | grep -q "targetSdkVersion:'37'"
+          BADGING="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt dump badging "$APK")"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "package: name='com.aircontrol.debug'"
+          echo "$BADGING" | grep -q "targetSdkVersion:'37'"
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -92,7 +124,7 @@ jobs:
 
   build-release:
     name: Build signed release APK
-    needs: verify
+    needs: [verify, instrumentation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -103,9 +135,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # android-actions/setup-android@v3 currently fails on ubuntu-latest
-      # ("Failed to find package 'tools'" with cmdline-tools 16). The runner
-      # image already ships an Android SDK; use it directly.
       - name: Install Android SDK packages
         run: |
           SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -132,11 +161,47 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: ./gradlew --no-daemon --stacktrace :app:assembleRelease
-      - name: Verify release APK signature
+      - name: Verify release APK signature and manifest
         run: |
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" verify --verbose "$APK"
+          BADGING="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt dump badging "$APK")"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "package: name='com.aircontrol'"
+          echo "$BADGING" | grep -q "targetSdkVersion:'37'"
+          VERSION_CODE="$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p")"
+          VERSION_NAME="$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
+          echo "Release versionCode=$VERSION_CODE versionName=$VERSION_NAME"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+      - name: Validate versionCode against latest published release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LATEST_TAG="$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty')"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No published release found; versionCode comparison skipped. The first release establishes the baseline."
+            exit 0
+          fi
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          gh release download "$LATEST_TAG" --dir "$TMP_DIR" --pattern '*.apk' --clobber || true
+          PREVIOUS_APK="$(find "$TMP_DIR" -type f -name '*.apk' | head -n 1 || true)"
+          if [ -z "$PREVIOUS_APK" ]; then
+            echo "Latest published release '$LATEST_TAG' has no APK asset; cannot derive its versionCode. Attach a release APK for automated monotonic validation."
+            exit 0
+          fi
+          PREVIOUS_BADGING="$($ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt dump badging "$PREVIOUS_APK")"
+          PREVIOUS_VERSION_CODE="$(printf '%s\n' "$PREVIOUS_BADGING" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p")"
+          test -n "$PREVIOUS_VERSION_CODE"
+          echo "Latest published release=$LATEST_TAG versionCode=$PREVIOUS_VERSION_CODE; candidate=$VERSION_CODE"
+          if [ "$VERSION_CODE" -le "$PREVIOUS_VERSION_CODE" ]; then
+            echo "ERROR: candidate versionCode $VERSION_CODE is not greater than published versionCode $PREVIOUS_VERSION_CODE"
+            exit 1
+          fi
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
