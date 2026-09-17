@@ -27,8 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Experimental Bluetooth HID mouse path. Public BluetoothHidDevice APIs are
- * available from Android 9 / API 28; all entry points are guarded so the app's
- * minSdk 26 remains valid and unsupported devices degrade to a clean state.
+ * available from Android 9 / API 28. Every public operation therefore exits
+ * before touching an API-28 symbol on older devices.
  */
 private const val TAG = "NativeHidController"
 
@@ -59,13 +59,13 @@ class NativeHidMouseController @Inject constructor(
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            Log.i(TAG, "HID app status: registered=$registered host=${pluggedDevice?.address}")
+            Log.i(TAG, "HID app status: registered=$registered hostPresent=${pluggedDevice != null}")
             if (registered) setState(NativeHidMouseState.REGISTERED)
             else if (wantActive) setState(NativeHidMouseState.ERROR, "HID app unregistered (OEM/profile limitation)")
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
-            Log.i(TAG, "HID connection state ${stateName(state)} for ${device.address}")
+            Log.i(TAG, "HID connection state ${stateName(state)}")
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectedHost = device
@@ -79,12 +79,21 @@ class NativeHidMouseController @Inject constructor(
                 }
             }
         }
-        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) { Log.d(TAG, "onGetReport type=$type id=$id") }
-        override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) { Log.d(TAG, "onSetReport type=$type id=$id") }
-        override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) { Log.d(TAG, "onSetProtocol protocol=$protocol") }
-        override fun onInterruptData(device: BluetoothDevice, reportId: Byte, data: ByteArray?) { Log.d(TAG, "onInterruptData reportId=$reportId") }
+
+        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
+            Log.d(TAG, "onGetReport type=$type id=$id")
+        }
+        override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) {
+            Log.d(TAG, "onSetReport type=$type id=$id")
+        }
+        override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) {
+            Log.d(TAG, "onSetProtocol protocol=$protocol")
+        }
+        override fun onInterruptData(device: BluetoothDevice, reportId: Byte, data: ByteArray?) {
+            Log.d(TAG, "onInterruptData reportId=$reportId")
+        }
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
-            Log.i(TAG, "Virtual cable unplugged by ${device.address}")
+            Log.i(TAG, "Virtual cable unplugged")
             connectedHost = null
             if (wantActive) setState(NativeHidMouseState.REGISTERED) else setState(NativeHidMouseState.OFF)
         }
@@ -115,8 +124,8 @@ class NativeHidMouseController @Inject constructor(
     fun start() {
         if (wantActive) return
         wantActive = true
-        if (!isHidApiAvailable) {
-            setState(NativeHidMouseState.UNSUPPORTED, "BluetoothHidDevice requires Android 9+ (API 28); device runs API ${Build.VERSION.SDK_INT}")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            setState(NativeHidMouseState.UNSUPPORTED, "BluetoothHidDevice requires Android 9+ (API 28)")
             return
         }
         val manager = context.getSystemService(BluetoothManager::class.java)
@@ -138,11 +147,17 @@ class NativeHidMouseController @Inject constructor(
     @Synchronized
     fun stop() {
         wantActive = false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            hidDevice = null
+            connectedHost = null
+            setState(NativeHidMouseState.OFF)
+            return
+        }
         val hid = hidDevice
         hidDevice = null
         connectedHost = null
         if (hid != null) {
-            try { hid.unregisterApp() } catch (se: SecurityException) { Log.w(TAG, "unregisterApp permission: ${se.message}") } catch (t: Throwable) { Log.w(TAG, "unregisterApp failed: ${t.message}") }
+            try { hid.unregisterApp() } catch (se: SecurityException) { Log.w(TAG, "unregisterApp permission") } catch (t: Throwable) { Log.w(TAG, "unregisterApp failed: ${t.message}") }
             try { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) } catch (_: Throwable) { }
         }
         try { context.unregisterReceiver(bluetoothStateReceiver) } catch (_: Exception) { }
@@ -152,48 +167,55 @@ class NativeHidMouseController @Inject constructor(
     @SuppressLint("MissingPermission")
     @Synchronized
     fun bondedHosts(): List<HidHostInfo> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
         val adapter = this.adapter ?: context.getSystemService(BluetoothManager::class.java)?.adapter
-        if (adapter == null || !isHidApiAvailable) return emptyList()
+        if (adapter == null) return emptyList()
         return try {
             adapter.bondedDevices.orEmpty()
-                .map { HidHostInfo(name = it.name ?: it.address, address = it.address) }
+                .map { HidHostInfo(name = it.name ?: "Bluetooth device", address = it.address) }
                 .sortedBy { it.name.lowercase() }
         } catch (se: SecurityException) {
-            Log.w(TAG, "bondedDevices permission: ${se.message}")
+            Log.w(TAG, "bondedDevices permission denied")
             emptyList()
         }
     }
 
     @Synchronized
     fun connectHost(address: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            setStateSafe(NativeHidMouseState.UNSUPPORTED, "Bluetooth HID requires Android 9+")
+            return
+        }
         val adapter = this.adapter ?: return setStateSafe(NativeHidMouseState.ERROR, "Bluetooth adapter unavailable")
         val hid = hidDevice ?: return setStateSafe(NativeHidMouseState.ERROR, "HID device not registered yet")
-        val device = try { adapter.getRemoteDevice(address) } catch (t: Throwable) { return setStateSafe(NativeHidMouseState.ERROR, "Invalid host address") }
+        val device = try { adapter.getRemoteDevice(address) } catch (_: Throwable) { return setStateSafe(NativeHidMouseState.ERROR, "Invalid host address") }
         try {
             setState(NativeHidMouseState.CONNECTING, host = device)
             val ok = hid.connect(device)
-            if (!ok) setStateSafe(NativeHidMouseState.ERROR, "HID connect() returned false (OEM may refuse the HID Device role)")
-        } catch (se: SecurityException) { setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission") }
+            if (!ok) setStateSafe(NativeHidMouseState.ERROR, "HID connect() returned false (OEM may refuse HID Device role)")
+        } catch (_: SecurityException) { setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission") }
           catch (t: Throwable) { setStateSafe(NativeHidMouseState.ERROR, "HID connect failed: ${t.message}") }
     }
 
     @Synchronized
     fun disconnectHost() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
         val hid = hidDevice ?: return
         val host = connectedHost ?: return
-        try { hid.disconnect(host) } catch (se: SecurityException) { Log.w(TAG, "disconnect permission: ${se.message}") } catch (t: Throwable) { Log.w(TAG, "disconnect failed: ${t.message}") }
+        try { hid.disconnect(host) } catch (_: SecurityException) { Log.w(TAG, "disconnect permission denied") } catch (t: Throwable) { Log.w(TAG, "disconnect failed: ${t.message}") }
     }
 
     @Synchronized
     override fun move(dx: Int, dy: Int): Boolean {
         if (dx == 0 && dy == 0) return true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
         val hid = hidDevice ?: return false
         val host = connectedHost ?: return false
         if (_status.value.state != NativeHidMouseState.CONNECTED) return false
         HidMouseReport.writeMovement(reportBuffer, dx, dy)
         return try {
             hid.sendReport(host, HidMouseDescriptor.REPORT_ID, reportBuffer)
-        } catch (se: SecurityException) {
+        } catch (_: SecurityException) {
             setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission")
             false
         } catch (t: Throwable) {
@@ -227,7 +249,8 @@ class NativeHidMouseController @Inject constructor(
             }
             override fun onServiceDisconnected(profile: Int) {
                 Log.w(TAG, "HID profile service disconnected")
-                hidDevice = null; connectedHost = null
+                hidDevice = null
+                connectedHost = null
                 if (wantActive) setStateSafe(NativeHidMouseState.AVAILABLE, "Bluetooth HID service disconnected — toggle the feature to retry")
             }
         }
@@ -257,10 +280,10 @@ class NativeHidMouseController @Inject constructor(
         _status.value = NativeHidMouseStatus(
             state = state,
             reason = reason,
-            hostName = try { host?.name } catch (_: SecurityException) { host?.address },
+            hostName = try { host?.name } catch (_: SecurityException) { "Bluetooth device" },
             hostAddress = host?.address,
         )
-        Log.i(TAG, "state=$state reason=$reason host=${host?.address}")
+        Log.i(TAG, "state=$state reason=$reason hostPresent=${host != null}")
     }
 
     private fun setStateSafe(state: NativeHidMouseState, reason: String? = null, host: BluetoothDevice? = null) {
