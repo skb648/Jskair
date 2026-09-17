@@ -2,7 +2,7 @@
 
 ## Overview
 
-AirControl requires a signed APK/AAB for distribution via Google Play Store or direct APK installation. This guide walks through the signing setup.
+AirControl requires a signed APK/AAB for distribution through Google Play or trusted direct installation. Release signing credentials must stay outside source control.
 
 ## Quick Start
 
@@ -17,29 +17,25 @@ keytool -genkeypair -v \
   -validity 10000
 ```
 
-You'll be prompted to create a password. Remember this — it's your `KEYSTORE_PASSWORD` and `KEY_PASSWORD`.
+Store the passwords securely. Do not commit the keystore or password files.
 
 ### 2. Set Environment Variables
 
-For **local builds**:
+For a local signed build:
+
 ```bash
-export KEYSTORE_PASSWORD="your_keystore_password"
-export KEY_PASSWORD="your_key_password"
+export KEYSTORE_PASSWORD="..."
+export KEY_PASSWORD="..."
 export KEY_ALIAS="release"
 ```
 
-For **CI/CD** (GitHub Actions):
-Add these as repository secrets:
+For GitHub Actions, configure:
+- `KEYSTORE_BASE64`
 - `KEYSTORE_PASSWORD`
 - `KEY_PASSWORD`
 - `KEY_ALIAS`
-- Upload `release.keystore` as a CI secret or base64-encode it:
-  ```bash
-  base64 app/release.keystore > keystore-base64.txt
-  ```
 
-For **GitLab CI**:
-Add the same variables in Settings > CI/CD > Variables (mark as "masked" and "protected").
+The workflow materializes the keystore only for the release build and removes the file in an `always()` cleanup step.
 
 ### 3. Build Release APK
 
@@ -48,62 +44,55 @@ Add the same variables in Settings > CI/CD > Variables (mark as "masked" and "pr
 ```
 
 The signed APK will be at:
-```
+
+```text
 app/build/outputs/apk/release/app-release.apk
 ```
 
+A local `assembleRelease` fails rather than silently producing an unsigned release when signing credentials are missing.
+
+## Versioning
+
+The app's `versionCode` is derived from the larger of the configured baseline, `VERSION_CODE`, and GitHub Actions run number. Release CI additionally compares the built APK's versionCode with the latest published release APK when that asset is available and fails if the candidate is not greater.
+
+Before publishing a release:
+
+1. confirm the release version name has intentionally advanced;
+2. confirm CI's versionCode check passed;
+3. retain the signed release artifact and checksum according to your release process.
+
 ## Google Play Store
 
-For Play Store distribution:
+For Play distribution, prefer Google Play App Signing with a separate upload key.
 
-1. **Use App Signing by Google Play** (recommended):
-   - Google manages the distribution key
-   - You sign with an upload key
-   - Generate upload key separately from the release keystore
+Build an AAB when required:
 
-2. **Build AAB** (Android App Bundle):
-   ```bash
-   ./gradlew bundleRelease
-   ```
-
-3. **Upload** to Google Play Console
+```bash
+./gradlew bundleRelease
+```
 
 ## Keystore Security
 
-⚠️ **CRITICAL**: Never commit your keystore file to version control.
-
-The `.gitignore` already excludes:
+Never commit:
 - `*.jks`
 - `*.keystore`
 - `keystore.properties`
+- password files
+- base64-encoded secret material
 
-If your keystore is compromised, you must:
-1. Generate a new keystore
-2. Users who installed the old signed APK **cannot upgrade** — they must uninstall and reinstall
-3. Update all CI/CD secrets
+If a signing key is compromised, rotate it according to the distribution channel's recovery process. Do not print signing passwords in CI logs.
 
 ## Verification
 
-Verify your APK is signed correctly:
-
 ```bash
-# Check APK signature
 apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
-
-# Or use keytool
 keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk
 ```
 
 ## Troubleshooting
 
-### "No signing config could be found"
-- Ensure `release.keystore` exists in `app/` directory
-- Ensure `KEYSTORE_PASSWORD` environment variable is set
+### "Release build requires release.keystore"
+Provide `app/release.keystore` and the required signing environment variables. The repository intentionally fails closed for unsigned local release builds.
 
 ### "Keystore was tampered with or password was incorrect"
-- Double-check your `KEYSTORE_PASSWORD` and `KEY_PASSWORD`
-- Ensure `KEY_ALIAS` matches the alias used when generating the keystore
-
-### Build succeeds but APK is unsigned
-- The build falls back to unsigned if env vars are missing (for local dev)
-- Check that environment variables are actually set: `echo $KEYSTORE_PASSWORD`
+Check the keystore file, alias, and credentials through your secret manager. Do not echo passwords to the terminal or CI log.
