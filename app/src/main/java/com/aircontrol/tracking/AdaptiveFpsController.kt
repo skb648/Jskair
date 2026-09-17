@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.Volatile
+import kotlin.math.ceil
 
 /** Controls adaptive analysis FPS without ever rounding a caller's cap upward. */
 class AdaptiveFpsController(
@@ -31,8 +32,12 @@ class AdaptiveFpsController(
     private val isUserPresent: Boolean get() = isHandPresent || isFacePresent
     private val downgradeJob = AtomicReference<Job?>(null)
 
+    /**
+     * Integer frame interval whose reciprocal cannot exceed the selected FPS.
+     * Ceiling is intentional: floor(1000 / 30) = 33ms permits more than 30fps.
+     */
     val analysisIntervalMs: Long
-        get() = (1000f / _currentFps.value.coerceAtLeast(1)).toLong()
+        get() = ceil(1000.0 / _currentFps.value.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
 
     fun onHandDetected(timestampMs: Long) {
         val wasInScanMode = _currentFps.value != configuredFps
@@ -72,7 +77,7 @@ class AdaptiveFpsController(
             delay(noHandTimeoutMs)
             downgradeJob.set(null)
             if (isUserPresent) return@launch
-            val idleFps = minOf(scanFps, configuredFps)
+            val idleFps = minOf(coerceToSupportedFps(scanFps), configuredFps)
             _currentFps.value = idleFps
             Timber.d(
                 "No user interaction since %d for %d ms - dropping to scan FPS: %d",
