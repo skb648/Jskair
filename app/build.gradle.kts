@@ -6,9 +6,11 @@ plugins {
 }
 
 val versionCodeBase = 2
-val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull()
-val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-val resolvedVersionCode = versionCodeFromEnv ?: maxOf(versionCodeBase, ciRunNumber ?: 0)
+val versionCodeFromEnv = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 0
+val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+// A manually supplied VERSION_CODE may customize the sequence, but it may never
+// lower a CI version. This keeps release versionCode monotonic on every CI run.
+val resolvedVersionCode = maxOf(versionCodeBase, versionCodeFromEnv, ciRunNumber)
 require(resolvedVersionCode > 0) { "versionCode must be positive" }
 
 android {
