@@ -33,9 +33,9 @@ class SemanticGestureTransportTest {
         val collector = launch {
             engine.semanticEvents.collect { event ->
                 events += event
-                // Deliberately slower than the producer. The producer must suspend
-                // on the bounded semantic buffer rather than silently dropping END.
-                delay(2L)
+                // Deliberately slower than the producer. The cursor stream is much
+                // higher-rate, but it must not consume semantic capacity.
+                delay(50L)
             }
         }
         runCurrent()
@@ -51,9 +51,15 @@ class SemanticGestureTransportTest {
             engine.processFrameSuspending(hand(ts, pinchGap = 0.08f))
             ts += 40L
         }
+        // Flood the continuous cursor path. These frames must not enter the
+        // semantic transport at all.
         repeat(1_000) {
-            engine.processFrameSuspending(hand(ts, pinchGap = 0.08f))
+            engine.processFrameSuspending(hand(ts))
             ts += 16L
+        }
+        repeat(8) {
+            engine.processFrameSuspending(hand(ts, pinchGap = 0.08f))
+            ts += 40L
         }
         repeat(8) {
             engine.processFrameSuspending(hand(ts, pinchGap = 0.60f))
