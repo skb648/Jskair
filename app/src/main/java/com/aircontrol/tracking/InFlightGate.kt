@@ -40,9 +40,11 @@ class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
 
     /** Releases the slot only when [token] still owns it; stale callbacks are ignored. */
     fun release(token: Long): Boolean {
-        if (!activeToken.compareAndSet(token, IDLE_TOKEN)) return false
+        // Clear the timestamp before releasing the token. A new reservation may
+        // start immediately after the token becomes idle; setting the timestamp
+        // afterwards could erase the new reservation's start time.
         reservedAtMs.set(IDLE_TIME)
-        return true
+        return activeToken.compareAndSet(token, IDLE_TOKEN)
     }
 
     fun isBusy(nowMs: Long): Boolean = activeToken.get() != IDLE_TOKEN
@@ -55,8 +57,10 @@ class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
 
     /** Clears the current owner during graph teardown and returns its token, if any. */
     fun reset(): Long? {
-        val token = activeToken.getAndSet(IDLE_TOKEN)
+        // Block new reservations from observing a stale timestamp before the
+        // active token is cleared; callers use this during graph teardown.
         reservedAtMs.set(IDLE_TIME)
+        val token = activeToken.getAndSet(IDLE_TOKEN)
         return token.takeIf { it != IDLE_TOKEN }
     }
 
