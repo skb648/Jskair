@@ -283,9 +283,28 @@ class HandTrackerImpl @Inject constructor(
                     }
             }
 
-        // Prefer the user's requested hand first. Within the preferred set, keep
-        // temporal continuity with the last selected wrist; when no preferred
-        // hand is currently visible, fall back to spatial continuity.
+        // An explicit LEFT/RIGHT preference is a hard identity constraint at
+        // selection time. Do not let a non-preferred hand overwrite temporal
+        // continuity while the preferred hand is briefly occluded; the service
+        // will otherwise see an apparently valid hand and can re-anchor the
+        // cursor when the preferred hand returns.
+        if (preferredHand != Handedness.UNKNOWN && preferredCandidates.isEmpty()) {
+            lastTrackedWristX = -1f
+            lastTrackedWristY = -1f
+            _handFrames.tryEmit(
+                HandFrame(
+                    landmarks = emptyList(),
+                    handedness = Handedness.UNKNOWN,
+                    timestampMs = timestampMs,
+                    confidence = 0f,
+                    frameAspectRatio = lastFrameAspectRatio,
+                ),
+            )
+            return
+        }
+
+        // Within the preferred set, keep temporal continuity so brief detector
+        // reordering does not jump between two hands that both match the policy.
         val candidateIndices = if (preferredCandidates.isNotEmpty()) preferredCandidates
             else result.landmarks().indices.toList()
         val selectedIdx = if (candidateIndices.size > 1 && lastTrackedWristX >= 0f) {
