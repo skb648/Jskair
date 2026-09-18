@@ -49,6 +49,8 @@ interface GestureDetector : AutoCloseable {
     /** True while hand tracking confidence is too low to trust poses/pinches. */
     val lowConfidence: StateFlow<Boolean>
     fun processHandFrame(frame: HandFrame)
+    /** Suspending variant used by the realtime service so semantic backpressure never blocks a thread. */
+    suspend fun processHandFrameSuspending(frame: HandFrame)
     fun updateSensitivity(sensitivity: Int)
 
     /**
@@ -217,10 +219,14 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     }
 
     override fun processHandFrame(frame: HandFrame) {
+        runBlocking { processHandFrameSuspending(frame) }
+    }
+
+    override suspend fun processHandFrameSuspending(frame: HandFrame) {
         frameSerial.lock()
         try {
             val input = frame.toHandInput()
-            runBlocking { engine.processFrame(input) }
+            engine.processFrameSuspending(input)
 
             // Forward state from engine while still owning the same serial turn.
             _engineState.value = engine.engineState.value
