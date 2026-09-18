@@ -116,6 +116,13 @@ fun syntheticHandFrame(
 ): HandFrame {
     // Keep the palm anchor centered exactly at (x, y), but use non-collapsed
     // geometry so HandFrame.isDetected can exercise the real quality gate.
+    val geometryScale = minOf(
+        1f,
+        (x / 0.08f).coerceAtLeast(0f),
+        ((1f - x) / 0.08f).coerceAtLeast(0f),
+        (y / 0.08f).coerceAtLeast(0f),
+        ((1f - y) / 0.08f).coerceAtLeast(0f),
+    ).coerceIn(0.5f, 1f)
     val offsets = listOf(
         0.00f to 0.05f,
         -0.03f to 0.04f, -0.02f to 0.02f, -0.01f to 0.00f, -0.01f to -0.03f,
@@ -125,7 +132,9 @@ fun syntheticHandFrame(
         0.00f to 0.02f, 0.00f to -0.03f, 0.00f to -0.08f, 0.00f to -0.13f,
     )
     return HandFrame(
-        landmarks = offsets.map { (dx, dy) -> Landmark3D(x + dx, y + dy, 0f) },
+        landmarks = offsets.map { (dx, dy) ->
+            Landmark3D(x + dx * geometryScale, y + dy * geometryScale, 0f)
+        },
         handedness = Handedness.RIGHT,
         timestampMs = timestampMs,
         confidence = confidence,
