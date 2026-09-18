@@ -62,7 +62,8 @@ class NativeHidMouseController @Inject constructor(
             HidMouseDescriptor.DESCRIPTOR,
         )
 
-    private val hidCallback = object : BluetoothHidDevice.Callback() {
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun createHidCallback(): BluetoothHidDevice.Callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             Log.i(TAG, "HID app status: registered=$registered hostPresent=${pluggedDevice != null}")
             if (registered) setState(NativeHidMouseState.REGISTERED)
@@ -244,7 +245,7 @@ class NativeHidMouseController @Inject constructor(
                 }
                 hidDevice = hid
                 try {
-                    val ok = hid.registerApp(createSdpSettings(), qosSettings(), qosSettings(), callbackExecutor, hidCallback)
+                    val ok = hid.registerApp(createSdpSettings(), qosSettings(), qosSettings(), callbackExecutor, createHidCallback())
                     if (!ok) setStateSafe(NativeHidMouseState.ERROR, "registerApp returned false (OEM may block HID Device role)")
                 } catch (se: SecurityException) {
                     setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission")
