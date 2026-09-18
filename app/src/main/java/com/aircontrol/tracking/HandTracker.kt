@@ -169,10 +169,10 @@ class HandTrackerImpl @Inject constructor(
             Timber.e(e, "Error processing hand frame: submission failed")
             }
         if (!accepted) {
-            inFlight.release()
-            // Exactly-once, whatever happened above: if our hook was already stored it is handed
-            // back here; if the failure happened before the store, the caller's hook runs directly.
-            (pendingConsumed.getAndSet(null) ?: onConsumed)?.invoke()
+            inFlight.release(reservationToken)
+            // Exactly-once: cancel only our completion hook so a late old callback cannot consume
+            // a newer session's hook.
+            (pendingConsumed.cancelForToken(reservationToken)?.onConsumed ?: onConsumed)?.invoke()
         }
         return accepted
     }
@@ -206,7 +206,6 @@ class HandTrackerImpl @Inject constructor(
             handLandmarker = null
             _isInitialized = false
             isClosing = false
-            lastSubmittedTimestampMs = Long.MIN_VALUE
             lastTrackedWristX = -1f
             lastTrackedWristY = -1f
         }
@@ -227,11 +226,11 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
-        // Release the frame before doing any work: the buffer's owner is waiting on this, and the
-        // queue must drain at inference speed rather than at "inference + everything the result
-        // handler does" speed. Also fires on the isClosing path below, deliberately.
-        inFlight.release()
-        pendingConsumed.getAndSet(null)?.invoke()
+        // Correlate the callback with the exact submission first. A late callback from an older
+        // MediaPipe session must not release or complete a newer frame.
+        val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
+        inFlight.release(completion.reservationToken)
+        completion.onConsumed?.invoke()
         if (isClosing) {
             return
         }
