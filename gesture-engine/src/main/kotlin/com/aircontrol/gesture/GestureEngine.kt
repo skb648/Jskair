@@ -18,6 +18,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -61,6 +63,16 @@ class GestureEngine(
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.SUSPEND,
     )
     val semanticEvents: SharedFlow<GestureEvent> = _semanticEvents.asSharedFlow()
+
+    /**
+     * Compatibility view for existing diagnostics/tests. Production action dispatch
+     * must consume [semanticEvents], while [cursorEvents] remains latest-wins.
+     * This merged view is intentionally not used for correctness-sensitive dispatch.
+     */
+    val gestureEvents: Flow<GestureEvent> = merge(
+        semanticEvents,
+        cursorEvents,
+    )
     private val _engineState = MutableStateFlow(GestureEngineState.DISARMED)
     val engineState: StateFlow<GestureEngineState> = _engineState.asStateFlow()
     private val _currentPose = MutableStateFlow(Pose.NONE)
