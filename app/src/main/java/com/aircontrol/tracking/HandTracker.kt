@@ -64,7 +64,7 @@ class HandTrackerImpl @Inject constructor(
 
     /** One outstanding submission, and its caller's completion hook (see processFrame). */
     private val inFlight = InFlightGate()
-    private val pendingConsumed = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+    private val pendingConsumed = InFlightCompletionSlot()
 
     // Perf audit P7: guards detectAsync submission against close().
     private val closeLock = Any()
@@ -110,7 +110,6 @@ class HandTrackerImpl @Inject constructor(
                 return
             }
 
-        lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -123,12 +122,12 @@ class HandTrackerImpl @Inject constructor(
         // Saturation check FIRST, before the lock: a device that cannot keep up must shed frames
         // instead of queueing them, and the shed has to be as cheap as possible.
         val nowMs = android.os.SystemClock.elapsedRealtime()
-        if (!inFlight.tryReserve(nowMs)) {
+        val reservationToken = inFlight.tryReserve(nowMs) ?: run {
             onConsumed?.invoke()
             return false
         }
         if (isClosing || !_isInitialized) {
-            inFlight.release()
+            inFlight.release(reservationToken)
             onConsumed?.invoke()
             return false
         }
@@ -154,7 +153,13 @@ class HandTrackerImpl @Inject constructor(
                         // from a wedged graph, that owner must not be left holding its buffer.
                         // Storing BEFORE submitting is what lets a result that arrives immediately
                         // consume this callback instead of losing it.
-                        pendingConsumed.getAndSet(onConsumed)?.invoke()
+                        pendingConsumed.replace(
+                            InFlightCompletionSlot.Pending(
+                                reservationToken = reservationToken,
+                                mediaPipeTimestampMs = mediaPipeTimestampMs,
+                                onConsumed = onConsumed,
+                            ),
+                        )?.onConsumed?.invoke()
                         landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
                         accepted = true
                     }
@@ -209,7 +214,7 @@ class HandTrackerImpl @Inject constructor(
         // coming for that frame, and the graph is already torn down, so the gate is cleared and the
         // caller's buffer is handed back here instead.
         inFlight.reset()
-        pendingConsumed.getAndSet(null)?.invoke()
+        pendingConsumed.clear()?.onConsumed?.invoke()
 
         Timber.i("HandTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
