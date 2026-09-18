@@ -42,7 +42,7 @@ class FaceTrackerImpl @Inject constructor(
 
     /** One outstanding submission for the eye channel, plus its caller's completion hook. */
     private val inFlight = InFlightGate()
-    private val pendingConsumed = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+    private val pendingConsumed = InFlightCompletionSlot()
 
     // Perf audit P7: guards detectAsync submission against close().
     private val closeLock = Any()
@@ -119,7 +119,6 @@ class FaceTrackerImpl @Inject constructor(
                 StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
                 return
             }
-        lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE matrix=true")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -146,12 +145,12 @@ class FaceTrackerImpl @Inject constructor(
         // Saturation check FIRST, before the lock: a device that cannot keep up must shed frames
         // instead of queueing them, and the shed has to be as cheap as possible.
         val nowMs = android.os.SystemClock.elapsedRealtime()
-        if (!inFlight.tryReserve(nowMs)) {
+        val reservationToken = inFlight.tryReserve(nowMs) ?: run {
             onConsumed?.invoke()
             return false
         }
         if (isClosing || !_isInitialized) {
-            inFlight.release()
+            inFlight.release(reservationToken)
             onConsumed?.invoke()
             return false
         }
@@ -171,7 +170,13 @@ class FaceTrackerImpl @Inject constructor(
                             timestampMs
                         }
                         lastSubmittedTimestampMs = mediaPipeTimestampMs
-                        pendingConsumed.getAndSet(onConsumed)?.invoke()
+                        pendingConsumed.replace(
+                            InFlightCompletionSlot.Pending(
+                                reservationToken = reservationToken,
+                                mediaPipeTimestampMs = mediaPipeTimestampMs,
+                                onConsumed = onConsumed,
+                            ),
+                        )?.onConsumed?.invoke()
                         landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
                         accepted = true
                     }
@@ -181,8 +186,8 @@ class FaceTrackerImpl @Inject constructor(
             Timber.e(e, "Error processing face frame: submission failed")
         }
         if (!accepted) {
-            inFlight.release()
-            (pendingConsumed.getAndSet(null) ?: onConsumed)?.invoke()
+            inFlight.release(reservationToken)
+            (pendingConsumed.cancelForToken(reservationToken)?.onConsumed ?: onConsumed)?.invoke()
         }
         return accepted
     }
@@ -218,7 +223,7 @@ class FaceTrackerImpl @Inject constructor(
             lastSubmittedTimestampMs = Long.MIN_VALUE
         }
         inFlight.reset()
-        pendingConsumed.getAndSet(null)?.invoke()
+        pendingConsumed.clear()?.onConsumed?.invoke()
 
         Timber.i("FaceTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -238,8 +243,9 @@ class FaceTrackerImpl @Inject constructor(
     @Suppress("DEPRECATION")
     private fun handleResult(result: FaceLandmarkerResult, resultTimestampMs: Long) {
         // Buffer lifetime first, before any early return (see HandTracker for the reasoning).
-        inFlight.release()
-        pendingConsumed.getAndSet(null)?.invoke()
+        val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
+        inFlight.release(completion.reservationToken)
+        completion.onConsumed?.invoke()
         if (isClosing || !_isInitialized) {
             return
         }
