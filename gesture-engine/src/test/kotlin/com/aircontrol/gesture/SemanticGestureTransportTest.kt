@@ -52,12 +52,8 @@ class SemanticGestureTransportTest {
         }
         assertEquals(GestureEngineState.ARMED, engine.engineState.value)
 
-        repeat(8) {
-            engine.processFrameSuspending(hand(ts, pinchGap = 0.08f))
-            ts += 40L
-        }
-        // Flood the continuous cursor path. These frames must not enter the
-        // semantic transport at all.
+        // Flood the continuous cursor path BEFORE the semantic pinch.
+        // These frames must not enter the semantic transport at all.
         repeat(1_000) {
             engine.processFrameSuspending(hand(ts))
             ts += 16L
