@@ -113,9 +113,21 @@ fun syntheticHandFrame(
     y: Float,
     timestampMs: Long,
     confidence: Float = 0.9f,
-): HandFrame = HandFrame(
-    landmarks = List(HandFrame.LANDMARK_COUNT) { Landmark3D(x, y, 0f) },
-    handedness = Handedness.RIGHT,
-    timestampMs = timestampMs,
-    confidence = confidence,
-)
+): HandFrame {
+    // Keep the palm anchor centered exactly at (x, y), but use non-collapsed
+    // geometry so HandFrame.isDetected can exercise the real quality gate.
+    val offsets = listOf(
+        0.00f to 0.08f,
+        -0.03f to 0.04f, -0.02f to 0.02f, -0.01f to 0.00f, -0.01f to -0.03f,
+        -0.04f to 0.00f, -0.04f to -0.05f, -0.04f to -0.09f, -0.04f to -0.13f,
+        0.00f to -0.01f, 0.00f to -0.06f, 0.00f to -0.11f, 0.00f to -0.16f,
+        0.04f to 0.00f, 0.04f to -0.05f, 0.04f to -0.10f, 0.04f to -0.15f,
+        0.08f to 0.02f, 0.08f to -0.03f, 0.08f to -0.08f, 0.08f to -0.13f,
+    )
+    return HandFrame(
+        landmarks = offsets.map { (dx, dy) -> Landmark3D(x + dx, y + dy, 0f) },
+        handedness = Handedness.RIGHT,
+        timestampMs = timestampMs,
+        confidence = confidence,
+    )
+}
