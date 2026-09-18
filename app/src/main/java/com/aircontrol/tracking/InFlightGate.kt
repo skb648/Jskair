@@ -12,41 +12,52 @@ import kotlin.concurrent.Volatile
  * callback, before the slot can be reused.
  */
 class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
-    private val reservedAtMs = AtomicLong(IDLE)
+    private val reservedAtMs = AtomicLong(IDLE_TIME)
+    private val activeToken = AtomicLong(IDLE_TOKEN)
+    private val nextToken = AtomicLong(0L)
 
     @Volatile private var submissions = 0L
     @Volatile private var refusals = 0L
     @Volatile private var stalledObservations = 0L
 
-    fun tryReserve(nowMs: Long): Boolean {
-        if (reservedAtMs.get() != IDLE) {
+    /** Reserves the single in-flight slot and returns a unique token for this submission. */
+    fun tryReserve(nowMs: Long): Long? {
+        if (activeToken.get() != IDLE_TOKEN) {
             refusals++
             if (isStalled(nowMs)) stalledObservations++
-            return false
+            return null
         }
-        return if (reservedAtMs.compareAndSet(IDLE, nowMs)) {
+        val token = nextToken.incrementAndGet()
+        return if (activeToken.compareAndSet(IDLE_TOKEN, token)) {
+            reservedAtMs.set(nowMs)
             submissions++
-            true
+            token
         } else {
             refusals++
-            false
+            null
         }
     }
 
-    fun release() {
-        reservedAtMs.set(IDLE)
+    /** Releases the slot only when [token] still owns it; stale callbacks are ignored. */
+    fun release(token: Long): Boolean {
+        if (!activeToken.compareAndSet(token, IDLE_TOKEN)) return false
+        reservedAtMs.set(IDLE_TIME)
+        return true
     }
 
-    fun isBusy(nowMs: Long): Boolean = reservedAtMs.get() != IDLE
+    fun isBusy(nowMs: Long): Boolean = activeToken.get() != IDLE_TOKEN
 
     /** True when an owner has been outstanding beyond the diagnostic window. */
     fun isStalled(nowMs: Long): Boolean {
         val reserved = reservedAtMs.get()
-        return reserved != IDLE && nowMs - reserved >= timeoutMs
+        return activeToken.get() != IDLE_TOKEN && reserved != IDLE_TIME && nowMs - reserved >= timeoutMs
     }
 
-    fun reset() {
-        reservedAtMs.set(IDLE)
+    /** Clears the current owner during graph teardown and returns its token, if any. */
+    fun reset(): Long? {
+        val token = activeToken.getAndSet(IDLE_TOKEN)
+        reservedAtMs.set(IDLE_TIME)
+        return token.takeIf { it != IDLE_TOKEN }
     }
 
     fun stats(): Stats = Stats(submissions, refusals, stalledObservations)
@@ -62,7 +73,8 @@ class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
     }
 
     companion object {
-        private const val IDLE = Long.MIN_VALUE
+        private const val IDLE_TOKEN = Long.MIN_VALUE
+        private const val IDLE_TIME = Long.MIN_VALUE
         const val DEFAULT_TIMEOUT_MS = 1_000L
     }
 }
