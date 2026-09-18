@@ -220,7 +220,6 @@ class FaceTrackerImpl @Inject constructor(
             faceLandmarker = null
             _isInitialized = false
             // Intentionally keep isClosing=true until the next initialize().
-            lastSubmittedTimestampMs = Long.MIN_VALUE
         }
         inFlight.reset()
         pendingConsumed.clear()?.onConsumed?.invoke()
