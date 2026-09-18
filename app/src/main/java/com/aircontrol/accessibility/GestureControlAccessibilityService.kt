@@ -816,9 +816,17 @@ class GestureControlAccessibilityService : AccessibilityService() {
         // SINGLE collector on gestureEvents fans out to both dispatch and cursor
         // updates. This preserves ordering between "cursor moved" and "action
         // dispatched" (fix #61).
+        // Semantic events are lossless/bounded; cursor positions use a separate
+        // latest-wins transport so a slow action consumer can never evict PINCH_END,
+        // SWIPE or POSE events with high-rate cursor updates.
         pipelineJobs.add(serviceScope.launchGuarded("gesture events", restart = true) {
             gestureDetector?.gestureEvents?.collectGuarded("gesture events") { event ->
                 handleGestureEvent(event)
+            }
+        })
+        pipelineJobs.add(serviceScope.launchGuarded("gesture cursor", restart = true) {
+            gestureDetector?.cursorEvents?.collectGuarded("gesture cursor") { event ->
+                handleCursorEvent(event)
             }
         })
 
@@ -1173,6 +1181,28 @@ class GestureControlAccessibilityService : AccessibilityService() {
      * we don't choke the main thread, then hops to Main only for the actual
      * dispatchGesture call (which Android requires to be on main).
      */
+    private suspend fun handleCursorEvent(event: GestureEvent.CursorMoved) {
+        if (!currentPreferences.cursorEnabled ||
+            currentPreferences.eyeTrackingEnabled ||
+            isCursorFrozen
+        ) return
+
+        if (event.minCutoffHint != lastAppliedMinCutoffHint) {
+            val newMinCutoff = event.minCutoffHint ?: baseMinCutoff
+            cursorSmoother.updateParams(minCutoff = newMinCutoff, beta = currentCursorBeta)
+            lastAppliedMinCutoffHint = event.minCutoffHint
+        }
+
+        val (smoothX, smoothY) = cursorSmoother.filter(
+            event.x, event.y, event.timestampMs,
+        )
+        if (event.isSilent) return
+
+        handleCursorStillness(smoothX, smoothY, event.timestampMs)
+        handTransport.publish(smoothX to smoothY)
+        cursorController?.updatePosition(smoothX, smoothY)
+    }
+
     private suspend fun handleGestureEvent(event: GestureEvent) {
         // Dispatch on Default, except the actual dispatchGesture call which is
         // on Main (Android requirement).
