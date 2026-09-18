@@ -257,19 +257,58 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var gazeDriftOffsetY: Float = 0f
     @Volatile private var lastAnchorAdjustMs: Long = 0L
 
-    // Issue 7: Gaze history ring buffer for pre-blink position rollback
-    private data class GazeHistoryEntry(val x: Float, val y: Float, val timeMs: Long)
-    private val gazeHistoryBuffer = java.util.concurrent.CopyOnWriteArrayList<GazeHistoryEntry>()
+    // Issue 7: fixed-size gaze history ring for pre-blink rollback.
+    // This path runs for every gaze frame; CopyOnWriteArrayList previously copied
+    // the whole backing array on every add/remove. The ring keeps memory and write
+    // cost bounded while preserving the same nearest-timestamp lookup semantics.
+    private class GazeHistoryRing(private val capacity: Int) {
+        private val xs = FloatArray(capacity)
+        private val ys = FloatArray(capacity)
+        private val times = LongArray(capacity)
+        private var next = 0
+        private var size = 0
+
+        @Synchronized
+        fun add(x: Float, y: Float, timeMs: Long) {
+            xs[next] = x
+            ys[next] = y
+            times[next] = timeMs
+            next = (next + 1) % capacity
+            if (size < capacity) size++
+        }
+
+        @Synchronized
+        fun nearest(referenceTimeMs: Long, lookbackMs: Long): Pair<Float, Float>? {
+            if (size == 0) return null
+            val targetTime = referenceTimeMs - lookbackMs
+            var bestIndex = -1
+            var bestDistance = Long.MAX_VALUE
+            for (i in 0 until size) {
+                val index = (next - 1 - i + capacity) % capacity
+                val distance = kotlin.math.abs(times[index] - targetTime)
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    bestIndex = index
+                }
+            }
+            return if (bestIndex >= 0) xs[bestIndex] to ys[bestIndex] else null
+        }
+
+        @Synchronized
+        fun clear() {
+            size = 0
+            next = 0
+        }
+    }
+
+    private val gazeHistoryBuffer = GazeHistoryRing(capacity = 25)
 
     private fun recordGazeHistory(x: Float, y: Float, timeMs: Long) {
-        if (gazeHistoryBuffer.size >= 25) gazeHistoryBuffer.removeAt(0)
-        gazeHistoryBuffer.add(GazeHistoryEntry(x, y, timeMs))
+        gazeHistoryBuffer.add(x, y, timeMs)
     }
 
-    private fun getGazeBefore(referenceTimeMs: Long, lookbackMs: Long): Pair<Float, Float>? {
-        val targetTime = referenceTimeMs - lookbackMs
-        return gazeHistoryBuffer.minByOrNull { kotlin.math.abs(it.timeMs - targetTime) }?.let { it.x to it.y }
-    }
+    private fun getGazeBefore(referenceTimeMs: Long, lookbackMs: Long): Pair<Float, Float>? =
+        gazeHistoryBuffer.nearest(referenceTimeMs, lookbackMs)
 
     // HID POC (experimental, isolated): Bluetooth HID mouse path. Disabled by
     // default; the adapter no-ops unless the pref is on AND a host is connected.
