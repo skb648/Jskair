@@ -309,6 +309,20 @@ class ActionDispatcher @Inject constructor(
         audioManager = null
     }
 
+    /**
+     * Lifecycle-safe drag cancellation. A service stop is a terminal input boundary:
+     * never leave the dispatcher believing a drag is active after its AccessibilityService
+     * has gone away. This intentionally does not synthesize a TAP/END action.
+     */
+    fun cancelActiveDrag() {
+        if (!isDragging && !wasEverDraggingThisPinch) return
+        Timber.i("Cancelling active drag because the input service is stopping")
+        resetDragState()
+        wasEverDraggingThisPinch = false
+        pendingSecondTapJob?.cancel()
+        pendingSecondTapJob = null
+    }
+
     fun resetTransientGestureState() {
         pendingSecondTapJob?.cancel()
         pendingSecondTapJob = null
