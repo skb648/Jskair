@@ -25,11 +25,9 @@ class RealtimeBackpressureTest {
     @Test
     fun `a channel with an outstanding submission refuses the next frame`() {
         val gate = InFlightGate()
-        assertTrue(gate.tryReserve(nowMs = 1_000L))
-        assertFalse(
-            "the graph is still busy, so the new frame must be dropped",
-            gate.tryReserve(nowMs = 1_040L),
-        )
+        val token = gate.tryReserve(nowMs = 1_000L)
+        assertNotNull(token)
+        assertNull(gate.tryReserve(nowMs = 1_040L))
         val stats = gate.stats()
         assertEquals(1L, stats.submitted)
         assertEquals(1L, stats.refused)
@@ -39,9 +37,9 @@ class RealtimeBackpressureTest {
     @Test
     fun `the slot is available again as soon as the result is released`() {
         val gate = InFlightGate()
-        assertTrue(gate.tryReserve(1_000L))
-        gate.release()
-        assertTrue(gate.tryReserve(1_040L))
+        val token = checkNotNull(gate.tryReserve(1_000L))
+        assertTrue(gate.release(token))
+        assertNotNull(gate.tryReserve(1_040L))
         assertEquals("no expiry was needed", 0L, gate.stats().expired)
     }
 
@@ -49,23 +47,23 @@ class RealtimeBackpressureTest {
     @Test
     fun `a stalled submission remains reserved until the graph releases it`() {
         val gate = InFlightGate(timeoutMs = 1_000L)
-        assertTrue(gate.tryReserve(1_000L))
+        val token = checkNotNull(gate.tryReserve(1_000L))
         assertTrue(gate.isBusy(1_999L))
         assertTrue(gate.isStalled(2_000L))
-        assertFalse(gate.tryReserve(2_001L))
+        assertNull(gate.tryReserve(2_001L))
         assertEquals(1L, gate.stats().expired)
-        gate.release()
-        assertTrue(gate.tryReserve(2_002L))
+        assertTrue(gate.release(token))
+        assertNotNull(gate.tryReserve(2_002L))
     }
 
     @Test
     fun `reset clears the reservation without counting a submission`() {
         val gate = InFlightGate()
-        assertTrue(gate.tryReserve(10L))
+        assertNotNull(gate.tryReserve(10L))
         gate.reset()
         assertFalse(gate.isBusy(11L))
         assertEquals(0L, gate.stats().refused)
-        assertTrue(gate.tryReserve(12L))
+        assertNotNull(gate.tryReserve(12L))
         assertEquals(2L, gate.stats().submitted)
     }
 
@@ -73,8 +71,9 @@ class RealtimeBackpressureTest {
     fun `a channel that keeps up reports no refusal at all`() {
         val gate = InFlightGate()
         repeat(50) { i ->
-            assertTrue("frame $i", gate.tryReserve(i * 40L))
-            gate.release()
+            val token = gate.tryReserve(i * 40L)
+            assertNotNull("frame $i", token)
+            assertTrue(gate.release(token!!))
         }
         assertEquals(0f, gate.stats().refusalRate, 1e-6f)
         assertEquals(50L, gate.stats().submitted)
