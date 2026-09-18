@@ -629,6 +629,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     gestureDetector?.updateSensitivity(prefs.sensitivity)
                     lastAppliedSensitivity = prefs.sensitivity
                 }
+                // Keep the tracker selection aligned with the user's explicit
+                // LEFT/RIGHT preference so the wrong visible hand cannot permanently
+                // anchor the temporal tracker before the preferred hand appears.
+                handTracker?.setPreferredHand(
+                    when (prefs.handPreference) {
+                        com.aircontrol.data.model.HandPreference.LEFT -> Handedness.LEFT
+                        com.aircontrol.data.model.HandPreference.RIGHT -> Handedness.RIGHT
+                        com.aircontrol.data.model.HandPreference.ANY -> Handedness.UNKNOWN
+                    },
+                )
                 if (lastAppliedCalibrationHandSize != prefs.calibratedHandSizeMm ||
                     lastAppliedCalibrationPinchDist != prefs.calibratedPinchDistanceMm
                 ) {
