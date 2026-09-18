@@ -38,6 +38,43 @@ class InFlightCompletionSlotTest {
     }
 
     @Test
+    fun `duplicate callback cannot consume the same completion twice`() {
+        val calls = AtomicInteger(0)
+        val slot = InFlightCompletionSlot()
+        slot.replace(
+            InFlightCompletionSlot.Pending(
+                reservationToken = 11L,
+                mediaPipeTimestampMs = 1_100L,
+                onConsumed = { calls.incrementAndGet() },
+            ),
+        )
+
+        val first = slot.takeForTimestamp(1_100L)
+        first?.onConsumed?.invoke()
+        val duplicate = slot.takeForTimestamp(1_100L)
+
+        assertNotNull(first)
+        assertNull(duplicate)
+        assertTrue(calls.get() == 1)
+    }
+
+    @Test
+    fun `out of order callback cannot consume a newer frame`() {
+        val slot = InFlightCompletionSlot()
+        slot.replace(
+            InFlightCompletionSlot.Pending(
+                reservationToken = 20L,
+                mediaPipeTimestampMs = 2_000L,
+                onConsumed = {},
+            ),
+        )
+
+        assertNull(slot.takeForTimestamp(1_999L))
+        val current = slot.takeForTimestamp(2_000L)
+        assertNotNull(current)
+    }
+
+    @Test
     fun `cleared completion ignores late callback`() {
         val calls = AtomicInteger(0)
         val slot = InFlightCompletionSlot()
