@@ -605,6 +605,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
         removeOverlays()
         actionDispatcher?.onGestureDispatched = null // fix #6: clear callback
         actionDispatcher?.blockReasonHub?.onChange = null // Issue 10: no leak
+        actionDispatcher?.cancelActiveDrag()
         actionDispatcher?.detachService()
         // GestureDetector is application-scoped. Closing it here permanently cancels
         // its internal scope, so toggling accessibility Off/On in the same process
