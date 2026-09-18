@@ -154,7 +154,10 @@ class GestureEngine(
         lastCustomGestureId = null
     }
 
-    suspend fun processFrame(input: HandInput) {
+    /** Compatibility entry point for synchronous unit callers. Production adapters use the suspend variant. */
+    fun processFrame(input: HandInput) = kotlinx.coroutines.runBlocking { processFrameSuspending(input) }
+
+    suspend fun processFrameSuspending(input: HandInput) {
         val timestampMs = input.timestampMs
         val isLowConfidence = input.isDetected && input.confidence < CONFIDENCE_THRESHOLD
         // Hardening round 10 (spec §5/§17 — threshold oscillation): entering
