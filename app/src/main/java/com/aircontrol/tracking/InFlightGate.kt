@@ -1,6 +1,7 @@
 package com.aircontrol.tracking
 
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.Volatile
 
 /**
@@ -10,10 +11,18 @@ import kotlin.concurrent.Volatile
  * MediaPipe callback may arrive late and still be reading the old MPImage. The
  * owner must close/reinitialize the graph, which invokes the frame completion
  * callback, before the slot can be reused.
+ *
+ * The token and reservation timestamp live in one atomic object so a stale
+ * callback can never clear or overwrite a newer reservation's timing state.
  */
 class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
-    private val reservedAtMs = AtomicLong(IDLE_TIME)
-    private val activeToken = AtomicLong(IDLE_TOKEN)
+
+    private data class Reservation(
+        val token: Long,
+        val reservedAtMs: Long,
+    )
+
+    private val reservation = AtomicReference<Reservation?>(null)
     private val nextToken = AtomicLong(0L)
 
     @Volatile private var submissions = 0L
@@ -22,47 +31,38 @@ class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
 
     /** Reserves the single in-flight slot and returns a unique token for this submission. */
     fun tryReserve(nowMs: Long): Long? {
-        if (activeToken.get() != IDLE_TOKEN) {
+        if (reservation.get() != null) {
             refusals++
             if (isStalled(nowMs)) stalledObservations++
             return null
         }
-        val token = nextToken.incrementAndGet()
-        return if (activeToken.compareAndSet(IDLE_TOKEN, token)) {
-            reservedAtMs.set(nowMs)
+        val candidate = Reservation(nextToken.incrementAndGet(), nowMs)
+        return if (reservation.compareAndSet(null, candidate)) {
             submissions++
-            token
+            candidate.token
         } else {
             refusals++
             null
         }
     }
 
-    /** Releases the slot only when [token] still owns it; stale callbacks are ignored. */
+    /** Releases the slot only when [token] still owns the exact reservation. */
     fun release(token: Long): Boolean {
-        // Clear the timestamp before releasing the token. A new reservation may
-        // start immediately after the token becomes idle; setting the timestamp
-        // afterwards could erase the new reservation's start time.
-        reservedAtMs.set(IDLE_TIME)
-        return activeToken.compareAndSet(token, IDLE_TOKEN)
+        val current = reservation.get() ?: return false
+        if (current.token != token) return false
+        return reservation.compareAndSet(current, null)
     }
 
-    fun isBusy(nowMs: Long): Boolean = activeToken.get() != IDLE_TOKEN
+    fun isBusy(nowMs: Long): Boolean = reservation.get() != null
 
     /** True when an owner has been outstanding beyond the diagnostic window. */
     fun isStalled(nowMs: Long): Boolean {
-        val reserved = reservedAtMs.get()
-        return activeToken.get() != IDLE_TOKEN && reserved != IDLE_TIME && nowMs - reserved >= timeoutMs
+        val current = reservation.get() ?: return false
+        return nowMs - current.reservedAtMs >= timeoutMs
     }
 
     /** Clears the current owner during graph teardown and returns its token, if any. */
-    fun reset(): Long? {
-        // Block new reservations from observing a stale timestamp before the
-        // active token is cleared; callers use this during graph teardown.
-        reservedAtMs.set(IDLE_TIME)
-        val token = activeToken.getAndSet(IDLE_TOKEN)
-        return token.takeIf { it != IDLE_TOKEN }
-    }
+    fun reset(): Long? = reservation.getAndSet(null)?.token
 
     fun stats(): Stats = Stats(submissions, refusals, stalledObservations)
 
@@ -77,8 +77,6 @@ class InFlightGate(private val timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
     }
 
     companion object {
-        private const val IDLE_TOKEN = Long.MIN_VALUE
-        private const val IDLE_TIME = Long.MIN_VALUE
         const val DEFAULT_TIMEOUT_MS = 1_000L
     }
 }
