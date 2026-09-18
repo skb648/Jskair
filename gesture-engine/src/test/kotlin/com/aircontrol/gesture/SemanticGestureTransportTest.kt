@@ -9,7 +9,6 @@ import com.aircontrol.gesture.model.Landmark3D
 import com.aircontrol.gesture.model.PinchPhase
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -41,7 +40,13 @@ class SemanticGestureTransportTest {
         runCurrent()
 
         var ts = 1_000L
-        repeat(20) {
+        repeat(12) {
+            engine.processFrameSuspending(hand(ts))
+            ts += 40L
+            if (engine.engineState.value == GestureEngineState.ARMED) return@repeat
+        }
+        var guard = 0
+        while (engine.engineState.value != GestureEngineState.ARMED && guard++ < 20) {
             engine.processFrameSuspending(hand(ts))
             ts += 40L
         }
@@ -75,36 +80,51 @@ class SemanticGestureTransportTest {
         collector.cancel()
     }
 
-    private fun hand(timestampMs: Long, pinchGap: Float? = null): HandInput {
-        val wx = 0.5f
+    private fun hand(
+        timestampMs: Long,
+        offsetX: Float = 0f,
+        scale: Float = 0.35f,
+        index: Boolean = true,
+        middle: Boolean = true,
+        ring: Boolean = true,
+        pinky: Boolean = true,
+        thumbOut: Boolean = true,
+        pinchGap: Float? = null,
+        confidence: Float = 0.95f,
+    ): HandInput {
+        val wx = 0.5f + offsetX
         val wy = 0.75f
-        val s = 0.35f
-        fun finger(xOffset: Float): List<Landmark3D> {
+        val s = scale
+        fun finger(xOffset: Float, extended: Boolean): List<Landmark3D> {
+            val mcp = Landmark3D(wx + xOffset * s, wy - 1.0f * s, 0f)
+            val pipY = if (extended) wy - 1.5f * s else wy - 1.3f * s
+            val dipY = if (extended) wy - 1.8f * s else wy - 1.1f * s
+            val tipY = if (extended) wy - 2.1f * s else wy - 0.95f * s
             val x = wx + xOffset * s
-            return listOf(
-                Landmark3D(x, wy - 1.0f * s, 0f),
-                Landmark3D(x, wy - 1.5f * s, 0f),
-                Landmark3D(x, wy - 1.8f * s, 0f),
-                Landmark3D(x, wy - 2.1f * s, 0f),
-            )
+            return listOf(mcp, Landmark3D(x, pipY, 0f), Landmark3D(x, dipY, 0f), Landmark3D(x, tipY, 0f))
         }
         val wrist = Landmark3D(wx, wy, 0f)
-        val thumb = if (pinchGap == null) {
+        val thumbTip = if (pinchGap != null) {
+            Landmark3D(wx - 0.15f * s + pinchGap * s, wy - 2.1f * s, 0f)
+        } else if (thumbOut) {
             Landmark3D(wx - 0.68f * s, wy - 0.68f * s, 0f)
         } else {
-            Landmark3D(wx - 0.15f * s + pinchGap * s, wy - 2.1f * s, 0f)
+            Landmark3D(wx - 0.35f * s, wy - 0.45f * s, 0f)
         }
-        val landmarks = mutableListOf(
-            wrist,
+        val landmarks = mutableListOf(wrist)
+        landmarks += listOf(
             Landmark3D(wx - 0.2f * s, wy - 0.2f * s, 0f),
             Landmark3D(wx - 0.3f * s, wy - 0.3f * s, 0f),
             Landmark3D(wx - 0.5f * s, wy - 0.5f * s, 0f),
-            thumb,
+            thumbTip,
         )
-        landmarks += finger(-0.15f)
-        landmarks += finger(0f)
-        landmarks += finger(0.15f)
-        landmarks += finger(0.30f)
-        return HandInput(landmarks, Handedness.RIGHT, timestampMs, 0.95f)
+        landmarks += finger(-0.15f, index)
+        landmarks += finger(0f, middle)
+        landmarks += finger(0.15f, ring)
+        landmarks += finger(0.30f, pinky)
+        assertEquals(21, landmarks.size)
+        return HandInput(landmarks, Handedness.RIGHT, timestampMs, confidence)
     }
+
+
 }
