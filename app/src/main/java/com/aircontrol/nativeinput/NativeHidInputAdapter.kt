@@ -118,10 +118,10 @@ fun syntheticHandFrame(
     // geometry so HandFrame.isDetected can exercise the real quality gate.
     val geometryScale = minOf(
         1f,
-        (x / 0.08f).coerceAtLeast(0f),
-        ((1f - x) / 0.08f).coerceAtLeast(0f),
-        (y / 0.08f).coerceAtLeast(0f),
-        ((1f - y) / 0.08f).coerceAtLeast(0f),
+        (x / 0.18f).coerceAtLeast(0f),
+        ((1f - x) / 0.18f).coerceAtLeast(0f),
+        (y / 0.18f).coerceAtLeast(0f),
+        ((1f - y) / 0.18f).coerceAtLeast(0f),
     ).coerceIn(0.5f, 1f)
     val offsets = listOf(
         0.00f to 0.05f,
