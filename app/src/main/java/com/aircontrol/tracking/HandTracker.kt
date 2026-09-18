@@ -22,6 +22,9 @@ interface HandTracker {
     val handFrames: SharedFlow<HandFrame>
     fun initialize()
 
+    /** Updates the preferred hand used when selecting among multiple detections. */
+    fun setPreferredHand(preference: Handedness)
+
     /**
      * Submits [mpImage] to the graph, **only if no submission is outstanding**.
      *
@@ -88,6 +91,14 @@ class HandTrackerImpl @Inject constructor(
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
+
+    @Volatile private var preferredHand: Handedness = Handedness.UNKNOWN
+
+    override fun setPreferredHand(preference: Handedness) {
+        preferredHand = preference
+        lastTrackedWristX = -1f
+        lastTrackedWristY = -1f
+    }
 
     override fun initialize() {
         if (_isInitialized) {
@@ -260,24 +271,35 @@ class HandTrackerImpl @Inject constructor(
         // Multi-hand spatial continuity: if multiple hands are present,
         // stick to the hand closest to the last tracked wrist/palm position.
         // This prevents the cursor from teleporting when a second hand enters or moves.
-        val selectedIdx = if (result.landmarks().size > 1 && lastTrackedWristX >= 0f) {
-            var bestIdx = 0
-            var bestDist = Float.MAX_VALUE
-            for (i in result.landmarks().indices) {
+        val handednessResults = result.handednesses()
+        val preferredCandidates = if (preferredHand == Handedness.UNKNOWN) emptyList() else
+            result.landmarks().indices.filter { i ->
+                handednessResults.size > i &&
+                    handednessResults[i].isNotEmpty() &&
+                    when (preferredHand) {
+                        Handedness.LEFT -> handednessResults[i][0].categoryName().equals("LEFT", ignoreCase = true)
+                        Handedness.RIGHT -> handednessResults[i][0].categoryName().equals("RIGHT", ignoreCase = true)
+                        Handedness.UNKNOWN -> false
+                    }
+            }
+
+        // Prefer the user's requested hand first. Within the preferred set, keep
+        // temporal continuity with the last selected wrist; when no preferred
+        // hand is currently visible, fall back to spatial continuity.
+        val candidateIndices = if (preferredCandidates.isNotEmpty()) preferredCandidates
+            else result.landmarks().indices.toList()
+        val selectedIdx = if (candidateIndices.size > 1 && lastTrackedWristX >= 0f) {
+            candidateIndices.minByOrNull { i ->
                 val lms = result.landmarks()[i]
-                if (lms.isNotEmpty()) {
+                if (lms.isEmpty()) Float.MAX_VALUE
+                else {
                     val dx = lms[0].x() - lastTrackedWristX
                     val dy = lms[0].y() - lastTrackedWristY
-                    val distSq = dx * dx + dy * dy
-                    if (distSq < bestDist) {
-                        bestDist = distSq
-                        bestIdx = i
-                    }
+                    dx * dx + dy * dy
                 }
-            }
-            bestIdx
+            } ?: candidateIndices.first()
         } else {
-            0
+            candidateIndices.firstOrNull() ?: 0
         }
 
         val landmarks = result.landmarks()[selectedIdx]
