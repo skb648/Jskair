@@ -764,12 +764,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     else -> true
                 }
                 if (shouldProcess) {
-                    gestureDetector?.processHandFrame(frame)
+                    gestureDetector?.processHandFrameSuspending(frame)
                 } else {
                     // Feed EMPTY so the engine can disarm cleanly, but only if
                     // we were previously tracking (avoid resetting on every frame
                     // of the wrong hand, which caused arming thrash).
-                    gestureDetector?.processHandFrame(
+                    gestureDetector?.processHandFrameSuspending(
                         HandFrame.EMPTY.copy(timestampMs = frame.timestampMs),
                     )
                 }
