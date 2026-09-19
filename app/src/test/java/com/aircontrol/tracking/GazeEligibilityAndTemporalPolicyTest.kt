@@ -171,7 +171,10 @@ class GazeEligibilityAndTemporalPolicyTest {
     @Test fun nonFinitePredictionNeverMovesTheCursor() {
         val policy = GazeJumpPolicy()
         val d = policy.evaluate(Float.NaN, 0.5f, 0f, 0f)
-        assertTrue(d.x.isNaN() || d.outcome == GazeJumpPolicy.JumpOutcome.ACCEPT)
+        assertEquals(GazeJumpPolicy.JumpOutcome.HOLD, d.outcome)
+        assertTrue("invalid prediction must resolve to a finite safe X", d.x.isFinite())
+        assertTrue("invalid prediction must resolve to a finite safe Y", d.y.isFinite())
+        assertFalse("invalid prediction must never be actionable", d.actionConfidenceFactor >= 1f)
     }
 
     @Test fun resetClearsTheBaseline() {

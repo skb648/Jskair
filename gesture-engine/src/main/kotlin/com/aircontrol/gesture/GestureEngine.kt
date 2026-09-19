@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -39,16 +40,38 @@ class GestureEngine(
     private val dynamicDetector = DynamicGestureDetector(initialConfig)
     private val stateMachine = GestureStateMachine(initialConfig)
 
-    private val _gestureEvents = MutableSharedFlow<GestureEvent>(
-        // Fix (audit #16): 16 slots could be wiped out by a transient main-thread
-        // stall, and DROP_OLDEST then ate a Pinch START/END — the exact
-        // "pinch visualized but no click" failure. 64 slots ≈ >2s of 30fps
-        // events, making a lost critical sequence practically impossible while
-        // keeping memory bounded.
-        extraBufferCapacity = 64,
+    /**
+     * Continuous cursor transport: latest-wins is intentional because old positions
+     * are obsolete. Semantic gesture events never enter this flow.
+     */
+    private val _cursorEvents = MutableSharedFlow<GestureEvent.CursorMoved>(
+        replay = 0,
+        extraBufferCapacity = 1,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
-    val gestureEvents: SharedFlow<GestureEvent> = _gestureEvents.asSharedFlow()
+    val cursorEvents: SharedFlow<GestureEvent.CursorMoved> = _cursorEvents.asSharedFlow()
+
+    /**
+     * Semantic transport: bounded and lossless. A slow consumer applies backpressure
+     * to frame processing rather than silently deleting PINCH_START/END, SWIPE or
+     * POSE events. Kotlin's suspending emit provides that bounded backpressure.
+     */
+    private val _semanticEvents = MutableSharedFlow<GestureEvent>(
+        replay = 0,
+        extraBufferCapacity = 32,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.SUSPEND,
+    )
+    val semanticEvents: SharedFlow<GestureEvent> = _semanticEvents.asSharedFlow()
+
+    /**
+     * Compatibility view for existing diagnostics/tests. Production action dispatch
+     * must consume [semanticEvents], while [cursorEvents] remains latest-wins.
+     * This merged view is intentionally not used for correctness-sensitive dispatch.
+     */
+    val gestureEvents: Flow<GestureEvent> = merge(
+        semanticEvents,
+        cursorEvents,
+    )
     private val _engineState = MutableStateFlow(GestureEngineState.DISARMED)
     val engineState: StateFlow<GestureEngineState> = _engineState.asStateFlow()
     private val _currentPose = MutableStateFlow(Pose.NONE)
@@ -142,7 +165,10 @@ class GestureEngine(
         lastCustomGestureId = null
     }
 
-    fun processFrame(input: HandInput) {
+    /** Compatibility entry point for synchronous unit callers. Production adapters use the suspend variant. */
+    fun processFrame(input: HandInput) = kotlinx.coroutines.runBlocking { processFrameSuspending(input) }
+
+    suspend fun processFrameSuspending(input: HandInput) {
         val timestampMs = input.timestampMs
         val isLowConfidence = input.isDetected && input.confidence < CONFIDENCE_THRESHOLD
         // Hardening round 10 (spec §5/§17 — threshold oscillation): entering
@@ -277,7 +303,7 @@ class GestureEngine(
                     palmHomeFired = false
                 } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs && palmHomeConditionsMet(input, timestampMs)) {
                     palmHomeFired = true
-                    _gestureEvents.tryEmit(GestureEvent.PalmHome(timestampMs))
+                    _semanticEvents.emit(GestureEvent.PalmHome(timestampMs))
                 }
             } else resetPalmTracking()
         } else resetPalmTracking()
@@ -286,10 +312,10 @@ class GestureEngine(
             when (transition.newState) {
                 GestureEngineState.ARMED -> {
                     armedSinceMs = timestampMs
-                    _gestureEvents.tryEmit(GestureEvent.Armed(timestampMs))
+                    _semanticEvents.emit(GestureEvent.Armed(timestampMs))
                 }
                 GestureEngineState.DISARMED -> {
-                    _gestureEvents.tryEmit(GestureEvent.Disarmed(timestampMs))
+                    _semanticEvents.emit(GestureEvent.Disarmed(timestampMs))
                     wasPinching = false
                     lastCustomGestureId = null
                 }
@@ -319,7 +345,7 @@ class GestureEngine(
             // made valid swipes impossible. Pinch interference stays a veto, because
             // that is cross-modal arbitration rather than a quality judgement.
             if (swipeResult.detected && swipeResult.direction != null && !swipeSuppressed) {
-                _gestureEvents.tryEmit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
+                _semanticEvents.emit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
                 onSwipeDecision?.invoke(
                     true, swipeResult.direction, swipeResult.confidence, null,
                     swipeResult.displacementX, swipeResult.displacementY, timestampMs,
@@ -343,14 +369,14 @@ class GestureEngine(
                 // volume. Pose actions are discrete and can be destructive,
                 // so low-confidence tracking mutes them like swipes/templates.
                 val actionablePose = pose.takeIf { it != Pose.NONE && it != Pose.OPEN_PALM && it != Pose.FIST }
-                if (actionablePose != null) _gestureEvents.tryEmit(GestureEvent.PoseTriggered(actionablePose, timestampMs))
+                if (actionablePose != null) _semanticEvents.emit(GestureEvent.PoseTriggered(actionablePose, timestampMs))
             }
             if (!lowConfidence && input.isDetected) {
                 val matchedTemplate = poseClassifier.matchCustomTemplate(input)
                 if (matchedTemplate != null) {
                     if (matchedTemplate.gestureId != lastCustomGestureId) {
                         lastCustomGestureId = matchedTemplate.gestureId
-                        _gestureEvents.tryEmit(GestureEvent.CustomGestureTriggered(matchedTemplate.gestureId, matchedTemplate.name, timestampMs))
+                        _semanticEvents.emit(GestureEvent.CustomGestureTriggered(matchedTemplate.gestureId, matchedTemplate.name, timestampMs))
                     }
                 } else lastCustomGestureId = null
             }
@@ -366,7 +392,7 @@ class GestureEngine(
             // right at the moment the user was most engaged.
             val isSilent = transition.newState == GestureEngineState.ARMING
             val hint = if (lowConfidence) LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF else null
-            _gestureEvents.tryEmit(GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs, isSilent, hint))
+            _cursorEvents.tryEmit(GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs, isSilent, hint))
         }
     }
 
@@ -381,7 +407,7 @@ class GestureEngine(
      * stretch of frames went soft would strand the press); it keeps flowing
      * MOVE updates and always terminates with END.
      */
-    private fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
+    private suspend fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
         val currentState = _engineState.value
         val isAllowedState = currentState == GestureEngineState.ARMED ||
             currentState == GestureEngineState.EXECUTING ||
@@ -393,7 +419,7 @@ class GestureEngine(
         }
         if (!input.isDetected) {
             if (wasPinching) {
-                _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false
             } else if (pinchState != PinchState.IDLE) {
                 // Stress-audit bug #10 (§12): an UNCONFIRMED candidate (HOVER /
@@ -447,12 +473,12 @@ class GestureEngine(
                 if (timeInState >= config.pinchConfirmMs && allowEntry) {
                     if (_engineState.value == GestureEngineState.ARMING) {
                         _engineState.value = GestureEngineState.ARMED
-                        _gestureEvents.tryEmit(GestureEvent.Armed(timestampMs))
+                        _semanticEvents.emit(GestureEvent.Armed(timestampMs))
                     }
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     pinchDragUnlocked = false
                     pinchStartX = pinchAnchoredX; pinchStartY = pinchAnchoredY
-                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 } else if (thumbIndexDistance > exitThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
             }
             PinchState.PINCH_HOLD -> {
@@ -465,7 +491,7 @@ class GestureEngine(
                     val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
                     val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
                     currentPinchPhase = PinchPhase.MOVE
-                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.MOVE, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.MOVE, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 }
             }
             PinchState.PINCH_RELEASE -> {
@@ -473,7 +499,7 @@ class GestureEngine(
                     pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs; wasPinching = false; currentPinchPhase = PinchPhase.END; lastPinchEndMs = timestampMs
                     val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
                     val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
-                    _gestureEvents.tryEmit(GestureEvent.Pinch(PinchPhase.END, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.END, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                     currentPinchPhase = null
                     pinchDragUnlocked = false
                 } else if (thumbIndexDistance < enterThreshold) { pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs }

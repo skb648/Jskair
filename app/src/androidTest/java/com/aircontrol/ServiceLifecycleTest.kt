@@ -97,6 +97,10 @@ class ServiceLifecycleTest {
             // No-op for testing
         }
 
+        override fun setPreferredHand(preference: Handedness) {
+            // No-op for testing
+        }
+
         override fun processFrame(
             mpImage: com.google.mediapipe.framework.image.MPImage,
             timestampMs: Long,

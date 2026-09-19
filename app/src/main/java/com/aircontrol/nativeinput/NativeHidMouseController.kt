@@ -46,8 +46,14 @@ class NativeHidMouseController @Inject constructor(
     private val reportBuffer = ByteArray(HidMouseDescriptor.REPORT_SIZE)
     private val callbackExecutor: Executor = Executor { it.run() }
 
-    @get:RequiresApi(Build.VERSION_CODES.P)
-    private val sdpSettings by lazy {
+    /**
+     * Keep the API-28-only constructor inside an explicitly API-gated method.
+     *
+     * A property/getter annotation does not make the constructor invocation in
+     * the lazy initializer safe from Android Lint's NewApi analysis.
+     */
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun createSdpSettings(): BluetoothHidDeviceAppSdpSettings =
         BluetoothHidDeviceAppSdpSettings(
             "AirControl Mouse",
             "AirControl hand-tracking mouse (experimental)",
@@ -55,9 +61,9 @@ class NativeHidMouseController @Inject constructor(
             BluetoothHidDevice.SUBCLASS1_MOUSE,
             HidMouseDescriptor.DESCRIPTOR,
         )
-    }
 
-    private val hidCallback = object : BluetoothHidDevice.Callback() {
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun createHidCallback(): BluetoothHidDevice.Callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             Log.i(TAG, "HID app status: registered=$registered hostPresent=${pluggedDevice != null}")
             if (registered) setState(NativeHidMouseState.REGISTERED)
@@ -239,7 +245,7 @@ class NativeHidMouseController @Inject constructor(
                 }
                 hidDevice = hid
                 try {
-                    val ok = hid.registerApp(sdpSettings, qosSettings(), qosSettings(), callbackExecutor, hidCallback)
+                    val ok = hid.registerApp(createSdpSettings(), qosSettings(), qosSettings(), callbackExecutor, createHidCallback())
                     if (!ok) setStateSafe(NativeHidMouseState.ERROR, "registerApp returned false (OEM may block HID Device role)")
                 } catch (se: SecurityException) {
                     setStateSafe(NativeHidMouseState.ERROR, "Missing BLUETOOTH_CONNECT permission")

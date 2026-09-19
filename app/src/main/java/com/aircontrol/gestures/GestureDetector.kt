@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,13 +39,18 @@ import kotlin.concurrent.Volatile
  * [GestureEvent] flow and [GestureEngineState] for UI consumption.
  */
 interface GestureDetector : AutoCloseable {
+    /** Lossless ordered semantic events. */
     val gestureEvents: SharedFlow<GestureEvent>
+    /** Latest-wins continuous cursor positions. */
+    val cursorEvents: SharedFlow<GestureEvent.CursorMoved>
     val engineState: StateFlow<GestureEngineState>
     val currentPose: StateFlow<Pose>
     val armingProgress: StateFlow<Float>
     /** True while hand tracking confidence is too low to trust poses/pinches. */
     val lowConfidence: StateFlow<Boolean>
     fun processHandFrame(frame: HandFrame)
+    /** Suspending variant used by the realtime service so semantic backpressure never blocks a thread. */
+    suspend fun processHandFrameSuspending(frame: HandFrame)
     fun updateSensitivity(sensitivity: Int)
 
     /**
@@ -115,13 +121,13 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     @Volatile
     private var currentSensitivity: Int = 70
 
-    private val _gestureEvents = MutableSharedFlow<GestureEvent>(
-        // Fix (audit #16): deeper buffer so pinch start/move/end sequences can
-        // never be dropped by a transient slow collector (see GestureEngine).
-        extraBufferCapacity = 64,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
-    )
-    override val gestureEvents: SharedFlow<GestureEvent> = _gestureEvents.asSharedFlow()
+    /** Semantic events are already lossless/bounded in the pure gesture engine. */
+    override val gestureEvents: SharedFlow<GestureEvent>
+        get() = engine.semanticEvents
+
+    /** Continuous cursor updates use latest-wins transport. */
+    override val cursorEvents: SharedFlow<GestureEvent.CursorMoved>
+        get() = engine.cursorEvents
 
     private val _engineState = MutableStateFlow(GestureEngineState.DISARMED)
     override val engineState: StateFlow<GestureEngineState> = _engineState.asStateFlow()
@@ -213,10 +219,14 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     }
 
     override fun processHandFrame(frame: HandFrame) {
+        runBlocking { processHandFrameSuspending(frame) }
+    }
+
+    override suspend fun processHandFrameSuspending(frame: HandFrame) {
         frameSerial.lock()
         try {
             val input = frame.toHandInput()
-            engine.processFrame(input)
+            engine.processFrameSuspending(input)
 
             // Forward state from engine while still owning the same serial turn.
             _engineState.value = engine.engineState.value
@@ -283,12 +293,13 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         Timber.d("Gesture detector reset")
     }
 
+    /**
+     * Semantic and cursor flows are exposed directly from the current engine.
+     * There is deliberately no second DROP_OLDEST fan-out buffer here.
+     */
     private fun collectEngineEvents() {
-        engineEventsJob = scope.launch {
-            engine.gestureEvents.collect { event ->
-                _gestureEvents.tryEmit(event)
-            }
-        }
+        engineEventsJob?.cancel()
+        engineEventsJob = null
     }
 
     /**

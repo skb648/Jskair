@@ -22,6 +22,9 @@ interface HandTracker {
     val handFrames: SharedFlow<HandFrame>
     fun initialize()
 
+    /** Updates the preferred hand used when selecting among multiple detections. */
+    fun setPreferredHand(preference: Handedness)
+
     /**
      * Submits [mpImage] to the graph, **only if no submission is outstanding**.
      *
@@ -64,7 +67,7 @@ class HandTrackerImpl @Inject constructor(
 
     /** One outstanding submission, and its caller's completion hook (see processFrame). */
     private val inFlight = InFlightGate()
-    private val pendingConsumed = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+    private val pendingConsumed = InFlightCompletionSlot()
 
     // Perf audit P7: guards detectAsync submission against close().
     private val closeLock = Any()
@@ -89,6 +92,14 @@ class HandTrackerImpl @Inject constructor(
     )
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
+    @Volatile private var preferredHand: Handedness = Handedness.UNKNOWN
+
+    override fun setPreferredHand(preference: Handedness) {
+        preferredHand = preference
+        lastTrackedWristX = -1f
+        lastTrackedWristY = -1f
+    }
+
     override fun initialize() {
         if (_isInitialized) {
             // Perf audit P2: reuse across service stop/start is now the NORMAL
@@ -110,7 +121,6 @@ class HandTrackerImpl @Inject constructor(
                 return
             }
 
-        lastSubmittedTimestampMs = Long.MIN_VALUE
         _isInitialized = true
         StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -123,12 +133,12 @@ class HandTrackerImpl @Inject constructor(
         // Saturation check FIRST, before the lock: a device that cannot keep up must shed frames
         // instead of queueing them, and the shed has to be as cheap as possible.
         val nowMs = android.os.SystemClock.elapsedRealtime()
-        if (!inFlight.tryReserve(nowMs)) {
+        val reservationToken = inFlight.tryReserve(nowMs) ?: run {
             onConsumed?.invoke()
             return false
         }
         if (isClosing || !_isInitialized) {
-            inFlight.release()
+            inFlight.release(reservationToken)
             onConsumed?.invoke()
             return false
         }
@@ -154,7 +164,13 @@ class HandTrackerImpl @Inject constructor(
                         // from a wedged graph, that owner must not be left holding its buffer.
                         // Storing BEFORE submitting is what lets a result that arrives immediately
                         // consume this callback instead of losing it.
-                        pendingConsumed.getAndSet(onConsumed)?.invoke()
+                        pendingConsumed.replace(
+                            InFlightCompletionSlot.Pending(
+                                reservationToken = reservationToken,
+                                mediaPipeTimestampMs = mediaPipeTimestampMs,
+                                onConsumed = onConsumed,
+                            ),
+                        )?.onConsumed?.invoke()
                         landmarker.detectAsync(mpImage, mediaPipeTimestampMs)
                         accepted = true
                     }
@@ -164,10 +180,10 @@ class HandTrackerImpl @Inject constructor(
             Timber.e(e, "Error processing hand frame: submission failed")
             }
         if (!accepted) {
-            inFlight.release()
-            // Exactly-once, whatever happened above: if our hook was already stored it is handed
-            // back here; if the failure happened before the store, the caller's hook runs directly.
-            (pendingConsumed.getAndSet(null) ?: onConsumed)?.invoke()
+            inFlight.release(reservationToken)
+            // Exactly-once: cancel only our completion hook so a late old callback cannot consume
+            // a newer session's hook.
+            (pendingConsumed.cancelForToken(reservationToken)?.onConsumed ?: onConsumed)?.invoke()
         }
         return accepted
     }
@@ -201,7 +217,6 @@ class HandTrackerImpl @Inject constructor(
             handLandmarker = null
             _isInitialized = false
             isClosing = false
-            lastSubmittedTimestampMs = Long.MIN_VALUE
             lastTrackedWristX = -1f
             lastTrackedWristY = -1f
         }
@@ -209,7 +224,7 @@ class HandTrackerImpl @Inject constructor(
         // coming for that frame, and the graph is already torn down, so the gate is cleared and the
         // caller's buffer is handed back here instead.
         inFlight.reset()
-        pendingConsumed.getAndSet(null)?.invoke()
+        pendingConsumed.clear()?.onConsumed?.invoke()
 
         Timber.i("HandTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -222,11 +237,11 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
-        // Release the frame before doing any work: the buffer's owner is waiting on this, and the
-        // queue must drain at inference speed rather than at "inference + everything the result
-        // handler does" speed. Also fires on the isClosing path below, deliberately.
-        inFlight.release()
-        pendingConsumed.getAndSet(null)?.invoke()
+        // Correlate the callback with the exact submission first. A late callback from an older
+        // MediaPipe session must not release or complete a newer frame.
+        val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
+        inFlight.release(completion.reservationToken)
+        completion.onConsumed?.invoke()
         if (isClosing) {
             return
         }
@@ -256,24 +271,54 @@ class HandTrackerImpl @Inject constructor(
         // Multi-hand spatial continuity: if multiple hands are present,
         // stick to the hand closest to the last tracked wrist/palm position.
         // This prevents the cursor from teleporting when a second hand enters or moves.
-        val selectedIdx = if (result.landmarks().size > 1 && lastTrackedWristX >= 0f) {
-            var bestIdx = 0
-            var bestDist = Float.MAX_VALUE
-            for (i in result.landmarks().indices) {
+        val handednessResults = result.handednesses()
+        val preferredCandidates = if (preferredHand == Handedness.UNKNOWN) emptyList() else
+            result.landmarks().indices.filter { i ->
+                handednessResults.size > i &&
+                    handednessResults[i].isNotEmpty() &&
+                    when (preferredHand) {
+                        Handedness.LEFT -> handednessResults[i][0].categoryName().equals("LEFT", ignoreCase = true)
+                        Handedness.RIGHT -> handednessResults[i][0].categoryName().equals("RIGHT", ignoreCase = true)
+                        Handedness.UNKNOWN -> false
+                    }
+            }
+
+        // An explicit LEFT/RIGHT preference is a hard identity constraint at
+        // selection time. Do not let a non-preferred hand overwrite temporal
+        // continuity while the preferred hand is briefly occluded; the service
+        // will otherwise see an apparently valid hand and can re-anchor the
+        // cursor when the preferred hand returns.
+        if (preferredHand != Handedness.UNKNOWN && preferredCandidates.isEmpty()) {
+            lastTrackedWristX = -1f
+            lastTrackedWristY = -1f
+            _handFrames.tryEmit(
+                HandFrame(
+                    landmarks = emptyList(),
+                    handedness = Handedness.UNKNOWN,
+                    timestampMs = timestampMs,
+                    confidence = 0f,
+                    frameAspectRatio = lastFrameAspectRatio,
+                ),
+            )
+            return
+        }
+
+        // Within the preferred set, keep temporal continuity so brief detector
+        // reordering does not jump between two hands that both match the policy.
+        val candidateIndices = if (preferredCandidates.isNotEmpty()) preferredCandidates
+            else result.landmarks().indices.toList()
+        val selectedIdx = if (candidateIndices.size > 1 && lastTrackedWristX >= 0f) {
+            candidateIndices.minByOrNull { i ->
                 val lms = result.landmarks()[i]
-                if (lms.isNotEmpty()) {
+                if (lms.isEmpty()) Float.MAX_VALUE
+                else {
                     val dx = lms[0].x() - lastTrackedWristX
                     val dy = lms[0].y() - lastTrackedWristY
-                    val distSq = dx * dx + dy * dy
-                    if (distSq < bestDist) {
-                        bestDist = distSq
-                        bestIdx = i
-                    }
+                    dx * dx + dy * dy
                 }
-            }
-            bestIdx
+            } ?: candidateIndices.first()
         } else {
-            0
+            candidateIndices.firstOrNull() ?: 0
         }
 
         val landmarks = result.landmarks()[selectedIdx]

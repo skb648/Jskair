@@ -36,12 +36,73 @@ class PermissionsFlowTest {
     }
 
     @Test
-    fun permissionStatesInitiallyReportsSomeMissingPermissions() {
-        // On a test device, accessibility and overlay are typically not granted
-        val states = permissionsManager.permissionStates.value
-        // Camera may or may not be granted depending on test runner config
-        // But accessibility and overlay are typically not granted in test context
-        assertTrue("Should have at least some permissions to check", true)
+    fun missingPermissionsReportsCameraWhenCameraIsMissing() {
+        val states = PermissionStates(
+            cameraGranted = false,
+            accessibilityGranted = true,
+            overlayGranted = true,
+            notificationsGranted = true,
+        )
+        assertEquals(listOf(MissingPermission.CAMERA), states.missingPermissions)
+        assertFalse(states.allGranted)
+    }
+
+    @Test
+    fun missingPermissionsReportsAccessibilityWhenAccessibilityIsMissing() {
+        val states = PermissionStates(
+            cameraGranted = true,
+            accessibilityGranted = false,
+            accessibilitySettingEnabled = false,
+            overlayGranted = true,
+            notificationsGranted = true,
+        )
+        assertEquals(listOf(MissingPermission.ACCESSIBILITY), states.missingPermissions)
+        assertFalse(states.allGranted)
+    }
+
+    @Test
+    fun missingPermissionsReportsCameraAndAccessibilityWhenBothAreMissing() {
+        val states = PermissionStates(
+            cameraGranted = false,
+            accessibilityGranted = false,
+            accessibilitySettingEnabled = false,
+            overlayGranted = true,
+            notificationsGranted = true,
+        )
+        assertEquals(
+            setOf(MissingPermission.CAMERA, MissingPermission.ACCESSIBILITY),
+            states.missingPermissions.toSet(),
+        )
+        assertFalse(states.allGranted)
+    }
+
+    @Test
+    fun requiredPermissionsAreGrantedWhenCameraAndAccessibilityAreReady() {
+        val states = PermissionStates(
+            cameraGranted = true,
+            accessibilityGranted = true,
+            accessibilitySettingEnabled = true,
+            overlayGranted = false,
+            notificationsGranted = true,
+        )
+        assertTrue(states.allGranted)
+        assertTrue(states.missingPermissions.isEmpty())
+    }
+
+    @Test
+    fun deniedNotificationsRemainOptionalWhenRequiredPermissionsAreReady() {
+        val states = PermissionStates(
+            cameraGranted = true,
+            accessibilityGranted = true,
+            accessibilitySettingEnabled = true,
+            overlayGranted = true,
+            notificationsGranted = false,
+        )
+        assertTrue(states.allGranted)
+        assertEquals(
+            listOf(MissingPermission.NOTIFICATIONS),
+            states.missingPermissions,
+        )
     }
 
     @Test
