@@ -34,6 +34,7 @@ enum class CalibrationStep {
 data class CalibrationUiState(
     val step: CalibrationStep = CalibrationStep.INTRO,
     val handDetected: Boolean = false,
+    val liveLandmarks: List<Pair<Float, Float>> = emptyList(),
     val measuringProgress: Float = 0f,
     val handSizeMm: Float = 0f,
     val pinchDistanceMm: Float = 0f,
@@ -60,6 +61,10 @@ class CalibrationViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CalibrationUiState())
     val uiState: StateFlow<CalibrationUiState> = _uiState.asStateFlow()
+
+    val engineState = gestureDetector.engineState
+    val currentPose = gestureDetector.currentPose
+    val pinchProximity = gestureDetector.pinchProximity
 
     // Collected hand size samples for averaging
     private val handSizeSamples = Collections.synchronizedList(mutableListOf<Float>())
@@ -102,8 +107,17 @@ class CalibrationViewModel @Inject constructor(
         handFrameJob = viewModelScope.launch {
             handTracker.handFrames.collect { frame ->
                 latestFrame = frame
+                if (Suppression.isSuppressed() || !com.aircontrol.accessibility.GestureControlAccessibilityService.isConnected.value) {
+                    runCatching { gestureDetector.processHandFrameSuspending(frame) }
+                }
+                val pts = if (frame.isDetected && frame.landmarks.size >= 21) {
+                    frame.landmarks.map { (1f - it.x).coerceIn(0f, 1f) to it.y.coerceIn(0f, 1f) }
+                } else {
+                    emptyList()
+                }
                 _uiState.value = _uiState.value.copy(
                     handDetected = frame.isDetected,
+                    liveLandmarks = pts,
                     canProceed = frame.isDetected && _uiState.value.step == CalibrationStep.PALM_DETECT,
                 )
             }
@@ -182,32 +196,42 @@ class CalibrationViewModel @Inject constructor(
     private fun startGestureVerification() {
         gestureTestJob?.cancel()
         gestureTestJob = viewModelScope.launch {
-            // Fix (verified U8): the OPEN_PALM card used to pass itself — the
-            // hand was already open from the measuring step, so the "test"
-            // never tested anything. Each card now requires a FRESH pose:
-            // first leave the expected pose, then return to it (a real
-            // performed gesture), mirroring what the user must do in practice.
-            var stage = -1
-            var primed = false
-            gestureDetector.currentPose.collect { pose ->
-                val expectedIndex = _uiState.value.testGesturesCompleted
-                if (expectedIndex != stage) {
-                    stage = expectedIndex
-                    primed = false
-                }
-                val expected = when (expectedIndex) {
-                    0 -> Pose.OPEN_PALM
-                    1 -> Pose.FIST
-                    2 -> Pose.PINCH
-                    else -> null
-                } ?: return@collect
-                if (pose == expected) {
-                    if (!primed) return@collect
-                    if (pose == Pose.PINCH) captureRealPinchDistance()
-                    onTestGestureRecognized(pose.name)
-                } else if (pose != Pose.NONE) {
-                    // Any deliberate other pose primes the next recognition.
-                    primed = true
+            // Monitor both static poses and live pinch proximity so a natural
+            // bent-index pinch is recognized immediately during step 2.
+            launch {
+                var openPalmFrames = 0
+                handTracker.handFrames.collect { frame ->
+                    if (!frame.isDetected || _uiState.value.step != CalibrationStep.TEST_GESTURES) {
+                        openPalmFrames = 0
+                        return@collect
+                    }
+                    val expectedIndex = _uiState.value.testGesturesCompleted
+                    val pose = gestureDetector.currentPose.value
+                    val proximity = gestureDetector.pinchProximity.value
+                    when (expectedIndex) {
+                        0 -> {
+                            if (pose == Pose.OPEN_PALM || pose == Pose.FOUR_FINGERS) {
+                                openPalmFrames++
+                                if (openPalmFrames >= 6) {
+                                    openPalmFrames = 0
+                                    onTestGestureRecognized(Pose.OPEN_PALM.name)
+                                }
+                            } else {
+                                openPalmFrames = 0
+                            }
+                        }
+                        1 -> {
+                            if (pose == Pose.FIST) {
+                                onTestGestureRecognized(Pose.FIST.name)
+                            }
+                        }
+                        2 -> {
+                            if (pose == Pose.PINCH || proximity >= 0.80f) {
+                                captureRealPinchDistance()
+                                onTestGestureRecognized(Pose.PINCH.name)
+                            }
+                        }
+                    }
                 }
             }
         }

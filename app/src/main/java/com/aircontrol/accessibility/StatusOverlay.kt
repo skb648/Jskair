@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.aircontrol.R
 import com.aircontrol.gesture.model.GestureEngineState
+import com.aircontrol.gesture.model.Pose
 import timber.log.Timber
 
 /**
@@ -93,16 +94,34 @@ class StatusOverlay(
     private val screenHeight: Int
         get() = context.resources.displayMetrics.heightPixels
 
-    // Current state
+    // Current state & pose
     private var currentState = GestureEngineState.DISARMED
+    private var currentPose = Pose.NONE
 
     /**
      * Updates the displayed state.
      */
     fun updateState(state: GestureEngineState) {
+        if (currentState == state && isAdded) return
         currentState = state
         if (!isAdded) addView()
         updateAppearance()
+    }
+
+    /**
+     * Updates the live recognized hand pose in the tactical HUD pill.
+     */
+    fun updatePose(pose: Pose) {
+        if (currentPose == pose) return
+        currentPose = pose
+        if (isAdded) updateAppearance()
+    }
+
+    /**
+     * Briefly flashes a dispatched action name in the HUD sub-pill.
+     */
+    fun flashAction(actionLabel: String) {
+        showHint("⚡ $actionLabel")
     }
 
     /**
@@ -167,30 +186,32 @@ class StatusOverlay(
         }
 
         labelView = TextView(context).apply {
-            text = "AC"
-            textSize = 10f
+            text = "○ STANDBY"
+            textSize = 10.5f
+            typeface = android.graphics.Typeface.MONOSPACE
             setTextColor(android.graphics.Color.WHITE)
             setPadding(
-                dpToPx(12), dpToPx(6),
-                dpToPx(12), dpToPx(6),
+                dpToPx(11), dpToPx(5),
+                dpToPx(11), dpToPx(5),
             )
         }
         container.addView(labelView)
 
-        // One-line block-reason hint (hidden until [showHint] is called). Uses a
-        // translucent dark rounded chip so it reads on any status-pill color.
+        // One-line block-reason / action flash hint (hidden until [showHint] is called).
         hintView = TextView(context).apply {
-            textSize = 10f
-            setTextColor(android.graphics.Color.WHITE)
+            textSize = 9.5f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(android.graphics.Color.parseColor("#E2E8F0"))
             visibility = View.GONE
-            setPadding(dpToPx(10), dpToPx(2), dpToPx(10), dpToPx(4))
+            setPadding(dpToPx(10), dpToPx(3), dpToPx(10), dpToPx(4))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xCC000000.toInt())
+                setColor(0xE6090E1A.toInt())
+                setStroke(dpToPx(1).coerceAtLeast(1), android.graphics.Color.parseColor("#3300E5FF"))
                 cornerRadius = dpToPx(8).toFloat()
             }
         }
         container.addView(hintView)
-        (hintView!!.layoutParams as LinearLayout.LayoutParams).topMargin = dpToPx(2)
+        (hintView!!.layoutParams as LinearLayout.LayoutParams).topMargin = dpToPx(3)
 
         // Set up drag handling
         container.setOnTouchListener { _, event ->
@@ -232,30 +253,50 @@ class StatusOverlay(
     }
 
     private fun updateAppearance() {
-        val view = statusView ?: return
         val label = labelView ?: return
 
-        val bgColor = when (currentState) {
+        val poseSuffix = if (currentPose != Pose.NONE && currentState != GestureEngineState.DISARMED) {
+            " · ${currentPose.name.replace('_', ' ')}"
+        } else {
+            ""
+        }
+
+        val (statusText, strokeColor, textColor) = when (currentState) {
             GestureEngineState.ARMED,
             GestureEngineState.EXECUTING,
-            GestureEngineState.COOLDOWN -> {
-                label.text = "●"
-                android.graphics.Color.parseColor("#4CAF50") // Green
+            GestureEngineState.COOLDOWN,
+            -> {
+                val activeAccent = if (currentPose != Pose.NONE) "#00E5FF" else "#22C55E"
+                Triple(
+                    "● ARMED$poseSuffix",
+                    android.graphics.Color.parseColor(activeAccent),
+                    android.graphics.Color.parseColor("#F8FAFC"),
+                )
             }
             GestureEngineState.ARMING -> {
-                label.text = "◐"
-                android.graphics.Color.parseColor("#FF9800") // Orange
+                Triple(
+                    "◐ ARMING$poseSuffix",
+                    android.graphics.Color.parseColor("#F59E0B"),
+                    android.graphics.Color.parseColor("#FDE68A"),
+                )
             }
             GestureEngineState.DISARMED -> {
-                label.text = "○"
-                android.graphics.Color.parseColor("#9E9E9E") // Gray
+                Triple(
+                    "○ STANDBY",
+                    android.graphics.Color.parseColor("#475569"),
+                    android.graphics.Color.parseColor("#94A3B8"),
+                )
             }
         }
 
-        // M-14: Reuse cached drawable instead of creating a new one each time
-        cachedDrawable.setColor(bgColor)
-        cachedDrawable.cornerRadius = dpToPx(12).toFloat()
-        view.background = cachedDrawable
+        label.text = statusText
+        label.setTextColor(textColor)
+
+        // Reuse cachedDrawable on labelView for a dark-glass tactical HUD pill
+        cachedDrawable.setColor(0xE60B1324.toInt())
+        cachedDrawable.setStroke((1.5f * context.resources.displayMetrics.density).toInt().coerceAtLeast(1), strokeColor)
+        cachedDrawable.cornerRadius = dpToPx(14).toFloat()
+        label.background = cachedDrawable
     }
 
     @SuppressLint("ClickableViewAccessibility")

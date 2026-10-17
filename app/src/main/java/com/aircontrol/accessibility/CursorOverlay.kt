@@ -4,32 +4,36 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.SystemClock
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import timber.log.Timber
+import android.widget.FrameLayout
 import com.aircontrol.accessibility.cursor.CursorDotView
 import com.aircontrol.accessibility.cursor.CursorGeometry
 import com.aircontrol.accessibility.cursor.CursorIcon
 import com.aircontrol.accessibility.cursor.CursorVisibilityAction
 import com.aircontrol.accessibility.cursor.CursorVisibilityStateMachine
+import timber.log.Timber
+import kotlin.math.abs
+import kotlin.math.exp
 
 /**
- * Accessibility overlay that renders the NATIVE-LIKE cursor (a clean,
- * desktop-style pointer — NOT the OS-native pointer; see NativeLikeCursor.md).
+ * Zero-IPC, VSYNC-locked (60–120Hz) Accessibility Cursor Overlay.
  *
- * Window/hotspot contract (spec §4):
- *  - The logical cursor position (this class's currentScreenX/Y, screen px) is
- *    THE coordinate used for clicks, hover and accessibility lookups.
- *  - The overlay window is positioned so [CursorGeometry]'s hotspot pixel —
- *    where every glyph draws its semantic point (arrow tip / fingertip /
- *    beam centre) — sits exactly on the logical position. The visible arrow
- *    tip therefore always covers the point that receives the click.
- *
- * Latency: direct position updates at up to 60 Hz with frame coalescing (a
- * throttled frame is deferred, never dropped); NO added smoothing — the One
- * Euro filter upstream already smooths hand coordinates exactly once.
+ * Architectural Upgrade (Butter-Smooth Iron Man HUD):
+ *  - ZERO PER-FRAME BINDER IPC: Instead of calling [WindowManager.updateViewLayout]
+ *    on every frame (which crosses Binder IPC into `system_server` and triggers
+ *    `SurfaceFlinger` window relayouts, causing frame drops), the overlay attaches
+ *    one full-screen touch-passthrough container and moves [CursorDotView] via
+ *    GPU-accelerated sub-pixel [View.setTranslationX] / [View.setTranslationY].
+ *  - 120Hz VSYNC INTERPOLATION: Camera frames arrive at 20–30 FPS; a lightweight
+ *    [Choreographer.FrameCallback] smoothly interpolates display coordinates at the
+ *    panel's native refresh rate and automatically unschedules itself the instant
+ *    the pointer settles within 0.15 px of the target (zero idle CPU).
+ *  - EXPLICIT HOTSPOT CONTRACT: Logical cursor position `(currentScreenX, currentScreenY)`
+ *    is always aligned with [CursorGeometry.hotspotPx] so clicks, hover, and visual
+ *    pointer tip match to the sub-pixel.
  */
 class CursorOverlay(
     private val context: Context,
@@ -40,118 +44,152 @@ class CursorOverlay(
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val density = context.resources.displayMetrics.density
 
-    private var cursorView: View? = null
+    private var containerView: FrameLayout? = null
+    private var cursorView: CursorDotView? = null
     private var isAdded = false
     private var isVisible = false
 
-    // Issue 1: cursor visibility is a state machine, not a frame operation.
-    // Repeated show() while visible/fading-in is a no-op; show() during a
-    // fade-out cancels the fade-out and restores full visibility without
-    // starting a new fade-in. Animations are transitions between explicit
-    // states (HIDDEN/SHOWING/VISIBLE/HIDING), never per-frame restarts.
     private val visibilityMachine = CursorVisibilityStateMachine()
-
-    // Monotonic token that lets stale animation end-callbacks know they belong
-    // to an animation that was cancelled/removed — a cancelled fade must never
-    // flip the machine (and a removed overlay must not inherit old callbacks).
     private var animationGeneration = 0L
 
-    // Logical cursor position in screen pixels (kept as floats; rounding to
-    // window ints happens once per applied frame, never accumulated).
+    // Logical target cursor position in screen pixels
     private var currentScreenX = 0f
     private var currentScreenY = 0f
 
+    // VSYNC-interpolated visual position in screen pixels (for 120Hz smoothness)
+    private var renderedScreenX = 0f
+    private var renderedScreenY = 0f
+    private var hasInitialized = false
+    private var vsyncRunning = false
+    private var lastFrameNanos = 0L
+
     /**
-     * Notified with the APPLIED logical position (screen px) on every layout
-     * pass (≤60 Hz). The accessibility service feeds this into the hover
-     * resolver. Invoked on the main thread.
+     * Notified with the APPLIED logical position (screen px) on position updates.
+     * The accessibility service feeds this into the hover resolver. Invoked on the main thread.
      */
     var onPositionApplied: ((x: Float, y: Float) -> Unit)? = null
 
-    // High refresh rate (up to 240Hz) cursor movement; throttled frames are coalesced (never dropped).
-    private val updateThrottleMs = 4L
-
-    /** Whether a window position has ever been pushed to WindowManager (Rule 16 skip-guard). */
-    private var lastLayoutApplied = false
-    private var lastUpdateTimeMs = 0L
-
-    private var hasInitialized = false
-
-    /** Deferred paint scheduled when two updates arrive closer than the throttle. */
-    private var pendingLayout: Runnable? = null
+    private var lastHoverNotifyX = -100f
+    private var lastHoverNotifyY = -100f
 
     /** Current pointer glyph (rendered by CursorDotView at the same hotspot). */
     private var icon: CursorIcon = CursorIcon.ARROW
 
-    private val hideDelayMs = 200L
+    private val hideDelayMs = 180L
+    private var reducedMotion = false
 
-    /**
-     * Armed state retained for feedback consumers; the ring visual was removed
-     * (user-test noise) — armed is conveyed by the status pill.
-     */
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!vsyncRunning || !isAdded) {
+                vsyncRunning = false
+                return
+            }
+            val dtSec = if (lastFrameNanos > 0L) {
+                ((frameTimeNanos - lastFrameNanos) * 1e-9f).coerceIn(0.001f, 0.050f)
+            } else {
+                0.008f
+            }
+            lastFrameNanos = frameTimeNanos
+
+            val dx = currentScreenX - renderedScreenX
+            val dy = currentScreenY - renderedScreenY
+
+            if (reducedMotion || (abs(dx) < SETTLE_EPSILON_PX && abs(dy) < SETTLE_EPSILON_PX)) {
+                renderedScreenX = currentScreenX
+                renderedScreenY = currentScreenY
+                applyTranslation(renderedScreenX, renderedScreenY)
+                vsyncRunning = false
+                lastFrameNanos = 0L
+                return
+            }
+
+            // Exponential frame-rate-independent smoothing (tau ≈ 18ms -> crisp 120Hz glide)
+            val alpha = 1f - exp(-dtSec * INTERP_SPEED)
+            renderedScreenX += dx * alpha
+            renderedScreenY += dy * alpha
+            applyTranslation(renderedScreenX, renderedScreenY)
+
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
     fun setArmed(armed: Boolean) {
-        (cursorView as? CursorDotView)?.isArmed = armed
+        cursorView?.isArmed = armed
     }
 
-    /** Fix (user test): tint the pointer while a pinch-drag is in progress. */
     fun setDragging(dragging: Boolean) {
-        (cursorView as? CursorDotView)?.isDragging = dragging
+        cursorView?.isDragging = dragging
     }
 
-    /** Switches the pointer glyph (ARROW/HAND/IBEAM/…). Never moves the hotspot. */
+    fun setPinchProximity(proximity: Float) {
+        cursorView?.pinchProximity = proximity
+    }
+
     fun setCursorIcon(icon: CursorIcon) {
         if (icon == this.icon) return
         this.icon = icon
-        (cursorView as? CursorDotView)?.icon = icon
+        cursorView?.icon = icon
     }
 
-    /**
-     * Updates the logical cursor position from normalized hand/gaze
-     * coordinates (mirroring + full-screen mapping via ActionDispatcher),
-     * clamps it to the usable screen, and re-positions the overlay window so
-     * the hotspot covers it. [directMapping] skips the hand dead-zone mapping
-     * for gaze/eye coordinates that are already screen-normalized.
-     */
-    fun updatePosition(normX: Float, normY: Float, screenW: Int, screenHeight: Int, directMapping: Boolean = false) {
-        if (!isAdded) return
+    fun updatePosition(
+        normX: Float,
+        normY: Float,
+        screenW: Int,
+        screenH: Int,
+        directMapping: Boolean = false,
+    ) {
+        if (!isAdded) {
+            addView()
+            if (!isAdded) return
+        }
+
+        if (screenW > 0 && screenH > 0 && (screenW != screenWidth || screenH != screenHeight)) {
+            updateScreenSize(screenW, screenH)
+        }
 
         val targetX = if (directMapping) {
-            ActionDispatcher.normalizeDirect(normX, screenW)
+            ActionDispatcher.normalizeDirect(normX, screenWidth)
         } else {
-            ActionDispatcher.normalizeToScreenX(normX, screenW)
+            ActionDispatcher.normalizeToScreenX(normX, screenWidth)
         }
         val targetY = if (directMapping) {
             ActionDispatcher.normalizeDirect(normY, screenHeight)
         } else {
-            ActionDispatcher.normalizeToScreenY(normY, screenHeight, screenW)
+            ActionDispatcher.normalizeToScreenY(normY, screenHeight, screenWidth)
         }
 
-        // NaN/∞ must never move the window (spec §27: invalid coordinates).
         if (!CursorGeometry.isUsable(targetX, targetY)) return
 
         currentScreenX = CursorGeometry.clampToScreen(targetX, screenWidth)
         currentScreenY = CursorGeometry.clampToScreen(targetY, screenHeight)
-        hasInitialized = true
 
-        updateViewLayout()
+        if (!hasInitialized) {
+            hasInitialized = true
+            renderedScreenX = currentScreenX
+            renderedScreenY = currentScreenY
+            applyTranslation(renderedScreenX, renderedScreenY)
+        } else if (reducedMotion) {
+            renderedScreenX = currentScreenX
+            renderedScreenY = currentScreenY
+            applyTranslation(renderedScreenX, renderedScreenY)
+        } else {
+            startVsyncLoopIfNeeded()
+        }
 
-        // Idempotent: no-op while visible or fading in; see CursorVisibilityStateMachine.
+        if (abs(currentScreenX - lastHoverNotifyX) >= 0.5f || abs(currentScreenY - lastHoverNotifyY) >= 0.5f) {
+            lastHoverNotifyX = currentScreenX
+            lastHoverNotifyY = currentScreenY
+            onPositionApplied?.invoke(currentScreenX, currentScreenY)
+        }
+
         if (!visibilityMachine.isEffectivelyVisible) show()
     }
 
-    /**
-     * Shows the cursor (200ms fade-in). IDEMPOTENT (Issue 1):
-     *  - already fully visible  → nothing happens;
-     *  - fade-in already running → not restarted;
-     *  - fade-out running → cancelled and full visibility restored WITHOUT
-     *    starting a new fade-in;
-     *  - position changes elsewhere never restart the visibility animation.
-     */
     fun show() {
         if (!isAdded) {
             addView()
         }
-        when (val action = visibilityMachine.onShowRequest()) {
+        when (visibilityMachine.onShowRequest()) {
             CursorVisibilityAction.START_FADE_IN -> {
                 cursorView?.apply {
                     alpha = 0f
@@ -163,8 +201,6 @@ class CursorOverlay(
                 }
             }
             CursorVisibilityAction.CANCEL_AND_RESTORE -> {
-                // Cancel the running fade-out and restore full visibility
-                // cleanly — no new fade-in (the machine already moved to VISIBLE).
                 cancelViewAnimation()
                 cursorView?.apply {
                     alpha = 1f
@@ -176,9 +212,8 @@ class CursorOverlay(
         syncVisibilityState()
     }
 
-    /** Hides the cursor with a 200ms fade-out (idempotent when already hidden). */
     fun hide() {
-        cancelPendingLayout()
+        stopVsyncLoop()
         if (visibilityMachine.onHideRequest() == CursorVisibilityAction.START_FADE_OUT) {
             animateAlpha(0f, hideDelayMs) {
                 if (visibilityMachine.onFadeOutCompleted() == CursorVisibilityAction.MAKE_INVISIBLE) {
@@ -190,55 +225,55 @@ class CursorOverlay(
         syncVisibilityState()
     }
 
-    /** Updates the screen size after rotation/display changes. */
     fun updateScreenSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
         screenWidth = width
         screenHeight = height
     }
 
-    /** Click visual confirmation (small ripple, reduced-motion aware). */
     fun pulse() {
-        (cursorView as? CursorDotView)?.pulse()
+        cursorView?.pulse()
     }
 
-    /** Hover state notifications — the scale visual was removed; kept for API compat. */
     fun notifyHover() {
-        (cursorView as? CursorDotView)?.notifyHover()
+        cursorView?.notifyHover()
     }
 
     fun resetHover() {
-        (cursorView as? CursorDotView)?.resetHover()
+        cursorView?.resetHover()
+    }
+
+    fun notifyTap() {
+        cursorView?.notifyTap()
     }
 
     fun ripple() {
-        (cursorView as? CursorDotView)?.ripple()
+        cursorView?.ripple()
     }
 
-    /** Dwell progress (0..1) — thin arc under the glyph, centred on the hotspot. */
     fun setDwellProgress(progress: Float) {
-        (cursorView as? CursorDotView)?.setDwellProgress(progress)
+        cursorView?.setDwellProgress(progress)
     }
 
-    /** Reduced motion — disables press/ripple animations. */
     fun setReducedMotion(reduced: Boolean) {
-        (cursorView as? CursorDotView)?.setReducedMotion(reduced)
+        reducedMotion = reduced
+        cursorView?.setReducedMotion(reduced)
     }
 
-    /** Removes the overlay from the window manager (cancels all animations). */
     fun remove() {
-        // Reset the machine to HIDDEN and cancel every running animation so a
-        // stale end-callback can never flip a freshly recreated overlay.
         visibilityMachine.onRemoved()
+        stopVsyncLoop()
         cancelViewAnimation()
-        cancelPendingLayout()
         try {
-            cursorView?.let { windowManager.removeView(it) }
+            containerView?.let { windowManager.removeView(it) }
         } catch (_: Exception) {
             // View not attached
         }
+        containerView = null
         cursorView = null
         isAdded = false
         isVisible = false
+        hasInitialized = false
     }
 
     // ========== Private implementation ==========
@@ -247,26 +282,27 @@ class CursorOverlay(
     private fun addView() {
         if (isAdded) return
 
-        cursorView = createCursorView()
+        val dot = CursorDotView(context, density).apply {
+            icon = this@CursorOverlay.icon
+            setReducedMotion(reducedMotion)
+        }
+        val size = CursorGeometry.viewSizePx(density)
+        val container = FrameLayout(context).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(dot, FrameLayout.LayoutParams(size, size))
+        }
 
         val params = createLayoutParams()
-
         try {
-            windowManager.addView(cursorView, params)
+            windowManager.addView(container, params)
+            containerView = container
+            cursorView = dot
             isAdded = true
-            // Fresh LayoutParams: the no-op guard must compare against what is actually on screen.
-            lastLayoutApplied = false
+            applyTranslation(renderedScreenX, renderedScreenY)
         } catch (e: Exception) {
             Timber.e("Failed to add cursor overlay: %s", e.message)
         }
-    }
-
-    private fun createCursorView(): View {
-        val view = CursorDotView(context, density)
-        view.icon = icon
-        val size = CursorGeometry.viewSizePx(density)
-        view.layoutParams = android.widget.FrameLayout.LayoutParams(size, size)
-        return view
     }
 
     private fun createLayoutParams(): WindowManager.LayoutParams {
@@ -284,93 +320,52 @@ class CursorOverlay(
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
 
         return WindowManager.LayoutParams(
-            CursorGeometry.viewSizePx(density),
-            CursorGeometry.viewSizePx(density),
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
             type,
             flags,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             }
-            // Anchor the window so the HOTSPOT pixel (not the window centre)
-            // sits on the logical cursor position.
-            x = CursorGeometry.windowLeft(currentScreenX, density)
-            y = CursorGeometry.windowTop(currentScreenY, density)
+            x = 0
+            y = 0
         }
     }
 
-    private fun updateViewLayout() {
+    private fun applyTranslation(screenX: Float, screenY: Float) {
         val view = cursorView ?: return
-        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
-
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastUpdateTimeMs < updateThrottleMs) {
-            // Coalesce throttled frames into ONE deferred paint — never drop.
-            if (pendingLayout == null) {
-                val deferred = Runnable {
-                    pendingLayout = null
-                    lastUpdateTimeMs = SystemClock.elapsedRealtime()
-                    applyLayout(view, params)
-                }
-                pendingLayout = deferred
-                view.post(deferred)
-            }
-            return
-        }
-        cancelPendingLayout()
-        lastUpdateTimeMs = now
-        applyLayout(view, params)
+        val hotspot = CursorGeometry.hotspotPx(density)
+        view.translationX = screenX - hotspot
+        view.translationY = screenY - hotspot
     }
 
-    private fun applyLayout(view: View, params: WindowManager.LayoutParams) {
-        val x = CursorGeometry.windowLeft(currentScreenX, density)
-        val y = CursorGeometry.windowTop(currentScreenY, density)
-        // Rule 16: a movement smaller than a pixel is not a movement. `updateViewLayout` is a
-        // binder round trip plus a full re-composition of the overlay window, so skipping the
-        // no-op is worth more than any smoothing knob — and it is exactly the case that used to
-        // dominate while the user was looking still at a target.
-        if (params.x == x && params.y == y && lastLayoutApplied) return
-        params.x = x
-        params.y = y
-        lastLayoutApplied = true
-
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // View not attached
-        }
-        onPositionApplied?.invoke(currentScreenX, currentScreenY)
+    private fun startVsyncLoopIfNeeded() {
+        if (vsyncRunning) return
+        vsyncRunning = true
+        lastFrameNanos = 0L
+        Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
-    /** Drop a scheduled repaint (hide/remove must not leave a stale frame). */
-    private fun cancelPendingLayout() {
-        val view = cursorView ?: return
-        pendingLayout?.let { view.removeCallbacks(it) }
-        pendingLayout = null
+    private fun stopVsyncLoop() {
+        if (!vsyncRunning) return
+        vsyncRunning = false
+        lastFrameNanos = 0L
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
     }
 
-    /** Keeps the legacy [isVisible] flag in lockstep with the state machine. */
     private fun syncVisibilityState() {
         isVisible = visibilityMachine.isEffectivelyVisible
     }
 
-    /**
-     * Cancels the currently running alpha animation. Increments the generation
-     * token so any stale withEndAction that was already posted is ignored.
-     */
     private fun cancelViewAnimation() {
         animationGeneration++
         cursorView?.animate()?.cancel()
     }
 
-    /**
-     * Runs a fade to [targetAlpha] over [fadeDurationMs]. A stale end-callback
-     * (from an animation that was later cancelled or whose overlay was removed)
-     * is dropped via the generation token, so animation callbacks can never
-     * leak across overlay recreations (Issue 1 acceptance).
-     */
     private fun animateAlpha(targetAlpha: Float, fadeDurationMs: Long, onFinished: () -> Unit) {
         val view = cursorView ?: return
         cancelViewAnimation()
@@ -382,5 +377,10 @@ class CursorOverlay(
                 if (generation == animationGeneration) onFinished()
             }
             .start()
+    }
+
+    companion object {
+        private const val SETTLE_EPSILON_PX = 0.15f
+        private const val INTERP_SPEED = 55f
     }
 }

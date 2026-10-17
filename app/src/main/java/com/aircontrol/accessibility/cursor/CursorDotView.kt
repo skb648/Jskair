@@ -12,23 +12,20 @@ import android.view.View
 import android.view.animation.DecelerateInterpolator
 
 /**
- * Native-like cursor renderer (accessibility overlay).
+ * Precision HUD + Desktop-Class Cursor Renderer (accessibility overlay).
  *
- * This is NOT the OS-native pointer — it is a clean, desktop-like pointer drawn
- * by the accessibility overlay (see NativeLikeCursor.md). Design rules:
- *  - CLEAN/SHARP/DESKTOP-LIKE: white glyph + crisp black outline + soft shadow,
- *    standard pointer scale (~11×20dp arrow), no glow, no permanent ring,
- *    no crescent, no always-visible decoration.
+ * Combines a razor-sharp, desktop-grade pointer (with explicit hotspot alignment
+ * at [CursorGeometry.HOTSPOT_DP]) with an Iron Man / JARVIS tactical HUD reticle:
  *  - EXPLICIT HOTSPOT: every glyph is built around (0,0) = its semantic point
  *    (arrow tip / index fingertip / beam centre / resize centre) and drawn
- *    translated to the view's anchor ([CursorGeometry.HOTSPOT_DP]). The
- *    overlay window is positioned so the anchor sits exactly on the logical
- *    cursor position — the click point is always the visible arrow tip.
- *  - CONTEXT ICONS: [icon] switches ARROW/HAND/IBEAM/resize; a switch is a
- *    plain redraw at the same anchor (no movement, no flicker animation).
- *  - Subtle click press + small ripple only on click; dwell progress is a thin
- *    arc UNDER the glyph, centred on the hotspot, drawn only while a dwell is
- *    actually progressing. Reduced motion disables press/ripple.
+ *    translated to the view's anchor ([CursorGeometry.HOTSPOT_DP]).
+ *  - PINCH TENSION GAUGE: as thumb and index fingertips converge ([pinchProximity]
+ *    0..1), a segmented cyan/gold tactical ring contracts smoothly toward the
+ *    hotspot, giving instant visual feedback before the click fires.
+ *  - TARGET LOCK & CLICK SHOCKWAVE: hovering interactive elements illuminates a
+ *    subtle magnetic lock halo; clicking triggers a crisp dual-ring shockwave.
+ *  - ZERO ALLOCATION ON DRAW: all [Path], [Paint], and [RectF] instances are
+ *    pre-allocated and reused across frames.
  */
 class CursorDotView(
     context: Context,
@@ -38,76 +35,142 @@ class CursorDotView(
     /** Current pointer glyph; changing it never moves the hotspot. */
     var icon: CursorIcon = CursorIcon.ARROW
         set(value) {
-            if (field != value) { field = value; invalidate() }
+            if (field != value) {
+                field = value
+                invalidate()
+            }
         }
 
-    /** Kept for API compat; the armed ring was removed (user-test noise). */
+    /** True when the gesture engine is ARMED and actively listening. */
     var isArmed: Boolean = false
-        set(value) { field = value }
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
 
-    /** Fix (user test): tint the glyph while a pinch-drag is in progress. */
+    /** Tint the glyph and reticle while a pinch-drag is in progress. */
     var isDragging: Boolean = false
-        set(value) { if (field != value) { field = value; invalidate() } }
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
+    /** Normalized pinch tension (0.0 = fingers open, 1.0 = fingertips touching). */
+    var pinchProximity: Float = 0f
+        set(value) {
+            val clamped = value.coerceIn(0f, 1f)
+            if (kotlin.math.abs(field - clamped) >= 0.015f || (clamped == 0f && field != 0f)) {
+                field = clamped
+                invalidate()
+            }
+        }
 
     // --- reused rendering objects (no per-frame allocation) ---
     private val glyphPath = Path()
     private val dwellRect = RectF()
-    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 0, 0, 0) }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val hudRect = RectF()
+
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(90, 0, 0, 0)
+    }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+    }
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
+        color = Color.parseColor("#0A0E17")
         style = Paint.Style.STROKE
         strokeWidth = OUTLINE_DP * density
         strokeJoin = Paint.Join.ROUND
         strokeCap = Paint.Cap.ROUND
     }
+    private val hudRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
+        style = Paint.Style.STROKE
+        strokeWidth = HUD_RING_STROKE_DP * density
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val hudGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
+        style = Paint.Style.FILL
+    }
     private val dwellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(215, 255, 255, 255)
+        color = Color.parseColor("#00E5FF")
         style = Paint.Style.STROKE
         strokeWidth = DWELL_STROKE_DP * density
         strokeCap = Paint.Cap.ROUND
     }
     private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = Color.parseColor("#00E5FF")
         style = Paint.Style.STROKE
-        strokeWidth = outlinePaint.strokeWidth
+        strokeWidth = 1.6f * density
     }
 
-    /** Windows-style drag feedback tint. */
-    private val dragTint = Color.parseColor("#4DA3FF")
+    private val dragTint = Color.parseColor("#00E5FF")
+    private val hoverLockTint = Color.parseColor("#38BDF8")
+    private val pinchReadyTint = Color.parseColor("#FFCA28")
 
     private var dwellProgress = 0f
     private var reducedMotion = false
+    private var isHoveringTarget = false
     private var pressScale = 1f
     private var pressAnimator: ValueAnimator? = null
     private var rippleAnimator: ValueAnimator? = null
     private var rippleProgress = 0f
     private var rippleAlpha = 0
 
-    // Hover/moving "breathing" scale was removed (spec §3: normal movement
-    // shows only the pointer; hover feedback now comes from the ICON change).
     fun notifyMoving() = Unit
-    fun notifyHover() = Unit
-    fun resetHover() = Unit
+
+    fun notifyHover() {
+        if (!isHoveringTarget) {
+            isHoveringTarget = true
+            invalidate()
+        }
+    }
+
+    fun resetHover() {
+        if (isHoveringTarget) {
+            isHoveringTarget = false
+            invalidate()
+        }
+    }
+
+    fun notifyTap() = ripple()
 
     fun pulse() = ripple()
 
     fun ripple() {
         if (reducedMotion) return
         rippleAnimator?.cancel()
+        pressAnimator?.cancel()
         rippleProgress = 0f
-        rippleAlpha = 120
+        rippleAlpha = 210
+        pressScale = 0.88f
+
+        pressAnimator = ValueAnimator.ofFloat(0.88f, 1.0f).apply {
+            duration = 180L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                pressScale = it.animatedValue as Float
+            }
+            start()
+        }
+
         rippleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 240L
+            duration = 260L
             interpolator = DecelerateInterpolator()
             addUpdateListener {
                 rippleProgress = it.animatedValue as Float
-                rippleAlpha = (120f * (1f - rippleProgress)).toInt()
+                rippleAlpha = (210f * (1f - rippleProgress)).toInt()
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     rippleAlpha = 0
+                    pressScale = 1f
                     invalidate()
                 }
             })
@@ -135,7 +198,6 @@ class CursorDotView(
     // ---------------- glyph geometry (dp units around hotspot 0,0) ----------------
 
     private fun buildArrowPath() {
-        // Classic desktop arrow, tip at (0,0): ~11.6 × 20.4 dp.
         glyphPath.reset()
         glyphPath.moveTo(0f, 0f)
         glyphPath.lineTo(0f, 18.4f * density)
@@ -148,7 +210,6 @@ class CursorDotView(
     }
 
     private fun buildHandPath() {
-        // Pointing hand, index fingertip at (0,0): ~11 × 16.4 dp.
         val d = density
         glyphPath.reset()
         glyphPath.moveTo(0f, 0f)
@@ -174,7 +235,6 @@ class CursorDotView(
     }
 
     private fun buildIBeamPath() {
-        // Classic I-beam, beam centre at (0,0): ~4.8 × 18 dp.
         val d = density
         glyphPath.reset()
         glyphPath.moveTo(-2.4f * d, -9.0f * d)
@@ -193,8 +253,6 @@ class CursorDotView(
     }
 
     private fun buildDoubleArrowPath() {
-        // Horizontal ↔, centre at (0,0): ~19 × 5.6 dp. V/diagonals are this
-        // path rotated about the hotspot.
         val d = density
         glyphPath.reset()
         glyphPath.moveTo(-9.5f * d, 0f)
@@ -215,7 +273,7 @@ class CursorDotView(
             CursorIcon.ARROW -> buildArrowPath()
             CursorIcon.HAND -> buildHandPath()
             CursorIcon.IBEAM -> buildIBeamPath()
-            CursorIcon.RESIZE_HORIZONTAL -> buildDoubleArrowPath()
+            CursorIcon.RESIZE_HORIZONTAL,
             CursorIcon.RESIZE_VERTICAL,
             CursorIcon.RESIZE_DIAGONAL_1,
             CursorIcon.RESIZE_DIAGONAL_2,
@@ -234,17 +292,57 @@ class CursorDotView(
         super.onDraw(canvas)
         val anchor = CursorGeometry.hotspotPx(density)
 
-        // Dwell progress FIRST (under the glyph): a thin arc centred on the
-        // hotspot — it never changes the pointer's shape, and the hotspot
-        // point itself stays uncovered (the arc ring passes around it).
+        // 1. Tactical HUD Reticle & Pinch Tension Ring (centered on hotspot)
+        val showHudRing = isArmed || pinchProximity > 0.05f || isHoveringTarget || icon == CursorIcon.HAND
+        if (showHudRing) {
+            val baseRadius = HUD_BASE_RADIUS_DP * density
+            // Contract the HUD ring smoothly as thumb & index finger converge
+            val contractedRadius = baseRadius * (1f - 0.42f * pinchProximity)
+            hudRect.set(
+                anchor - contractedRadius,
+                anchor - contractedRadius,
+                anchor + contractedRadius,
+                anchor + contractedRadius,
+            )
+
+            // Subtle core halo when hovering a clickable element or pinching
+            if (isHoveringTarget || icon == CursorIcon.HAND || pinchProximity > 0.2f) {
+                hudGlowPaint.color = if (pinchProximity > 0.75f) pinchReadyTint else hoverLockTint
+                hudGlowPaint.alpha = (28 + (52 * pinchProximity).toInt()).coerceIn(20, 85)
+                canvas.drawCircle(anchor, anchor, contractedRadius * 0.85f, hudGlowPaint)
+            }
+
+            // Segmented Iron Man arc-reactor brackets
+            hudRingPaint.color = when {
+                isDragging -> dragTint
+                pinchProximity > 0.8f -> pinchReadyTint
+                else -> hoverLockTint
+            }
+            val baseAlpha = if (isHoveringTarget || icon == CursorIcon.HAND || pinchProximity > 0.1f) 210 else 115
+            hudRingPaint.alpha = baseAlpha
+
+            val sweepAngle = 52f + 34f * pinchProximity
+            val rotOffset = pinchProximity * 45f
+            for (q in 0 until 4) {
+                val startAngle = q * 90f + (45f - sweepAngle * 0.5f) + rotOffset
+                canvas.drawArc(hudRect, startAngle, sweepAngle, false, hudRingPaint)
+            }
+        }
+
+        // 2. Dwell progress arc (centered on hotspot)
         if (dwellProgress > 0f) {
             val r = DWELL_RADIUS_DP * density
             dwellRect.set(anchor - r, anchor - r, anchor + r, anchor + r)
             canvas.drawArc(dwellRect, -90f, 360f * dwellProgress, false, dwellPaint)
         }
 
+        // 3. Crisp pointer glyph at exact hotspot (0,0) -> (anchor, anchor)
         buildGlyph()
-        fillPaint.color = if (isDragging) dragTint else Color.WHITE
+        fillPaint.color = when {
+            isDragging -> dragTint
+            pinchProximity > 0.85f -> pinchReadyTint
+            else -> Color.WHITE
+        }
 
         canvas.save()
         canvas.scale(pressScale, pressScale, anchor, anchor)
@@ -252,8 +350,6 @@ class CursorDotView(
         val rotation = glyphRotationDegrees()
         if (rotation != 0f) canvas.rotate(rotation, 0f, 0f)
 
-        // Soft shadow (offset copy), then white fill, then crisp outline —
-        // readable on both light and dark backgrounds.
         canvas.save()
         canvas.translate(SHADOW_OFFSET_DP * density, SHADOW_OFFSET_DP * density)
         canvas.drawPath(glyphPath, shadowPaint)
@@ -262,16 +358,17 @@ class CursorDotView(
         canvas.drawPath(glyphPath, outlinePaint)
         canvas.restore()
 
-        // Click feedback: small, short, centred on the hotspot — never large
-        // enough to obscure it.
+        // 4. Dual-ring shockwave click feedback centered on hotspot
         if (rippleAlpha > 0) {
+            val outerRadius = (RIPPLE_MIN_DP + (RIPPLE_MAX_DP - RIPPLE_MIN_DP) * rippleProgress) * density
+            ripplePaint.color = dragTint
             ripplePaint.alpha = rippleAlpha
-            canvas.drawCircle(
-                anchor,
-                anchor,
-                (RIPPLE_MIN_DP + (RIPPLE_MAX_DP - RIPPLE_MIN_DP) * rippleProgress) * density,
-                ripplePaint,
-            )
+            canvas.drawCircle(anchor, anchor, outerRadius, ripplePaint)
+
+            val innerRadius = outerRadius * 0.62f
+            ripplePaint.color = Color.WHITE
+            ripplePaint.alpha = (rippleAlpha * 0.75f).toInt()
+            canvas.drawCircle(anchor, anchor, innerRadius, ripplePaint)
         }
     }
 
@@ -282,11 +379,13 @@ class CursorDotView(
     }
 
     companion object {
-        private const val OUTLINE_DP = 1.1f
-        private const val SHADOW_OFFSET_DP = 0.75f
-        private const val DWELL_RADIUS_DP = 15f
-        private const val DWELL_STROKE_DP = 2f
-        private const val RIPPLE_MIN_DP = 8f
-        private const val RIPPLE_MAX_DP = 13f
+        private const val OUTLINE_DP = 1.15f
+        private const val SHADOW_OFFSET_DP = 0.85f
+        private const val HUD_BASE_RADIUS_DP = 13.5f
+        private const val HUD_RING_STROKE_DP = 1.5f
+        private const val DWELL_RADIUS_DP = 16.5f
+        private const val DWELL_STROKE_DP = 2.2f
+        private const val RIPPLE_MIN_DP = 6f
+        private const val RIPPLE_MAX_DP = 16f
     }
 }

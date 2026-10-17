@@ -63,6 +63,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.aircontrol.BuildConfig
 import com.aircontrol.R
 import com.aircontrol.ui.Dimens
+import com.aircontrol.gesture.model.GestureEngineState
+import com.aircontrol.gesture.model.Pose
+import com.aircontrol.ui.components.BiometricHandHud
 import com.aircontrol.ui.theme.ElectricBlue
 import com.aircontrol.ui.theme.ErrorRed
 import com.aircontrol.ui.theme.SuccessGreen
@@ -75,6 +78,9 @@ fun CalibrationScreen(
     viewModel: CalibrationViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val engineState by viewModel.engineState.collectAsState()
+    val currentPose by viewModel.currentPose.collectAsState()
+    val pinchProximity by viewModel.pinchProximity.collectAsState()
 
     Scaffold(
         topBar = {
@@ -138,17 +144,30 @@ fun CalibrationScreen(
                     )
                     CalibrationStep.PALM_DETECT -> PalmDetectStep(
                         handDetected = uiState.handDetected,
+                        liveLandmarks = uiState.liveLandmarks,
+                        engineState = engineState,
+                        currentPose = currentPose,
+                        pinchProximity = pinchProximity,
                         onProceed = { viewModel.proceedFromPalmDetect() },
                     )
                     CalibrationStep.MEASURING -> MeasuringStep(
                         progress = uiState.measuringProgress,
                         handDetected = uiState.handDetected,
+                        liveLandmarks = uiState.liveLandmarks,
+                        engineState = engineState,
+                        currentPose = currentPose,
+                        pinchProximity = pinchProximity,
                     )
                     CalibrationStep.TEST_GESTURES -> TestGesturesStep(
                         completed = uiState.testGesturesCompleted,
                         total = uiState.testGesturesTotal,
                         lastGesture = uiState.lastTestGestureName,
                         canProceed = uiState.canProceed,
+                        handDetected = uiState.handDetected,
+                        liveLandmarks = uiState.liveLandmarks,
+                        engineState = engineState,
+                        currentPose = currentPose,
+                        pinchProximity = pinchProximity,
                         onSimulateGesture = { viewModel.onTestGestureRecognized(it) },
                         onComplete = { viewModel.completeCalibration() },
                     )
@@ -265,59 +284,24 @@ private fun IntroStep(
 @Composable
 private fun PalmDetectStep(
     handDetected: Boolean,
+    liveLandmarks: List<Pair<Float, Float>>,
+    engineState: GestureEngineState,
+    currentPose: Pose,
+    pinchProximity: Float,
     onProceed: () -> Unit,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(vertical = Dimens.spacing32),
+        modifier = Modifier.padding(vertical = Dimens.spacing16),
     ) {
-        // Animated palm preview area
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(240.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-            ),
-            shape = RoundedCornerShape(Dimens.cardCornerRadius),
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (handDetected) {
-                    // Show skeleton preview placeholder
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        HandSkeletonPreview()
-                        Spacer(modifier = Modifier.height(Dimens.spacing8))
-                        Text(
-                            text = stringResource(R.string.calibration_hand_detected),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = SuccessGreen,
-                        )
-                        Spacer(modifier = Modifier.height(Dimens.spacing4))
-                        Text(
-                            text = stringResource(R.string.calibration_preview_illustrative),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        )
-                    }
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingPalmOutline()
-                        Spacer(modifier = Modifier.height(Dimens.spacing12))
-                        Text(
-                            text = stringResource(R.string.calibration_palm_detect),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = Dimens.paddingLarge),
-                        )
-                    }
-                }
-            }
-        }
+        BiometricHandHud(
+            landmarks = liveLandmarks,
+            handDetected = handDetected,
+            engineState = engineState,
+            currentPose = currentPose,
+            pinchProximity = pinchProximity,
+            hudHeight = 210.dp,
+        )
 
         Spacer(modifier = Modifier.height(Dimens.spacing24))
 
@@ -343,10 +327,17 @@ private fun PalmDetectStep(
 }
 
 @Composable
-private fun MeasuringStep(progress: Float, handDetected: Boolean) {
+private fun MeasuringStep(
+    progress: Float,
+    handDetected: Boolean,
+    liveLandmarks: List<Pair<Float, Float>>,
+    engineState: GestureEngineState,
+    currentPose: Pose,
+    pinchProximity: Float,
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(vertical = Dimens.spacing48),
+        modifier = Modifier.padding(vertical = Dimens.spacing16),
     ) {
         Text(
             text = stringResource(R.string.calibration_measuring),
@@ -355,15 +346,18 @@ private fun MeasuringStep(progress: Float, handDetected: Boolean) {
             color = MaterialTheme.colorScheme.onSurface,
         )
 
-        Spacer(modifier = Modifier.height(Dimens.spacing32))
+        Spacer(modifier = Modifier.height(Dimens.spacing16))
 
-        CircularProgressIndicator(
-            modifier = Modifier.size(80.dp),
-            color = ElectricBlue,
-            strokeWidth = 4.dp,
+        BiometricHandHud(
+            landmarks = liveLandmarks,
+            handDetected = handDetected,
+            engineState = engineState,
+            currentPose = currentPose,
+            pinchProximity = pinchProximity,
+            hudHeight = 170.dp,
         )
 
-        Spacer(modifier = Modifier.height(Dimens.spacing24))
+        Spacer(modifier = Modifier.height(Dimens.spacing16))
 
         val progressCd = stringResource(
             R.string.calibration_measurement_progress_cd,
@@ -387,7 +381,6 @@ private fun MeasuringStep(progress: Float, handDetected: Boolean) {
             color = TextSecondary,
         )
 
-        // Fix (verified U7): a lost hand used to freeze the bar silently.
         if (!handDetected) {
             Spacer(modifier = Modifier.height(Dimens.spacing12))
             Text(
@@ -398,7 +391,7 @@ private fun MeasuringStep(progress: Float, handDetected: Boolean) {
             )
         }
 
-        Spacer(modifier = Modifier.height(Dimens.spacing24))
+        Spacer(modifier = Modifier.height(Dimens.spacing16))
 
         Text(
             text = stringResource(R.string.calibration_measuring_hint),
@@ -414,12 +407,17 @@ private fun TestGesturesStep(
     total: Int,
     lastGesture: String,
     canProceed: Boolean,
+    handDetected: Boolean,
+    liveLandmarks: List<Pair<Float, Float>>,
+    engineState: GestureEngineState,
+    currentPose: Pose,
+    pinchProximity: Float,
     onSimulateGesture: (String) -> Unit,
     onComplete: () -> Unit,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(vertical = Dimens.spacing32),
+        modifier = Modifier.padding(vertical = Dimens.spacing16),
     ) {
         Text(
             text = stringResource(R.string.calibration_test_title),
@@ -436,7 +434,19 @@ private fun TestGesturesStep(
             color = TextSecondary,
         )
 
-        Spacer(modifier = Modifier.height(Dimens.spacing32))
+        Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+        BiometricHandHud(
+            landmarks = liveLandmarks,
+            handDetected = handDetected,
+            engineState = engineState,
+            currentPose = currentPose,
+            pinchProximity = pinchProximity,
+            lastActionLabel = lastGesture,
+            hudHeight = 145.dp,
+        )
+
+        Spacer(modifier = Modifier.height(Dimens.spacing16))
 
         // Gesture test cards
         val gestures = listOf(

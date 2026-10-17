@@ -843,10 +843,10 @@ class DynamicGestureDetector(config: GestureEngineConfig) {
         private const val MIN_SAMPLES_FOR_SWIPE = 3
 
         // Fix S1: how many consecutive pose-gated frames tolerate keeping the
-        // swipe window before it is wiped. 2 frames (~80ms at 24fps) absorbs
-        // classifier flicker during fast palm swipes without letting a
-        // pointing-hand sweep complete later.
-        private const val POSE_GATE_GRACE_FRAMES = 2
+        // swipe window before it is wiped. 5 frames (~165ms at 30fps) absorbs
+        // classifier motion-blur flicker during fast palm swipes without letting
+        // a pointing-hand sweep complete later.
+        private const val POSE_GATE_GRACE_FRAMES = 5
 
         /**
          * The fingertip is the primary tracker because it amplifies a throw, but it is

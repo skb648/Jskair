@@ -74,6 +74,7 @@ import com.aircontrol.R
 import com.aircontrol.permissions.MissingPermission
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.components.AnimatedPowerButton
+import com.aircontrol.ui.components.BiometricHandHud
 import com.aircontrol.ui.components.HandPresenceIndicator
 import com.aircontrol.ui.theme.ElectricBlue
 import com.aircontrol.ui.theme.ErrorRed
@@ -97,6 +98,11 @@ fun HomeScreen(
     val serviceState by viewModel.serviceState.collectAsStateWithLifecycle()
     val sessionStats by viewModel.sessionStats.collectAsStateWithLifecycle()
     val handDetected by viewModel.handDetected.collectAsStateWithLifecycle()
+    val liveLandmarks by viewModel.liveLandmarks.collectAsStateWithLifecycle()
+    val engineState by viewModel.engineState.collectAsStateWithLifecycle()
+    val currentPose by viewModel.currentPose.collectAsStateWithLifecycle()
+    val pinchProximity by viewModel.pinchProximity.collectAsStateWithLifecycle()
+    val lastActionLabel by viewModel.lastActionLabel.collectAsStateWithLifecycle()
     val gazeTracking by viewModel.gazeTracking.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -345,6 +351,26 @@ fun HomeScreen(
                             value = formatUptime(sessionStats.uptimeSeconds),
                         )
                     }
+                }
+            }
+
+            // === Live JARVIS Biometric Hand Skeleton HUD ===
+            AnimatedVisibility(
+                visible = serviceState == ServiceState.ACTIVE,
+                enter = fadeIn() + slideInVertically(),
+                exit = fadeOut() + slideOutVertically(),
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(Dimens.spacing16))
+                    BiometricHandHud(
+                        landmarks = liveLandmarks,
+                        handDetected = handDetected,
+                        engineState = engineState,
+                        currentPose = currentPose,
+                        pinchProximity = pinchProximity,
+                        lastActionLabel = lastActionLabel,
+                        hudHeight = 165.dp,
+                    )
                 }
             }
 

@@ -420,7 +420,12 @@ class GestureControlAccessibilityService : AccessibilityService() {
                     actionName.contains("PINCH", ignoreCase = true) ||
                     actionName.contains("CLICK", ignoreCase = true)
                 performDwellHaptic(isClick)
-                serviceScope.launch(Dispatchers.Main) { cursorOverlay?.ripple() }
+                serviceScope.launch(Dispatchers.Main) {
+                    cursorOverlay?.ripple()
+                    if (currentPreferences.statusPillEnabled) {
+                        statusOverlay?.flashAction(actionName.replace('_', ' '))
+                    }
+                }
                 Timber.d("Gesture dispatched: %s — cursor ripple & haptic", actionName)
             }
             // Issue 10: the dispatcher surfaces WHY an action was blocked
@@ -928,6 +933,26 @@ class GestureControlAccessibilityService : AccessibilityService() {
             gestureDetector?.lowConfidence?.collectGuarded("low confidence") { low ->
                 if (low && !lastLow) recordBlockReason(BlockReason.HAND_NOT_CONFIDENT)
                 lastLow = low
+            }
+        })
+
+        // Live pinch tension gauge → HUD cursor reticle contraction.
+        pipelineJobs.add(serviceScope.launchGuarded("pinch proximity", restart = true) {
+            gestureDetector?.pinchProximity?.collectGuarded("pinch proximity") { proximity ->
+                withContext(Dispatchers.Main) {
+                    cursorOverlay?.setPinchProximity(proximity)
+                }
+            }
+        })
+
+        // Live pose readout → tactical HUD status pill.
+        pipelineJobs.add(serviceScope.launchGuarded("current pose", restart = true) {
+            gestureDetector?.currentPose?.collectGuarded("current pose") { pose ->
+                withContext(Dispatchers.Main) {
+                    if (currentPreferences.statusPillEnabled) {
+                        statusOverlay?.updatePose(pose)
+                    }
+                }
             }
         })
 

@@ -83,6 +83,8 @@ class GestureEngine(
     // rejecting them with no hint at all.
     private val _lowConfidence = MutableStateFlow(false)
     val lowConfidence: StateFlow<Boolean> = _lowConfidence.asStateFlow()
+    private val _pinchProximity = MutableStateFlow(0f)
+    val pinchProximity: StateFlow<Float> = _pinchProximity.asStateFlow()
 
     private var pinchState = PinchState.IDLE
     private var pinchStateEntryTimeMs = 0L
@@ -261,7 +263,14 @@ class GestureEngine(
 
         val pose = poseClassifier.classify(input, currentVelocity)
         _currentPose.value = pose
-        val swipeAllowed = !config.swipeRequiresOpenHand || pose == Pose.OPEN_PALM
+        val fingerState = poseClassifier.lastFingerState
+        val rawPose = poseClassifier.lastRawPose
+        val openHandLikeForSwipe = pose == Pose.OPEN_PALM ||
+            rawPose == Pose.OPEN_PALM ||
+            (fingerState.totalExtendedCount >= 3 &&
+                pose != Pose.PINCH && pose != Pose.FIST && pose != Pose.POINTING &&
+                rawPose != Pose.PINCH && rawPose != Pose.FIST && rawPose != Pose.POINTING)
+        val swipeAllowed = !config.swipeRequiresOpenHand || openHandLikeForSwipe
         val swipeResult = dynamicDetector.process(input, gestureAllowed = swipeAllowed)
 
         val isThumbPose = pose == Pose.THUMB_UP || pose == Pose.THUMB_DOWN
@@ -323,28 +332,20 @@ class GestureEngine(
             }
         }
 
-        if (transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN) {
-            // Arbitration (hardening round 9, spec §13/§15): the swipe loses
-            // against an ACTIVE pinch/drag unconditionally — the same physical
-            // motion belongs to the drag. This holds even when the user has
-            // disabled the open-palm pose gate, closing the last path where a
-            // drag could double-fire as a scroll.
+        val canDispatchSwipeOrPose = transition.newState == GestureEngineState.ARMED ||
+            transition.newState == GestureEngineState.EXECUTING ||
+            transition.newState == GestureEngineState.COOLDOWN ||
+            (transition.newState == GestureEngineState.ARMING && swipeResult.detected && swipeResult.direction != null)
+        if (canDispatchSwipeOrPose) {
             val pinchActive = wasPinching || currentPinchPhase != null
             val swipeSuppressed = pinchActive ||
                 (lastPinchEndMs > 0L && timestampMs - lastPinchEndMs < SWIPE_SUPPRESSION_AFTER_PINCH_MS)
-            // A swipe is the one gesture whose *motion* evidence is measured from the
-            // landmark trajectory itself, so it no longer inherits the low-confidence
-            // mute. That flag is MediaPipe's HANDEDNESS score (left/right ambiguity),
-            // and a fast flick depresses exactly that number — the previous code
-            // therefore muted the gesture precisely when it was most clearly made, and
-            // did so for three frames at a time through the latched lowConfidenceMode.
-            // The tracker's uncertainty is still respected where it belongs: the
-            // detector folds the same score into the intent evidence and refuses to
-            // commit below its own quality floor (SwipeIntentArbiter.TRACKING_UNCERTAIN,
-            // 0.30, i.e. "a hand is genuinely there"), which is far below the 0.70 that
-            // made valid swipes impossible. Pinch interference stays a veto, because
-            // that is cross-modal arbitration rather than a quality judgement.
             if (swipeResult.detected && swipeResult.direction != null && !swipeSuppressed) {
+                if (_engineState.value == GestureEngineState.ARMING) {
+                    _engineState.value = GestureEngineState.ARMED
+                    armedSinceMs = timestampMs
+                    _semanticEvents.emit(GestureEvent.Armed(timestampMs))
+                }
                 _semanticEvents.emit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
                 onSwipeDecision?.invoke(
                     true, swipeResult.direction, swipeResult.confidence, null,
@@ -414,20 +415,16 @@ class GestureEngine(
             currentState == GestureEngineState.COOLDOWN ||
             (currentState == GestureEngineState.ARMING && input.isDetected)
         if (!isAllowedState) {
+            _pinchProximity.value = 0f
             if (wasPinching) { wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false }
             return
         }
         if (!input.isDetected) {
+            _pinchProximity.value = 0f
             if (wasPinching) {
                 _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false
             } else if (pinchState != PinchState.IDLE) {
-                // Stress-audit bug #10 (§12): an UNCONFIRMED candidate (HOVER /
-                // PINCH_START) used to survive hand loss — when the hand
-                // reappeared with fingers still together, the stale candidate
-                // satisfied its 80ms debounce across the gap and committed
-                // without fresh validation. Tracking loss cancels incomplete
-                // candidates; the returning hand starts from IDLE.
                 pinchState = PinchState.IDLE
                 pinchStateEntryTimeMs = timestampMs
             }
@@ -438,13 +435,6 @@ class GestureEngine(
         val wrist = input.landmarks[LandmarkIndex.WRIST]
         val middleMcp = input.landmarks[LandmarkIndex.MIDDLE_MCP]
         val handSize = distance2D(wrist, middleMcp)
-        // Stress-audit bug #9 (§11 numeric robustness): degenerate landmarks
-        // (hand size ≤ EPSILON, or NaN — collapsed tracker output at frame
-        // edges) used to yield thumbIndexDistance = 0, and 0 < EVERY
-        // threshold, so a glitch could commit a real CLICK. Fail safe: a
-        // degenerate hand reads as "fingers maximally apart" — no entry from
-        // IDLE, and an existing HOVER demotes back to IDLE via the normal
-        // hover-exit branch above.
         val handDegenerate = !handSize.isFinite() || handSize <= EPSILON
         val thumbIndexDistance = if (handDegenerate) {
             Float.MAX_VALUE
@@ -454,6 +444,8 @@ class GestureEngine(
         val enterThreshold = config.scaledPinchDistanceRatio()
         val exitThreshold = config.scaledPinchReleaseRatio()
         val hoverThreshold = config.scaledPinchHoverRatio()
+        val span = (hoverThreshold - enterThreshold).coerceAtLeast(0.02f)
+        _pinchProximity.value = if (handDegenerate) 0f else ((hoverThreshold - thumbIndexDistance) / span).coerceIn(0f, 1f)
         val timeInState = timestampMs - pinchStateEntryTimeMs
 
         when (pinchState) {
@@ -538,7 +530,7 @@ class GestureEngine(
         lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; _lowConfidence.value = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
         resetPalmTracking(); handStillSinceMs = 0L; thumbPoseSinceMs = 0L; measuredFrameIntervalMs = 0L; prevFrameTimestampMs = 0L; armedSinceMs = 0L
         lastPalmX = 0.5f; lastPalmY = 0.5f; hasPalmPosition = false
-        _engineState.value = GestureEngineState.DISARMED; _currentPose.value = Pose.NONE; _armingProgress.value = 0f
+        _engineState.value = GestureEngineState.DISARMED; _currentPose.value = Pose.NONE; _armingProgress.value = 0f; _pinchProximity.value = 0f
     }
 
     companion object {

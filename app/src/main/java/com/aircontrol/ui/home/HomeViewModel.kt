@@ -8,6 +8,9 @@ import com.aircontrol.accessibility.GestureControlAccessibilityService
 import com.aircontrol.camera.CameraService
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
+import com.aircontrol.gesture.model.GestureEngineState
+import com.aircontrol.gesture.model.Pose
+import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.permissions.PermissionsManager
 import com.aircontrol.permissions.PermissionStates
 import com.aircontrol.tracking.HandTracker
@@ -18,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -43,6 +47,7 @@ class HomeViewModel @Inject constructor(
     private val permissionsManager: PermissionsManager,
     private val serviceManager: com.aircontrol.service.CameraServiceManager,
     private val handTracker: HandTracker,
+    private val gestureDetector: GestureDetector,
     @ApplicationContext private val appContext: Context,
     private val actionDispatcher: ActionDispatcher,
 ) : ViewModel() {
@@ -95,6 +100,16 @@ class HomeViewModel @Inject constructor(
     private val _handDetected = MutableStateFlow(false)
     val handDetected: StateFlow<Boolean> = _handDetected
 
+    private val _liveLandmarks = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
+    val liveLandmarks: StateFlow<List<Pair<Float, Float>>> = _liveLandmarks.asStateFlow()
+
+    val engineState: StateFlow<GestureEngineState> = gestureDetector.engineState
+    val currentPose: StateFlow<Pose> = gestureDetector.currentPose
+    val pinchProximity: StateFlow<Float> = gestureDetector.pinchProximity
+
+    private val _lastActionLabel = MutableStateFlow("")
+    val lastActionLabel: StateFlow<String> = _lastActionLabel.asStateFlow()
+
     private var _sessionStats = MutableStateFlow(SessionStats())
     val sessionStats: StateFlow<SessionStats> = _sessionStats
 
@@ -112,15 +127,18 @@ class HomeViewModel @Inject constructor(
                     stopHandDetectionCollection()
                     _sessionStats.value = SessionStats()
                     _handDetected.value = false
+                    _liveLandmarks.value = emptyList()
+                    _lastActionLabel.value = ""
                 }
             }
         }
 
         viewModelScope.launch {
-            actionDispatcher.dispatchedEvents.collect {
+            actionDispatcher.dispatchedEvents.collect { actionName ->
                 _sessionStats.value = _sessionStats.value.copy(
                     gesturesExecuted = _sessionStats.value.gesturesExecuted + 1,
                 )
+                _lastActionLabel.value = actionName.replace('_', ' ')
             }
         }
     }
@@ -130,6 +148,11 @@ class HomeViewModel @Inject constructor(
         handCollectJob = viewModelScope.launch {
             handTracker.handFrames.collect { frame ->
                 _handDetected.value = frame.isDetected
+                _liveLandmarks.value = if (frame.isDetected && frame.landmarks.size >= 21) {
+                    frame.landmarks.map { (1f - it.x).coerceIn(0f, 1f) to it.y.coerceIn(0f, 1f) }
+                } else {
+                    emptyList()
+                }
             }
         }
     }
@@ -138,6 +161,7 @@ class HomeViewModel @Inject constructor(
         handCollectJob?.cancel()
         handCollectJob = null
         _handDetected.value = false
+        _liveLandmarks.value = emptyList()
     }
 
     private fun startUptimeTimer() {

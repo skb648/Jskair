@@ -74,6 +74,16 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
     var lastFrameFistLike: Boolean = false
         private set
 
+    /** The raw (pre-debounce) pose classified on the most recent frame. */
+    @Volatile
+    var lastRawPose: Pose = Pose.NONE
+        private set
+
+    /** The finger extension state from the most recent frame. */
+    @Volatile
+    var lastFingerState: FingerExtensionState = FingerExtensionState(false, false, false, false, false)
+        private set
+
     // Templates for custom gesture matching.
     @Volatile
     private var customTemplates: List<LandmarkTemplate> = emptyList()
@@ -100,13 +110,17 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
                 runPose = Pose.NONE
                 runLength = 0
                 lastFrameFistLike = false
+                lastRawPose = Pose.NONE
+                lastFingerState = FingerExtensionState(false, false, false, false, false)
                 confirmedPose = Pose.NONE
                 return Pose.NONE
             }
 
             val fingerState = fingerDetector.detect(input)
+            lastFingerState = fingerState
             lastFrameFistLike = fingerState.extendedFingerCount == 0
             val rawPose = classifyRaw(input, fingerState, handVelocity)
+            lastRawPose = rawPose
             return applyDebounce(rawPose)
         } finally {
             stateLock.unlock()
@@ -259,6 +273,8 @@ class StaticPoseClassifier(config: GestureEngineConfig) {
             runLength = 0
             confirmedPose = Pose.NONE
             lastFrameFistLike = false
+            lastRawPose = Pose.NONE
+            lastFingerState = FingerExtensionState(false, false, false, false, false)
         } finally { stateLock.unlock() }
     }
 
