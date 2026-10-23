@@ -90,10 +90,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isVisible = true
+        com.aircontrol.accessibility.MainActivity.processInForeground = true
     }
 
     override fun onStop() {
         isVisible = false
+        com.aircontrol.accessibility.MainActivity.processInForeground = false
         super.onStop()
     }
 

@@ -27,12 +27,29 @@ class AirControlApp : Application() {
         initTimber()
         initStrictMode()
         initNotificationChannels()
+        initProcessVisibilityObserver()
         RuntimeHealthMonitor.start(this)
         // Perf audit P18: telemetry logs only in debug builds, and the summary
         // is rate-limited internally (≥30 s) — release builds never pay for it
         // (the release tree is WARN+ anyway).
         PerfTelemetry.enableLogging = BuildConfig.DEBUG
         PerfTelemetry.loggingSink = { message -> Timber.tag("PerfTelemetry").d(message) }
+    }
+
+    private fun initProcessVisibilityObserver() {
+        runCatching {
+            androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                object : androidx.lifecycle.DefaultLifecycleObserver {
+                    override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                        com.aircontrol.accessibility.MainActivity.processInForeground = true
+                    }
+
+                    override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                        com.aircontrol.accessibility.MainActivity.processInForeground = false
+                    }
+                },
+            )
+        }.onFailure { Timber.w(it, "Could not attach ProcessLifecycleOwner observer") }
     }
 
     /**

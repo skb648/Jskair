@@ -226,7 +226,7 @@ class FaceTrackerImpl @Inject constructor(
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Timber.e(e, "Error processing face frame: submission failed")
         }
         if (!accepted) {
@@ -258,7 +258,7 @@ class FaceTrackerImpl @Inject constructor(
             isClosing = true
             try {
                 faceLandmarker?.close()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Timber.e(e, "Error closing FaceLandmarker")
             }
             faceLandmarker = null
@@ -562,20 +562,20 @@ class FaceTrackerImpl @Inject constructor(
     }.getOrNull()
 
     /** Last exception from [tryInitializeWithDelegate], for the stage record. */
-    @Volatile private var lastInitError: Throwable? = null
+    @Volatile internal var lastInitError: Throwable? = null
 
     private fun validateModelFile(): Boolean {
         return try {
             context.assets.open(MODEL_FILE).close()
             true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastInitError = e
             Timber.e(e, "Error opening face model file %s", MODEL_FILE)
             false
         }
     }
 
-    private fun tryInitializeWithDelegate(delegate: Delegate): FaceLandmarker? {
+    internal fun tryInitializeWithDelegate(delegate: Delegate): FaceLandmarker? {
         return try {
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath(MODEL_FILE)
@@ -599,29 +599,39 @@ class FaceTrackerImpl @Inject constructor(
             FaceLandmarker.createFromOptions(context, options).also {
                 Timber.i("FaceLandmarker initialized with %s delegate", delegate)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastInitError = e
             Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, initialization failed", delegate)
             null
         }
     }
 
-    private fun handleRuntimeDelegateError(delegate: Delegate, error: RuntimeException) {
+    internal fun handleRuntimeDelegateError(delegate: Delegate, error: Throwable) {
         Timber.e(error, "FaceLandmarker runtime error (delegate=%s)", delegate)
         inFlight.reset()
         pendingConsumed.clear()?.onConsumed?.invoke()
         if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
             gpuRuntimeFailed = true
+            _isInitialized = false
             com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
                 "face-gpu-runtime-fallback",
                 android.os.SystemClock.elapsedRealtime(),
             )
-            synchronized(closeLock) {
-                if (_isInitialized && !isClosing) {
-                    close()
-                    initialize()
-                }
-            }
+            // Never call faceLandmarker.close() synchronously inside MediaPipe's
+            // ErrorListener callback: closing the native CalculatorGraph from its
+            // own callback thread deadlocks or aborts (pthread_join on self).
+            Thread({
+                runCatching {
+                    synchronized(closeLock) {
+                        if (!isClosing) {
+                            close()
+                            initialize()
+                        }
+                    }
+                }.onFailure { Timber.e(it, "Async CPU fallback for FaceLandmarker failed") }
+            }, "face-gpu-fallback").apply {
+                isDaemon = true
+            }.start()
         }
     }
 

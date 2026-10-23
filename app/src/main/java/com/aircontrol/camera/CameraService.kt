@@ -445,8 +445,61 @@ class CameraService : LifecycleService() {
         Timber.i("CameraService created")
     }
 
+    @Volatile
+    private var isInForeground: Boolean = false
+
+    private fun promoteToForegroundOnMainThread(): Boolean {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            publishState(_state.value.copy(
+                actualState = TrackingState.FAILED,
+                reason = "camera-permission-missing",
+            ))
+            Timber.e("Camera permission missing; cannot start foreground camera service")
+            satisfyAndStopForegroundBeforeExit()
+            return false
+        }
+        return try {
+            val notification = buildNotification(isPaused = _state.value.isPaused, isWaiting = !_state.value.isRunning)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            isInForeground = true
+            true
+        } catch (e: Throwable) {
+            isInForeground = false
+            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "foreground-start-failed"))
+            StageLog.failure(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "startForeground(FOREGROUND_SERVICE_TYPE_CAMERA) rejected", e)
+            satisfyAndStopForegroundBeforeExit()
+            false
+        }
+    }
+
+    private fun satisfyAndStopForegroundBeforeExit() {
+        runCatching {
+            val fallbackNotification = buildNotification(isPaused = false, isWaiting = true)
+            startForeground(NOTIFICATION_ID, fallbackNotification)
+        }
+        stopForegroundCompat()
+        stopSelf()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+
+        // Android 12–15 requires startForeground() to complete promptly on the main
+        // thread whenever ContextCompat.startForegroundService() is used. Promoting
+        // synchronously here before queueing behind lifecycleMutex prevents
+        // ForegroundServiceDidNotStartInTimeException when multiple callers request
+        // ACTION_START or while tracker/camera init is running.
+        if (intent?.action == ACTION_START) {
+            if (!promoteToForegroundOnMainThread()) {
+                return START_NOT_STICKY
+            }
+        }
 
         serviceScope.launch {
             lifecycleMutex.withLock {
@@ -506,6 +559,7 @@ class CameraService : LifecycleService() {
         // resources; they cannot publish into the next session.
         acceptingFrames = false
         desiredTrackingEnabled = false
+        isInForeground = false
         lifecycleGeneration++
         publishState(ServiceState(
             isRunning = false,
@@ -614,18 +668,11 @@ class CameraService : LifecycleService() {
             return
         }
 
-        try {
-            val notification = buildNotification(isPaused = false, isWaiting = true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
+        if (!isInForeground) {
+            val promoted = withContext(Dispatchers.Main.immediate) {
+                promoteToForegroundOnMainThread()
             }
-        } catch (e: Exception) {
-            publishState(_state.value.copy(actualState = TrackingState.FAILED, reason = "foreground-start-failed"))
-            StageLog.failure(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "startForeground(FOREGROUND_SERVICE_TYPE_CAMERA) rejected", e)
-            stopSelf()
-            return
+            if (!promoted) return
         }
         StageLog.success(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "generation=$generation")
 
@@ -994,8 +1041,11 @@ class CameraService : LifecycleService() {
     }
 
     private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
-        else @Suppress("DEPRECATION") stopForeground(true)
+        isInForeground = false
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) stopForeground(STOP_FOREGROUND_REMOVE)
+            else @Suppress("DEPRECATION") stopForeground(true)
+        }
     }
 
     private suspend fun pauseTrackingLocked(userInitiated: Boolean = true) {

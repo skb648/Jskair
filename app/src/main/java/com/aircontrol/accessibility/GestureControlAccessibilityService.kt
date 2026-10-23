@@ -1483,29 +1483,32 @@ class GestureControlAccessibilityService : AccessibilityService() {
      */
     private fun startCameraService(allowBackgroundStart: Boolean = false) {
         if (!currentPreferences.gesturesEnabled) return
-        // Fix (verified critical #4): the visibility gate meant an OEM kill
-        // while the user was in Chrome/YouTube — exactly when gestures are
-        // needed — was never recovered until they reopened AirControl.
-        // Foreground starts keep their normal flow (fast path); watchdog/
-        // backoff retries pass allowBackgroundStart=true, which is legal while
-        // the device is unlocked and the camera is not exclusively held; a
-        // platform rejection is caught and rescheduled below.
-        if (!MainActivity.isVisible && !allowBackgroundStart) {
-            // Rate-limited by design: only the first deferral per service
-            // instance is a stage record; the watchdog logs decision changes.
+        if (!cameraPermissionGranted() || keyguardLocked()) return
+        if (cameraServiceManager?.isTracking() == true) {
+            runCatching { cameraServiceManager?.resumeTracking() }
+            cameraRetryAttempt = 0
+            return
+        }
+        // On Android 14+ (API 34+), cold-starting a brand-new FOREGROUND_SERVICE_TYPE_CAMERA
+        // while no Activity of this app is visible (e.g., while the user is in Android
+        // Settings enabling the Accessibility Service) is rejected by the OS with a
+        // SecurityException / ForegroundServiceStartNotAllowedException. Defer the cold
+        // FGS creation until MainActivity is visible; resuming an already-running FGS
+        // above remains allowed in the background.
+        val requiresVisibleActivityForColdStart =
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                com.aircontrol.camera.CameraService.serviceState.value.reason == "foreground-start-failed"
+        if (!MainActivity.isVisible && (!allowBackgroundStart || requiresVisibleActivityForColdStart)) {
             if (!cameraDeferralLogged) {
                 cameraDeferralLogged = true
                 StageLog.failure(
                     StageLog.Stage.CAMERA_INIT_DEFERRED, COMPONENT,
-                    "Activity not visible; camera FGS start deferred to watchdog/retry (service itself is connected)",
+                    "Activity not visible; camera FGS start deferred until Activity is visible (service itself is connected)",
                 )
             }
-            scheduleCameraRetry()
-            return
-        }
-        if (cameraServiceManager?.isTracking() == true) {
-            runCatching { cameraServiceManager?.resumeTracking() }
-            cameraRetryAttempt = 0
+            if (!requiresVisibleActivityForColdStart) {
+                scheduleCameraRetry()
+            }
             return
         }
         runCatching {
@@ -1529,15 +1532,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
         cameraRetryJob?.cancel()
         cameraRetryJob = serviceScope.launchGuarded("camera retry") {
             delay(retryDelayMs)
-            // Fix (audit #23): retry whenever the user actually granted the
-            // camera permission — not only while the Activity is on screen.
-            // ("Nothing works until I open AirControl" after an OEM event.)
-            // A start that the platform still rejects is caught and rescheduled.
             if (currentPreferences.gesturesEnabled && cameraPermissionGranted() &&
                 cameraServiceManager?.isTracking() != true) {
-                // Fix (verified critical #4): retries are allowed from the
-                // background — the comment here used to promise it while the
-                // code visibility-gated the call into a permanent no-op.
                 startCameraService(allowBackgroundStart = true)
             }
         }

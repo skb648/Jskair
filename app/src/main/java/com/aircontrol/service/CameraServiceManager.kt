@@ -1,7 +1,10 @@
 package com.aircontrol.service
 
+import android.Manifest
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.aircontrol.camera.CameraService
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -50,9 +53,32 @@ class CameraServiceManager @Inject constructor(
 
     /**
      * Starts the camera tracking foreground service.
-     * Safe to call multiple times — CameraService handles idempotency internally.
+     * Safe to call multiple times — guards preconditions before issuing
+     * `startForegroundService` so Android 12–15 never receives an unfulfilled
+     * foreground-service start token.
      */
     fun startTracking() {
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Timber.w("Skipping CameraService start: CAMERA permission not granted")
+            return
+        }
+        val km = appContext.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (km?.isKeyguardLocked == true) {
+            Timber.i("Skipping CameraService start: device keyguard is locked")
+            return
+        }
+        val state = CameraService.serviceState.value
+        if (state.desiredTrackingEnabled && !state.isPaused && state.actualState in setOf(
+                com.aircontrol.camera.TrackingState.STARTING,
+                com.aircontrol.camera.TrackingState.RUNNING,
+                com.aircontrol.camera.TrackingState.WAITING_FOR_CAMERA,
+            )
+        ) {
+            Timber.d("CameraService already active (%s); skipping duplicate startForegroundService", state.actualState)
+            return
+        }
         runCatching {
             val intent = Intent(appContext, CameraService::class.java).apply {
                 action = CameraService.ACTION_START

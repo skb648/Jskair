@@ -211,7 +211,7 @@ class HandTrackerImpl @Inject constructor(
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Timber.e(e, "Error processing hand frame: submission failed")
         }
         if (!accepted) {
@@ -238,7 +238,7 @@ class HandTrackerImpl @Inject constructor(
             isClosing = true
             try {
                 handLandmarker?.close()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Timber.e(e, "Error closing HandLandmarker")
             }
             handLandmarker = null
@@ -321,41 +321,51 @@ class HandTrackerImpl @Inject constructor(
         _handFrames.tryEmit(associatedFrame)
     }
 
-    private fun handleRuntimeDelegateError(delegate: Delegate, error: RuntimeException) {
+    internal fun handleRuntimeDelegateError(delegate: Delegate, error: Throwable) {
         Timber.e(error, "HandLandmarker runtime error (delegate=%s)", delegate)
         // Release any wedged in-flight buffer immediately so the bitmap pool cannot starve
         inFlight.reset()
         pendingConsumed.clear()?.onConsumed?.invoke()
         if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
             gpuRuntimeFailed = true
+            _isInitialized = false
             com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
                 "hand-gpu-runtime-fallback",
                 android.os.SystemClock.elapsedRealtime(),
             )
-            synchronized(closeLock) {
-                if (_isInitialized && !isClosing) {
-                    close()
-                    initialize()
-                }
-            }
+            // Never call handLandmarker.close() synchronously inside MediaPipe's
+            // ErrorListener callback: closing the native CalculatorGraph from its
+            // own callback thread deadlocks or aborts (pthread_join on self).
+            Thread({
+                runCatching {
+                    synchronized(closeLock) {
+                        if (!isClosing) {
+                            close()
+                            initialize()
+                        }
+                    }
+                }.onFailure { Timber.e(it, "Async CPU fallback for HandLandmarker failed") }
+            }, "hand-gpu-fallback").apply {
+                isDaemon = true
+            }.start()
         }
     }
 
     /** Last exception from [tryInitializeWithDelegate], for the stage record. */
-    @Volatile private var lastInitError: Throwable? = null
+    @Volatile internal var lastInitError: Throwable? = null
 
     private fun validateModelFile(): Boolean {
         return try {
             context.assets.open(MODEL_FILE).close()
             true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastInitError = e
             Timber.e(e, "Error opening hand model file %s", MODEL_FILE)
             false
         }
     }
 
-    private fun tryInitializeWithDelegate(delegate: Delegate): HandLandmarker? {
+    internal fun tryInitializeWithDelegate(delegate: Delegate): HandLandmarker? {
         return try {
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath(MODEL_FILE)
@@ -378,7 +388,7 @@ class HandTrackerImpl @Inject constructor(
             HandLandmarker.createFromOptions(context, options).also {
                 Timber.i("HandLandmarker initialized with %s delegate", delegate)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastInitError = e
             Timber.w(e, "Failed to initialize with %s delegate, initialization failed", delegate)
             null

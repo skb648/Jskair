@@ -109,8 +109,12 @@
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
-# Keep HandPreference enum values
+# Keep HandPreference and CursorResponseProfile enum values
 -keepclassmembers enum com.aircontrol.data.model.HandPreference {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+-keepclassmembers enum com.aircontrol.data.model.CursorResponseProfile {
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
