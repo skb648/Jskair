@@ -1,5 +1,6 @@
 package com.aircontrol.accessibility
 
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.model.HandPreference
@@ -63,6 +64,8 @@ class ActionDispatcherTest {
         override suspend fun updateNativeHidMouseEnabled(enabled: Boolean) {}
         override suspend fun updateGazeCalibration(coeffs: String) {}
         override suspend fun updatePersonalizedGazeCalibration(json: String) {}
+        override suspend fun updateCursorResponseProfile(profile: CursorResponseProfile) {}
+        override suspend fun updateGpuAccelerationEnabled(enabled: Boolean) {}
         override suspend fun updateGestureAction(key: String, action: String) {}
         override suspend fun resetGestureMapToDefaults() {}
         override suspend fun addCustomGesture(gesture: CustomGesture) {}

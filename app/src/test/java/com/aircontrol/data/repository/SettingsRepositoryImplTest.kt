@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import app.cash.turbine.test
 import com.aircontrol.accessibility.GestureAction
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.model.GestureMapEntry
 import com.aircontrol.data.model.HandPreference
@@ -329,12 +330,28 @@ class SettingsRepositoryImplTest {
         repository.updateAnalysisFps(30)
         assertEquals(30, repository.userPreferences.first().analysisFps)
 
-        // Invalid value should fall back to default (24)
         repository.updateAnalysisFps(60)
+        assertEquals(60, repository.userPreferences.first().analysisFps)
+
+        // Invalid value should fall back to default (24)
+        repository.updateAnalysisFps(99)
         assertEquals(24, repository.userPreferences.first().analysisFps)
 
         repository.updateAnalysisFps(0)
         assertEquals(24, repository.userPreferences.first().analysisFps)
+    }
+
+    @Test
+    fun `updateCursorResponseProfile and updateGpuAccelerationEnabled persist values`() = testScope.runTest {
+        assertEquals(CursorResponseProfile.INSTANT, repository.userPreferences.first().cursorResponseProfile)
+        assertTrue(repository.userPreferences.first().gpuAccelerationEnabled)
+
+        repository.updateCursorResponseProfile(CursorResponseProfile.PRECISION)
+        repository.updateGpuAccelerationEnabled(false)
+
+        val updated = repository.userPreferences.first()
+        assertEquals(CursorResponseProfile.PRECISION, updated.cursorResponseProfile)
+        assertFalse(updated.gpuAccelerationEnabled)
     }
 
     @Test

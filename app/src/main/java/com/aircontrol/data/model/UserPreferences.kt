@@ -76,6 +76,10 @@ data class UserPreferences(
     // calibration model. Empty string = not calibrated. Takes priority over
     // [gazeCalibration] when present and loadable.
     val personalizedGazeCalibration: String = "",
+    // Zero-latency cursor motion profile (INSTANT default for zero-lag live response).
+    val cursorResponseProfile: CursorResponseProfile = CursorResponseProfile.INSTANT,
+    // Auto GPU hardware acceleration with safe CPU fallback.
+    val gpuAccelerationEnabled: Boolean = true,
 ) {
     /**
      * Legacy name for the smoothing slider. The stored key is `cursor_speed` for

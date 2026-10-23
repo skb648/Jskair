@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.aircontrol.accessibility.ActionDispatcher
 import com.aircontrol.accessibility.GestureControlAccessibilityService
 import com.aircontrol.camera.CameraService
+import com.aircontrol.control.CursorController
+import com.aircontrol.control.CursorState
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
 import com.aircontrol.gesture.model.GestureEngineState
@@ -13,6 +16,8 @@ import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gestures.GestureDetector
 import com.aircontrol.permissions.PermissionsManager
 import com.aircontrol.permissions.PermissionStates
+import com.aircontrol.runtime.PerfTelemetry
+import com.aircontrol.tracking.FaceTracker
 import com.aircontrol.tracking.HandTracker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -41,13 +46,24 @@ data class SessionStats(
     val uptimeSeconds: Long = 0L,
 )
 
+/** Real-time photon-to-cursor telemetry exposed to the Home HUD. */
+data class LivePipelineTelemetry(
+    val activeDelegate: String = "GPU",
+    val actualFps: Int = 0,
+    val configuredFps: Int = 24,
+    val inferenceMs: Long = 0L,
+    val photonToCursorMs: Long = 0L,
+)
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val permissionsManager: PermissionsManager,
     private val serviceManager: com.aircontrol.service.CameraServiceManager,
     private val handTracker: HandTracker,
+    private val faceTracker: FaceTracker,
     private val gestureDetector: GestureDetector,
+    private val cursorController: CursorController,
     @ApplicationContext private val appContext: Context,
     private val actionDispatcher: ActionDispatcher,
 ) : ViewModel() {
@@ -106,6 +122,10 @@ class HomeViewModel @Inject constructor(
     val engineState: StateFlow<GestureEngineState> = gestureDetector.engineState
     val currentPose: StateFlow<Pose> = gestureDetector.currentPose
     val pinchProximity: StateFlow<Float> = gestureDetector.pinchProximity
+    val cursorState: StateFlow<CursorState> = cursorController.cursorState
+
+    private val _liveTelemetry = MutableStateFlow(LivePipelineTelemetry())
+    val liveTelemetry: StateFlow<LivePipelineTelemetry> = _liveTelemetry.asStateFlow()
 
     private val _lastActionLabel = MutableStateFlow("")
     val lastActionLabel: StateFlow<String> = _lastActionLabel.asStateFlow()
@@ -168,7 +188,36 @@ class HomeViewModel @Inject constructor(
         stopUptimeTimer()
         uptimeJob = viewModelScope.launch {
             while (true) {
-                delay(1000L)
+                delay(500L)
+                val snap = PerfTelemetry.snapshot()
+                val prefs = userPreferences.value
+                val eyeMode = prefs.eyeTrackingEnabled
+                val delegate = when {
+                    eyeMode && faceTracker.isInitialized() -> faceTracker.activeDelegate
+                    handTracker.isInitialized() -> handTracker.activeDelegate
+                    prefs.gpuAccelerationEnabled -> "GPU"
+                    else -> "CPU"
+                }
+                val inferMs = if (eyeMode && snap.faceInferAvgMs > 0L) {
+                    snap.faceInferAvgMs
+                } else {
+                    snap.handInferAvgMs
+                }
+                val endToEndMs = if (eyeMode && snap.faceResultAgeP50Ms > 0L) {
+                    snap.faceResultAgeP50Ms
+                } else if (snap.handResultAgeP50Ms > 0L) {
+                    snap.handResultAgeP50Ms
+                } else {
+                    (snap.conversionAvgMs + inferMs).coerceAtLeast(0L)
+                }
+                _liveTelemetry.value = LivePipelineTelemetry(
+                    activeDelegate = delegate,
+                    actualFps = snap.actualFps.toInt(),
+                    configuredFps = if (snap.configuredFps > 0) snap.configuredFps else prefs.analysisFps,
+                    inferenceMs = inferMs,
+                    photonToCursorMs = endToEndMs,
+                )
+                delay(500L)
                 _sessionStats.value = _sessionStats.value.copy(
                     uptimeSeconds = _sessionStats.value.uptimeSeconds + 1,
                 )
@@ -223,6 +272,12 @@ class HomeViewModel @Inject constructor(
     fun toggleBatterySaver(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.updateBatterySaver(enabled)
+        }
+    }
+
+    fun updateCursorResponseProfile(profile: CursorResponseProfile) {
+        viewModelScope.launch {
+            settingsRepository.updateCursorResponseProfile(profile)
         }
     }
 

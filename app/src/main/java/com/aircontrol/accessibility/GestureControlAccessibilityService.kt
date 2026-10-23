@@ -109,23 +109,20 @@ class GestureControlAccessibilityService : AccessibilityService() {
     @Volatile private var isCursorFrozen = false
     private var cursorFreezeJob: Job? = null
 
-    // Cursor smoother (fix #101: one set of constants — Apple Vision Pro tuned).
+    // Cursor smoother (predictive One Euro + velocity lead compensation).
     private val cursorSmoother = CursorSmoother(
         minCutoff = DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF,
         beta = DEFAULT_CURSOR_SMOOTHER_BETA,
+        leadMs = com.aircontrol.data.model.CursorResponseProfile.INSTANT.leadMs,
+        deadZoneNormalized = com.aircontrol.data.model.CursorResponseProfile.INSTANT.deadZoneNormalized,
     )
 
     // Gaze smoothing for "eye is mouse" mode.
-    // Fix E1: the gaze cursor used a FIXED-alpha EMA. Fixed smoothing cannot
-    // have both "still = steady" and "moving = instant": at alpha 0.2 the dot
-    // trailed the eyes by ~100ms (laggy) and between iris-landmark quantization
-    // steps it snapped in visible jumps ("teleport"). One Euro is
-    // velocity-adaptive — heavy filtering when the gaze is still, near-zero
-    // latency on saccades — plus its micro dead-zone kills the quantization
-    // steps. Slightly hotter constants than the hand cursor: gaze needs snappy.
     private val gazeCursorSmoother = CursorSmoother(
         minCutoff = GAZE_SMOOTHER_MIN_CUTOFF,
         beta = GAZE_SMOOTHER_BETA,
+        leadMs = com.aircontrol.data.model.CursorResponseProfile.INSTANT.leadMs * 0.75f,
+        deadZoneNormalized = com.aircontrol.data.model.CursorResponseProfile.INSTANT.deadZoneNormalized,
     )
 
     // Blink detector for blink-to-click.
@@ -760,7 +757,8 @@ class GestureControlAccessibilityService : AccessibilityService() {
                             cursorController?.hide()
                         }
                     }.onFailure { CrashGuard.report("cursor overlay", it) }
-                    applyCursorSmoothing(prefs.cursorSmoothing)
+                    applyCursorSmoothing(prefs.cursorSmoothing, prefs.cursorResponseProfile)
+                    cursorOverlay?.setDirectVsyncSnap(prefs.cursorResponseProfile.directVsyncSnap)
                     cursorOverlay?.setReducedMotion(prefs.reducedMotion)
                     // Fix B-1: the armed ring on the cursor dot was never driven,
                     // so there was no way to tell whether the app was listening.
@@ -1670,26 +1668,34 @@ class GestureControlAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * The "Cursor smoothing" slider (stored in the legacy `cursorSpeed` key).
-     * It deliberately only controls smoothing now — actual pointer speed is
-     * `cursorGain`, which reaches the coordinate mapping directly. Fix A-16:
-     * previously a slider labelled "speed" only touched the filter, so dragging
-     * it to maximum did not make the pointer any faster.
+     * Combines the user's [com.aircontrol.data.model.CursorResponseProfile] (`INSTANT`, `BALANCED`,
+     * `PRECISION`) with the fine "Cursor smoothing" slider.
      */
-    private fun applyCursorSmoothing(smoothing: Int) {
+    private fun applyCursorSmoothing(
+        smoothing: Int,
+        profile: com.aircontrol.data.model.CursorResponseProfile = currentPreferences.cursorResponseProfile,
+    ) {
         val s = smoothing.coerceIn(1, 100)
-        // 1 = nearly raw (high cutoff), 100 = heavy filtering (low cutoff).
-        baseMinCutoff = MAX_SMOOTHING_CUTOFF - (s / 100f) * (MAX_SMOOTHING_CUTOFF - MIN_SMOOTHING_CUTOFF)
+        // Slider scales around the selected response profile's baseline cutoff
+        val sliderFactor = 1.45f - (s / 100f) * 0.85f
+        baseMinCutoff = (profile.minCutoff * sliderFactor).coerceIn(MIN_SMOOTHING_CUTOFF, MAX_SMOOTHING_CUTOFF)
+        currentCursorBeta = profile.beta
         if (lastAppliedMinCutoffHint == null) {
-            cursorSmoother.updateParams(minCutoff = baseMinCutoff, beta = currentCursorBeta)
+            cursorSmoother.updateParams(
+                minCutoff = baseMinCutoff,
+                beta = currentCursorBeta,
+                leadMs = profile.leadMs,
+                deadZoneNormalized = profile.deadZoneNormalized,
+            )
         }
+        gazeCursorSmoother.updateParams(
+            minCutoff = (profile.minCutoff * sliderFactor * 1.05f).coerceIn(MIN_SMOOTHING_CUTOFF, MAX_SMOOTHING_CUTOFF),
+            beta = profile.beta * 1.1f,
+            leadMs = profile.leadMs * 0.75f,
+            deadZoneNormalized = profile.deadZoneNormalized,
+        )
     }
 
-    /**
-     * Phase 1: one bounded, periodic pipeline snapshot per debug build. Returns
-     * null most frames (the diagnostics object rate-limits internally), so calling
-     * this from the per-frame path costs a comparison.
-     */
     /**
      * Requests one UI-frame application of the latest gaze target. Called from the tracker's
      * coroutine, so it only posts to the main handler and never waits for it (Rule 14).
@@ -1707,12 +1713,6 @@ class GestureControlAccessibilityService : AccessibilityService() {
             return
         }
         val target = gazeTransport.consume() ?: return
-        // Fix (verified C5): the analysis pipeline runs at 15-24 fps while
-        // the panel is 60/120 Hz. Setting the overlay position once per
-        // analyzed sample made the dot step in 40-66 ms jumps. Feed the new
-        // target into a vsync-rate exponential approach so the dot glides at
-        // full refresh rate; the time constant (~28 ms) is below one analysis
-        // frame, so the cursor still tracks with no perceptible lag.
         feedSmoothTarget(gazeSmootherState, target.first, target.second, directMapping = true)
     }
 
@@ -1735,56 +1735,32 @@ class GestureControlAccessibilityService : AccessibilityService() {
         feedSmoothTarget(handSmootherState, target.first, target.second, directMapping = false)
     }
 
-    /** Per-modality interpolation bookkeeping (Fix verified C5). */
+    /** Per-modality state for zero-latency VSYNC cursor dispatch. */
     private class SmoothOverlayState {
         @Volatile var targetX = 0.5f
         @Volatile var targetY = 0.5f
         var shownX = Float.NaN
         var shownY = Float.NaN
-        var running = false
     }
     private val handSmootherState = SmoothOverlayState()
     private val gazeSmootherState = SmoothOverlayState()
 
+    /**
+     * Zero-Latency Direct Dispatch:
+     * Previously, this method ran a second 16ms `postDelayed` exponential smoothing loop ON TOP OF
+     * `OneEuroFilter` AND `CursorOverlay`'s Choreographer VSYNC loop — creating triple-cascaded
+     * filtering (~45–60ms of artificial lag). Now we push the predictive OneEuro target directly
+     * to [CursorOverlay.updatePosition], which is locked to the display's hardware VSYNC.
+     */
     private fun feedSmoothTarget(state: SmoothOverlayState, x: Float, y: Float, directMapping: Boolean) {
         state.targetX = x
         state.targetY = y
-        if (state.running) return
+        state.shownX = x
+        state.shownY = y
         val overlay = cursorOverlay ?: return
-        state.running = true
+        if (!currentPreferences.cursorEnabled) return
         overlay.show()
-        val frameRunnable = object : Runnable {
-            override fun run() {
-                val ov = cursorOverlay
-                if (ov == null || !currentPreferences.cursorEnabled) {
-                    state.running = false
-                    return
-                }
-                if (state.shownX.isNaN()) {
-                    state.shownX = state.targetX
-                    state.shownY = state.targetY
-                } else {
-                    // Exponential approach with a ~28 ms time constant:
-                    // ~85% of each step covered in ~50 ms, snapping sub-pixel.
-                    val t = (1f - kotlin.math.exp(-16f / 28f)).coerceIn(0f, 1f)
-                    state.shownX += (state.targetX - state.shownX) * t
-                    state.shownY += (state.targetY - state.shownY) * t
-                    val px = kotlin.math.abs(state.targetX - state.shownX) * screenWidth
-                    val py = kotlin.math.abs(state.targetY - state.shownY) * screenHeight
-                    if (px < 0.6f && py < 0.6f) {
-                        state.shownX = state.targetX
-                        state.shownY = state.targetY
-                    }
-                }
-                ov.updatePosition(state.shownX, state.shownY, screenWidth, screenHeight, directMapping)
-                if (state.shownX == state.targetX && state.shownY == state.targetY) {
-                    state.running = false
-                } else {
-                    mainHandler.postDelayed(this, 16L)
-                }
-            }
-        }
-        mainHandler.post(frameRunnable)
+        overlay.updatePosition(x, y, screenWidth, screenHeight, directMapping)
     }
 
     /**

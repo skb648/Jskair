@@ -47,6 +47,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aircontrol.BuildConfig
 import com.aircontrol.R
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.HandPreference
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.components.SegmentedButtonGroup
@@ -171,29 +172,62 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(Dimens.spacing8))
                     SegmentedButtonGroup(
-                        options = listOf(15, 24, 30),
+                        options = listOf(15, 24, 30, 60),
                         selectedOption = preferences.analysisFps,
                         onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateAnalysisFps(it) },
                         labelMapper = { stringResource(R.string.settings_analysis_fps_value, it) },
                     )
-                    // Fix (audit #28): eye mode caps analysis at 20 FPS (battery +
-                    // thermal). Silently capping a "30 FPS" selection looked like
-                    // the setting not working — say so up front.
-                    if (preferences.eyeTrackingEnabled && preferences.analysisFps > 20) {
-                        Spacer(modifier = Modifier.height(Dimens.spacing8))
-                        Text(
-                            text = stringResource(R.string.settings_analysis_fps_eye_cap_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
             }
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
+
+            SettingSwitchRow(
+                title = stringResource(R.string.settings_gpu_acceleration),
+                subtitle = stringResource(R.string.settings_gpu_acceleration_subtitle),
+                checked = preferences.gpuAccelerationEnabled,
+                onCheckedChange = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateGpuAccelerationEnabled(it) },
+            )
 
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 
             // ===== Cursor =====
             SectionHeader(title = stringResource(R.string.settings_section_cursor))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(Dimens.cardCornerRadius),
+            ) {
+                Column(modifier = Modifier.padding(Dimens.paddingMedium)) {
+                    Text(
+                        text = stringResource(R.string.settings_cursor_response_profile),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(Dimens.spacing4))
+                    Text(
+                        text = stringResource(R.string.settings_cursor_response_profile_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                    Spacer(modifier = Modifier.height(Dimens.spacing8))
+                    SegmentedButtonGroup(
+                        options = CursorResponseProfile.entries,
+                        selectedOption = preferences.cursorResponseProfile,
+                        onOptionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); viewModel.updateCursorResponseProfile(it) },
+                        labelMapper = { it.displayName() },
+                    )
+                    Spacer(modifier = Modifier.height(Dimens.spacing8))
+                    Text(
+                        text = preferences.cursorResponseProfile.descriptionText(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ElectricBlue,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.spacing12))
 
             SettingSliderCard(
                 title = stringResource(R.string.settings_cursor_speed),
@@ -604,4 +638,18 @@ private fun HandPreference.displayName(): String = when (this) {
     HandPreference.LEFT -> stringResource(R.string.settings_hand_left)
     HandPreference.RIGHT -> stringResource(R.string.settings_hand_right)
     HandPreference.ANY -> stringResource(R.string.settings_hand_any)
+}
+
+@Composable
+private fun CursorResponseProfile.displayName(): String = when (this) {
+    CursorResponseProfile.INSTANT -> stringResource(R.string.profile_instant)
+    CursorResponseProfile.BALANCED -> stringResource(R.string.profile_balanced)
+    CursorResponseProfile.PRECISION -> stringResource(R.string.profile_precision)
+}
+
+@Composable
+private fun CursorResponseProfile.descriptionText(): String = when (this) {
+    CursorResponseProfile.INSTANT -> stringResource(R.string.profile_instant_desc)
+    CursorResponseProfile.BALANCED -> stringResource(R.string.profile_balanced_desc)
+    CursorResponseProfile.PRECISION -> stringResource(R.string.profile_precision_desc)
 }

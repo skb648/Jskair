@@ -75,7 +75,9 @@ import com.aircontrol.permissions.MissingPermission
 import com.aircontrol.ui.Dimens
 import com.aircontrol.ui.components.AnimatedPowerButton
 import com.aircontrol.ui.components.BiometricHandHud
+import com.aircontrol.ui.components.CursorLatencyArenaCard
 import com.aircontrol.ui.components.HandPresenceIndicator
+import com.aircontrol.ui.components.LivePipelineTelemetryHud
 import com.aircontrol.ui.theme.ElectricBlue
 import com.aircontrol.ui.theme.ErrorRed
 import com.aircontrol.ui.theme.SuccessGreen
@@ -104,6 +106,8 @@ fun HomeScreen(
     val pinchProximity by viewModel.pinchProximity.collectAsStateWithLifecycle()
     val lastActionLabel by viewModel.lastActionLabel.collectAsStateWithLifecycle()
     val gazeTracking by viewModel.gazeTracking.collectAsStateWithLifecycle()
+    val liveTelemetry by viewModel.liveTelemetry.collectAsStateWithLifecycle()
+    val cursorState by viewModel.cursorState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
 
@@ -373,6 +377,25 @@ fun HomeScreen(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(Dimens.spacing16))
+
+            // === Live Photon-to-Cursor Telemetry HUD & Response Profile Selector ===
+            LivePipelineTelemetryHud(
+                telemetry = liveTelemetry,
+                selectedProfile = preferences.cursorResponseProfile,
+                onSelectProfile = { profile ->
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.updateCursorResponseProfile(profile)
+                },
+            )
+
+            Spacer(modifier = Modifier.height(Dimens.spacing16))
+
+            // === Interactive Zero-Latency Reflex Arena ===
+            CursorLatencyArenaCard(
+                cursorState = cursorState,
+            )
 
             Spacer(modifier = Modifier.height(Dimens.spacing24))
 

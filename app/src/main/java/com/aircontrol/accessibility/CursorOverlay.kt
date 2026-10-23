@@ -77,6 +77,7 @@ class CursorOverlay(
 
     private val hideDelayMs = 180L
     private var reducedMotion = false
+    private var directVsyncSnap = true
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -94,7 +95,7 @@ class CursorOverlay(
             val dx = currentScreenX - renderedScreenX
             val dy = currentScreenY - renderedScreenY
 
-            if (reducedMotion || (abs(dx) < SETTLE_EPSILON_PX && abs(dy) < SETTLE_EPSILON_PX)) {
+            if (reducedMotion || directVsyncSnap || (abs(dx) < SETTLE_EPSILON_PX && abs(dy) < SETTLE_EPSILON_PX)) {
                 renderedScreenX = currentScreenX
                 renderedScreenY = currentScreenY
                 applyTranslation(renderedScreenX, renderedScreenY)
@@ -168,7 +169,7 @@ class CursorOverlay(
             renderedScreenX = currentScreenX
             renderedScreenY = currentScreenY
             applyTranslation(renderedScreenX, renderedScreenY)
-        } else if (reducedMotion) {
+        } else if (reducedMotion || directVsyncSnap) {
             renderedScreenX = currentScreenX
             renderedScreenY = currentScreenY
             applyTranslation(renderedScreenX, renderedScreenY)
@@ -258,6 +259,10 @@ class CursorOverlay(
     fun setReducedMotion(reduced: Boolean) {
         reducedMotion = reduced
         cursorView?.setReducedMotion(reduced)
+    }
+
+    fun setDirectVsyncSnap(direct: Boolean) {
+        directVsyncSnap = direct
     }
 
     fun remove() {
@@ -381,6 +386,6 @@ class CursorOverlay(
 
     companion object {
         private const val SETTLE_EPSILON_PX = 0.15f
-        private const val INTERP_SPEED = 55f
+        private const val INTERP_SPEED = 95f
     }
 }

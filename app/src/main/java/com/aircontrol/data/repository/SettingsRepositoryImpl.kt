@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.aircontrol.accessibility.GestureAction
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.CustomGestureDirection
 import com.aircontrol.data.model.CustomGesturePose
@@ -68,6 +69,8 @@ private object PreferencesKeys {
     val NATIVE_HID_MOUSE_ENABLED = booleanPreferencesKey("native_hid_mouse_enabled")
     val GAZE_CALIBRATION = stringPreferencesKey("gaze_calibration")
     val PERSONALIZED_GAZE_CALIBRATION = stringPreferencesKey("personalized_gaze_calibration")
+    val CURSOR_RESPONSE_PROFILE = stringPreferencesKey("cursor_response_profile")
+    val GPU_ACCELERATION_ENABLED = booleanPreferencesKey("gpu_acceleration_enabled")
 }
 
 @Singleton
@@ -324,6 +327,20 @@ class SettingsRepositoryImpl @Inject constructor(
         Timber.d("Updated personalizedGazeCalibration (length=%d)", json.length)
     }
 
+    override suspend fun updateCursorResponseProfile(profile: CursorResponseProfile) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.CURSOR_RESPONSE_PROFILE] = profile.name
+        }
+        Timber.d("Updated cursorResponseProfile: %s", profile.name)
+    }
+
+    override suspend fun updateGpuAccelerationEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GPU_ACCELERATION_ENABLED] = enabled
+        }
+        Timber.d("Updated gpuAccelerationEnabled: %b", enabled)
+    }
+
     override suspend fun updateGestureAction(key: String, action: String) {
         val parsedAction = runCatching { GestureAction.valueOf(action) }
             .getOrElse { exception ->
@@ -473,6 +490,10 @@ class SettingsRepositoryImpl @Inject constructor(
         nativeHidMouseEnabled = preferences[PreferencesKeys.NATIVE_HID_MOUSE_ENABLED] ?: false,
         gazeCalibration = preferences[PreferencesKeys.GAZE_CALIBRATION] ?: "",
         personalizedGazeCalibration = preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] ?: "",
+        cursorResponseProfile = preferences[PreferencesKeys.CURSOR_RESPONSE_PROFILE]
+            ?.let { stored -> runCatching { CursorResponseProfile.valueOf(stored) }.getOrNull() }
+            ?: CursorResponseProfile.INSTANT,
+        gpuAccelerationEnabled = preferences[PreferencesKeys.GPU_ACCELERATION_ENABLED] ?: true,
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {
@@ -698,7 +719,7 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     companion object {
-        private val VALID_FPS_SET = setOf(15, 24, 30) // scan 5 FPS internal only, not user-selectable
+        private val VALID_FPS_SET = setOf(15, 24, 30, 60) // scan 5 FPS internal only, not user-selectable
         private const val DEFAULT_FPS = 24
     }
 }

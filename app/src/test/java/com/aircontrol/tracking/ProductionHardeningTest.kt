@@ -105,7 +105,9 @@ class ProductionHardeningTest {
         assertEquals(24, AdaptiveFpsController.coerceToSupportedFps(24))
         assertEquals(24, AdaptiveFpsController.coerceToSupportedFps(25))
         assertEquals(30, AdaptiveFpsController.coerceToSupportedFps(30))
-        assertEquals(30, AdaptiveFpsController.coerceToSupportedFps(120))
+        assertEquals(30, AdaptiveFpsController.coerceToSupportedFps(45))
+        assertEquals(60, AdaptiveFpsController.coerceToSupportedFps(60))
+        assertEquals(60, AdaptiveFpsController.coerceToSupportedFps(120))
     }
 
     @Test

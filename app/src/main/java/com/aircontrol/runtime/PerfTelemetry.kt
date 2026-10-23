@@ -90,6 +90,8 @@ object PerfTelemetry {
     private val faceResultAges = LongArray(LATENCY_WINDOW)
     private var faceResultAgeCount = 0
     private var faceResultAgeWrite = 0
+    private var handDelegate: String = "CPU"
+    private var faceDelegate: String = "CPU"
 
     // ---- event ring --------------------------------------------------------
     private val events = ArrayDeque<String>(EVENT_WINDOW)
@@ -290,6 +292,16 @@ object PerfTelemetry {
         addEvent("tracker:$event", nowMs)
     }
 
+    @Synchronized
+    fun recordHandDelegate(delegateName: String) {
+        handDelegate = delegateName
+    }
+
+    @Synchronized
+    fun recordFaceDelegate(delegateName: String) {
+        faceDelegate = delegateName
+    }
+
     // ---- read API ------------------------------------------------------------
 
     /** Immutable view for the Debug screen / tests. */
@@ -332,6 +344,8 @@ object PerfTelemetry {
         val faceResultAgeP50Ms: Long = 0L,
         val faceResultAgeP95Ms: Long = 0L,
         val faceResultAgeP99Ms: Long = 0L,
+        val handDelegate: String = "CPU",
+        val faceDelegate: String = "CPU",
     )
 
     @Synchronized
@@ -382,6 +396,8 @@ object PerfTelemetry {
             faceResultAgeP50Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.50),
             faceResultAgeP95Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.95),
             faceResultAgeP99Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.99),
+            handDelegate = handDelegate,
+            faceDelegate = faceDelegate,
         )
     }
 
@@ -453,6 +469,8 @@ object PerfTelemetry {
         pipelineExceptions = 0L
         handResultAgeCount = 0; handResultAgeWrite = 0
         faceResultAgeCount = 0; faceResultAgeWrite = 0
+        handDelegate = "CPU"
+        faceDelegate = "CPU"
         events.clear()
         lastSummaryAtMs = null
     }

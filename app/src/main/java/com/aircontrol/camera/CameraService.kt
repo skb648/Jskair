@@ -95,8 +95,8 @@ class CameraService : LifecycleService() {
          *  10-15 s before recovery; 3 s/3 s lands around 6-8 s worst case. */
         private const val WATCHDOG_PERIOD_MS = 3_000L
 
-        /** Fluid 30 FPS analysis rate while eye tracking is active for smooth, responsive gaze. */
-        private const val EYE_MODE_FPS_CAP = 30
+        /** Fluid up-to-60 FPS analysis rate while eye tracking is active for ultra-low-latency gaze. */
+        private const val EYE_MODE_FPS_CAP = 60
 
         /** After a tracker is found missing, retry every N ticks. */
         private const val TRACKER_RETRY_TICKS = 3
@@ -247,6 +247,7 @@ class CameraService : LifecycleService() {
 
     private var cachedRotationDegrees = -1
     private var cachedMatrix: android.graphics.Matrix? = null
+    private val bitmapPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
 
     private var restartJob: Job? = null
 
@@ -429,7 +430,12 @@ class CameraService : LifecycleService() {
         thermalMonitor = com.aircontrol.tracking.ThermalMonitor(context = app, scope = serviceScope)
         createNotificationChannel()
         analysisExecutor = Executors.newSingleThreadExecutor { r ->
-            Thread(r, "aircontrol-analysis").apply { isDaemon = true }
+            Thread({
+                runCatching {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+                }
+                r.run()
+            }, "aircontrol-analysis").apply { isDaemon = true }
         }
         val cm = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
         if (cm != null) {
@@ -689,6 +695,8 @@ class CameraService : LifecycleService() {
     private fun installPipelineCollectors() {
         pipelineJobs.add(serviceScope.launchGuarded("camera settings", restart = true) {
             settingsRepository.userPreferences.collectGuarded("camera settings") { prefs ->
+                handTracker.setGpuAccelerationEnabled(prefs.gpuAccelerationEnabled)
+                faceTracker.setGpuAccelerationEnabled(prefs.gpuAccelerationEnabled)
                 baseConfiguredFps = when {
                     prefs.batterySaver -> minOf(15, prefs.analysisFps)
                     prefs.eyeTrackingEnabled -> minOf(EYE_MODE_FPS_CAP, prefs.analysisFps)
@@ -1205,8 +1213,9 @@ class CameraService : LifecycleService() {
                 cachedMatrix = m; cachedRotationDegrees = rotationDegrees
             }
             val canvas = android.graphics.Canvas(targetBitmap)
-            canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-            canvas.drawBitmap(sourceBitmap, checkNotNull(cachedMatrix), null)
+            // Opaque full-frame camera bitmap overwrites every pixel of targetBitmap;
+            // skipping PorterDuff.CLEAR saves a full 640x480 memory fill per frame.
+            canvas.drawBitmap(sourceBitmap, checkNotNull(cachedMatrix), bitmapPaint)
             BitmapImageBuilder(targetBitmap).build()
         } catch (e: Exception) {
             Timber.e(e, "Frame conversion failed")

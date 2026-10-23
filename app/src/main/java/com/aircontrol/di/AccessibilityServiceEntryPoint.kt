@@ -28,6 +28,7 @@ interface AccessibilityServiceEntryPoint {
     fun settingsRepository(): SettingsRepository
     fun cursorController(): CursorController
     fun cameraServiceManager(): CameraServiceManager
+    fun permissionsManager(): com.aircontrol.permissions.PermissionsManager
 
     /** HID POC: isolated Native HID Mouse path (never used by existing controls). */
     fun nativeHidMouseController(): com.aircontrol.nativeinput.NativeHidMouseController

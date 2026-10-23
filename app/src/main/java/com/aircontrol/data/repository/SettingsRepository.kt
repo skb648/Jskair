@@ -1,5 +1,6 @@
 package com.aircontrol.data.repository
 
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.CustomGesture
 import com.aircontrol.data.model.GestureMapConfig
 import com.aircontrol.data.model.HandPreference
@@ -73,6 +74,10 @@ interface SettingsRepository {
 
     /** Fix A5: persists/clears the serialized personalized gaze calibration model. */
     suspend fun updatePersonalizedGazeCalibration(json: String)
+
+    suspend fun updateCursorResponseProfile(profile: CursorResponseProfile) {}
+
+    suspend fun updateGpuAccelerationEnabled(enabled: Boolean) {}
 
     // Gesture map
     val gestureMapConfig: Flow<GestureMapConfig>

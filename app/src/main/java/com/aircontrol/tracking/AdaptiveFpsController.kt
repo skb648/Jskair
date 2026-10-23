@@ -110,7 +110,7 @@ class AdaptiveFpsController(
     companion object {
         private const val DEFAULT_FPS = 24
         private const val SCAN_FPS = 10
-        private val SUPPORTED_FPS = intArrayOf(5, 10, 15, 24, 30)
+        private val SUPPORTED_FPS = intArrayOf(5, 10, 15, 24, 30, 60)
 
         /** Highest supported operating point that does not exceed [requested]. */
         internal fun coerceToSupportedFps(requested: Int): Int {

@@ -43,6 +43,12 @@ interface HandTracker {
     fun close()
     fun isInitialized(): Boolean
 
+    /** Enables or disables GPU delegate hardware acceleration (with automatic CPU fallback). */
+    fun setGpuAccelerationEnabled(enabled: Boolean) {}
+
+    /** Active MediaPipe delegate name ("GPU" or "CPU"). */
+    val activeDelegate: String get() = "CPU"
+
     /** Backpressure counters for telemetry: outstanding submission, refusals, reclaimed wedges. */
     fun inFlightStats(nowMs: Long): InFlightStats
 }
@@ -93,11 +99,23 @@ class HandTrackerImpl @Inject constructor(
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
     @Volatile private var preferredHand: Handedness = Handedness.UNKNOWN
+    @Volatile private var gpuEnabled: Boolean = true
+    @Volatile private var _activeDelegate: String = "CPU"
+    override val activeDelegate: String get() = _activeDelegate
 
     override fun setPreferredHand(preference: Handedness) {
         preferredHand = preference
         lastTrackedWristX = -1f
         lastTrackedWristY = -1f
+    }
+
+    override fun setGpuAccelerationEnabled(enabled: Boolean) {
+        if (gpuEnabled == enabled) return
+        gpuEnabled = enabled
+        if (_isInitialized) {
+            close()
+            initialize()
+        }
     }
 
     override fun initialize() {
@@ -113,18 +131,25 @@ class HandTrackerImpl @Inject constructor(
             return
         }
 
-        // CPU is the portable production default. GPU delegates can terminate the
-        // entire process inside OEM graphics drivers before Kotlin can catch an error.
-        handLandmarker = tryInitializeWithDelegate(Delegate.CPU)
-            ?: run {
-                StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "HandLandmarker.createFromOptions(CPU) failed", lastInitError)
-                return
-            }
-
+        val canTryGpu = gpuEnabled && !android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+        var chosenDelegate = Delegate.CPU
+        val landmarker = if (canTryGpu) {
+            tryInitializeWithDelegate(Delegate.GPU)?.also { chosenDelegate = Delegate.GPU }
+                ?: tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+        } else {
+            tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+        }
+        if (landmarker == null) {
+            StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "HandLandmarker.createFromOptions(CPU) failed", lastInitError)
+            return
+        }
+        handLandmarker = landmarker
+        _activeDelegate = chosenDelegate.name
         _isInitialized = true
-        StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE")
+        com.aircontrol.runtime.PerfTelemetry.recordHandDelegate(_activeDelegate)
+        StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
-            "hand-initialized",
+            "hand-initialized(${_activeDelegate})",
             android.os.SystemClock.elapsedRealtime(),
         )
     }

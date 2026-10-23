@@ -28,6 +28,8 @@ interface FaceTracker {
     fun inFlightStats(nowMs: Long): InFlightStats
     fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?)
     fun setCalibrationCollecting(active: Boolean)
+    fun setGpuAccelerationEnabled(enabled: Boolean) {}
+    val activeDelegate: String get() = "CPU"
     val diagnostics: GazeDiagnostics
 }
 
@@ -102,6 +104,19 @@ class FaceTrackerImpl @Inject constructor(
     )
     override val gazeObservations: SharedFlow<GazeObservation> = _gazeObservations.asSharedFlow()
 
+    @Volatile private var gpuEnabled: Boolean = true
+    @Volatile private var _activeDelegate: String = "CPU"
+    override val activeDelegate: String get() = _activeDelegate
+
+    override fun setGpuAccelerationEnabled(enabled: Boolean) {
+        if (gpuEnabled == enabled) return
+        gpuEnabled = enabled
+        if (_isInitialized) {
+            close()
+            initialize()
+        }
+    }
+
     override fun initialize() {
         if (_isInitialized) {
             Timber.d("FaceTracker already initialized — reusing the loaded model")
@@ -114,15 +129,25 @@ class FaceTrackerImpl @Inject constructor(
 
         // isClosing stays true after close so late MediaPipe callbacks are inert.
         isClosing = false
-        faceLandmarker = tryInitializeWithDelegate(Delegate.CPU)
-            ?: run {
-                StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
-                return
-            }
+        val canTryGpu = gpuEnabled && !android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+        var chosenDelegate = Delegate.CPU
+        val landmarker = if (canTryGpu) {
+            tryInitializeWithDelegate(Delegate.GPU)?.also { chosenDelegate = Delegate.GPU }
+                ?: tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+        } else {
+            tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+        }
+        if (landmarker == null) {
+            StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
+            return
+        }
+        faceLandmarker = landmarker
+        _activeDelegate = chosenDelegate.name
         _isInitialized = true
-        StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=CPU model=$MODEL_FILE matrix=true")
+        com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate(_activeDelegate)
+        StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE matrix=true")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
-            "face-initialized",
+            "face-initialized(${_activeDelegate})",
             android.os.SystemClock.elapsedRealtime(),
         )
     }

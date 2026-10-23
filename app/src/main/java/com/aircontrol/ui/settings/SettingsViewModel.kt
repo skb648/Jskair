@@ -6,6 +6,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aircontrol.camera.CameraService
+import com.aircontrol.data.model.CursorResponseProfile
 import com.aircontrol.data.model.HandPreference
 import com.aircontrol.data.model.UserPreferences
 import com.aircontrol.data.repository.SettingsRepository
@@ -232,6 +233,18 @@ class SettingsViewModel @Inject constructor(
     fun updateGazeCalibration(coeffs: String) {
         viewModelScope.launch {
             settingsRepository.updateGazeCalibration(coeffs)
+        }
+    }
+
+    fun updateCursorResponseProfile(profile: CursorResponseProfile) {
+        viewModelScope.launch {
+            settingsRepository.updateCursorResponseProfile(profile)
+        }
+    }
+
+    fun updateGpuAccelerationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateGpuAccelerationEnabled(enabled)
         }
     }
 }

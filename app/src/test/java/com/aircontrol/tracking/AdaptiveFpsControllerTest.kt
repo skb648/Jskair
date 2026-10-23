@@ -127,7 +127,9 @@ class AdaptiveFpsControllerTest {
             24 to 24,
             25 to 24,
             30 to 30,
-            120 to 30,
+            45 to 30,
+            60 to 60,
+            120 to 60,
         )
         cases.forEach { (requested, expected) ->
             assertEquals("requested=$requested", expected, AdaptiveFpsController.coerceToSupportedFps(requested))
