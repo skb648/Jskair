@@ -420,4 +420,40 @@
     <string name="block_reason_pinch_moved_too_fast">पिंच करते समय हाथ हिल गया — थोड़ा स्थिर रखें</string>
     <string name="block_reason_protected_screen_blocked">सुरक्षित स्क्रीन: सिस्टम सुरक्षा के कारण जेस्चर अवरुद्ध</string>
     <string name="block_reason_generic">क्रिया अवरुद्ध</string>
+
+    <!-- Zero-Latency & Production Enhancements -->
+    <string name="qs_tile_label">AirControl</string>
+    <string name="qs_tile_subtitle_active">लाइव · %1$s</string>
+    <string name="qs_tile_subtitle_paused">रुका हुआ — शुरू करने के लिए टैप करें</string>
+    <string name="qs_tile_subtitle_off">बंद — शुरू करने के लिए टैप करें</string>
+    <string name="qs_tile_subtitle_setup">सेटअप आवश्यक</string>
+
+    <string name="settings_cursor_response_profile">कर्सर रिस्पॉन्स प्रोफ़ाइल</string>
+    <string name="settings_cursor_response_profile_subtitle">प्रेडिक्टिव वेलोसिटी लीड और सूक्ष्म कंपन नियंत्रण के बीच संतुलन</string>
+    <string name="profile_instant">इंस्टेंट</string>
+    <string name="profile_balanced">संतुलित</string>
+    <string name="profile_precision">सटीक</string>
+    <string name="profile_instant_desc">न्यूनतम ट्रैकिंग लैग के लिए प्रेडिक्टिव वेलोसिटी लीड + डायरेक्ट VSYNC लॉक</string>
+    <string name="profile_balanced_desc">अनुकूली One Euro फ़िल्टरिंग + VSYNC सब-फ़्रेम ग्लाइड</string>
+    <string name="profile_precision_desc">छोटे लक्ष्यों के लिए अधिकतम स्थिरता</string>
+
+    <string name="settings_gpu_acceleration">हार्डवेयर GPU एक्सेलेरेशन</string>
+    <string name="settings_gpu_acceleration_subtitle">स्वचालित CPU फ़ॉलबैक के साथ GPU पर MediaPipe हैंड और आई लैंडमार्कर चलाएँ</string>
+
+    <string name="home_telemetry_title">लाइव पाइपलाइन टेलीमेट्री</string>
+    <string name="home_telemetry_delegate_badge">%1$s</string>
+    <string name="home_telemetry_fps_label">कैमरा FPS</string>
+    <string name="home_telemetry_inference_label">इन्फ़रेंस</string>
+    <string name="home_telemetry_latency_label">फ़्रेम→कर्सर</string>
+    <string name="home_telemetry_ms_value">%1$d ms</string>
+    <string name="home_telemetry_fps_value">%1$d / %2$d</string>
+
+    <string name="home_arena_title">कर्सर रिफ़्लेक्स एरीना</string>
+    <string name="home_arena_subtitle">लाइव कर्सर गति और सटीकता जाँचें — चमकते लक्ष्य पर होवर या टैप करें</string>
+    <string name="home_arena_start">टेस्ट शुरू करें</string>
+    <string name="home_arena_stop">रीसेट</string>
+    <string name="home_arena_hits">हिट्स: %1$d</string>
+    <string name="home_arena_avg_reaction">औसत: %1$d ms</string>
+    <string name="home_arena_best_reaction">सर्वश्रेष्ठ: %1$d ms</string>
+    <string name="home_arena_prompt">प्रतिक्रिया समय जाँचने के लिए अपने एयर कर्सर को चमकते लक्ष्य पर ले जाएँ या टैप करें</string>
 </resources>
