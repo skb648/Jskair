@@ -32,6 +32,7 @@ object StageLog {
         const val OVERLAY_INIT = "OVERLAY_INIT"
         const val PIPELINE_INIT = "PIPELINE_INIT"
         const val SERVICE_READY = "SERVICE_READY"
+        const val RUNTIME_HEALTH_START = "RUNTIME_HEALTH_START"
         const val CAMERA_INIT_FOREGROUND = "CAMERA_INIT_FOREGROUND"
         const val CAMERA_INIT_BIND = "CAMERA_INIT_BIND"
         const val CAMERA_INIT_RUNNING = "CAMERA_INIT_RUNNING"
