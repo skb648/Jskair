@@ -18,8 +18,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import timber.log.Timber
 
 /**
  * Observes runtime signals and publishes readiness. This monitor is diagnostic-only:
@@ -123,7 +121,7 @@ object RuntimeHealthMonitor {
             }
         }
 
-        StageLog.success(StageLog.Stage.SERVICE_READY, COMPONENT, "runtime health observer started")
+        StageLog.success(StageLog.Stage.RUNTIME_HEALTH_START, COMPONENT, "observer started")
     }
 
     @Synchronized
