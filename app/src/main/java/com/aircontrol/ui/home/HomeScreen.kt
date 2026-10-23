@@ -101,6 +101,7 @@ fun HomeScreen(
     val sessionStats by viewModel.sessionStats.collectAsStateWithLifecycle()
     val handDetected by viewModel.handDetected.collectAsStateWithLifecycle()
     val liveLandmarks by viewModel.liveLandmarks.collectAsStateWithLifecycle()
+    val trackedHands by viewModel.trackedHands.collectAsStateWithLifecycle()
     val engineState by viewModel.engineState.collectAsStateWithLifecycle()
     val currentPose by viewModel.currentPose.collectAsStateWithLifecycle()
     val pinchProximity by viewModel.pinchProximity.collectAsStateWithLifecycle()
@@ -369,6 +370,7 @@ fun HomeScreen(
                     BiometricHandHud(
                         landmarks = liveLandmarks,
                         handDetected = handDetected,
+                        trackedHands = trackedHands,
                         engineState = engineState,
                         currentPose = currentPose,
                         pinchProximity = pinchProximity,

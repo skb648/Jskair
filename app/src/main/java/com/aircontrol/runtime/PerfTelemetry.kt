@@ -90,8 +90,19 @@ object PerfTelemetry {
     private val faceResultAges = LongArray(LATENCY_WINDOW)
     private var faceResultAgeCount = 0
     private var faceResultAgeWrite = 0
-    private var handDelegate: String = "CPU"
-    private var faceDelegate: String = "CPU"
+    private val cursorDispatchAges = LongArray(LATENCY_WINDOW)
+    private var cursorDispatchAgeCount = 0
+    private var cursorDispatchAgeWrite = 0
+    private val handResultIntervals = LongArray(FRAME_WINDOW)
+    private var handResultIntervalCount = 0
+    private var handResultIntervalWrite = 0
+    private var lastHandResultAtMs = -1L
+    private val faceResultIntervals = LongArray(FRAME_WINDOW)
+    private var faceResultIntervalCount = 0
+    private var faceResultIntervalWrite = 0
+    private var lastFaceResultAtMs = -1L
+    private var handDelegate: String = "UNINITIALIZED"
+    private var faceDelegate: String = "UNINITIALIZED"
 
     // ---- event ring --------------------------------------------------------
     private val events = ArrayDeque<String>(EVENT_WINDOW)
@@ -202,17 +213,49 @@ object PerfTelemetry {
     }
 
     @Synchronized
-    fun recordHandInference(durationMs: Long) {
+    fun recordHandInference(durationMs: Long, nowMs: Long = -1L) {
         handInferSamples++
         handInferSumMs += durationMs
         if (durationMs > handInferMaxMs) handInferMaxMs = durationMs
+        if (nowMs >= 0L) {
+            if (lastHandResultAtMs < 0L) {
+                lastHandResultAtMs = nowMs
+            } else if (nowMs > lastHandResultAtMs) {
+                val interval = nowMs - lastHandResultAtMs
+                handResultIntervals[handResultIntervalWrite] = interval
+                handResultIntervalWrite = (handResultIntervalWrite + 1) % FRAME_WINDOW
+                if (handResultIntervalCount < FRAME_WINDOW) handResultIntervalCount++
+                lastHandResultAtMs = nowMs
+            }
+        }
     }
 
     @Synchronized
-    fun recordFaceInference(durationMs: Long) {
+    fun recordFaceInference(durationMs: Long, nowMs: Long = -1L) {
         faceInferSamples++
         faceInferSumMs += durationMs
         if (durationMs > faceInferMaxMs) faceInferMaxMs = durationMs
+        if (nowMs >= 0L) {
+            if (lastFaceResultAtMs < 0L) {
+                lastFaceResultAtMs = nowMs
+            } else if (nowMs > lastFaceResultAtMs) {
+                val interval = nowMs - lastFaceResultAtMs
+                faceResultIntervals[faceResultIntervalWrite] = interval
+                faceResultIntervalWrite = (faceResultIntervalWrite + 1) % FRAME_WINDOW
+                if (faceResultIntervalCount < FRAME_WINDOW) faceResultIntervalCount++
+                lastFaceResultAtMs = nowMs
+            }
+        }
+    }
+
+    @Synchronized
+    fun recordCursorDispatched(frameTimestampMs: Long, dispatchNowMs: Long) {
+        val ageMs = dispatchNowMs - frameTimestampMs
+        if (ageMs in 0L..5_000L) {
+            cursorDispatchAges[cursorDispatchAgeWrite] = ageMs
+            cursorDispatchAgeWrite = (cursorDispatchAgeWrite + 1) % LATENCY_WINDOW
+            if (cursorDispatchAgeCount < LATENCY_WINDOW) cursorDispatchAgeCount++
+        }
     }
 
     @Synchronized
@@ -344,8 +387,12 @@ object PerfTelemetry {
         val faceResultAgeP50Ms: Long = 0L,
         val faceResultAgeP95Ms: Long = 0L,
         val faceResultAgeP99Ms: Long = 0L,
-        val handDelegate: String = "CPU",
-        val faceDelegate: String = "CPU",
+        val cursorDispatchAgeP50Ms: Long = 0L,
+        val cursorDispatchAgeP95Ms: Long = 0L,
+        val handResultFps: Float = 0f,
+        val faceResultFps: Float = 0f,
+        val handDelegate: String = "UNINITIALIZED",
+        val faceDelegate: String = "UNINITIALIZED",
     )
 
     @Synchronized
@@ -357,6 +404,8 @@ object PerfTelemetry {
         val p95 = percentile(sorted, 0.95)
         val p50Fps = if (p50 > 0L) 1000f / p50 else 0f
         lastActualFps = p50Fps
+        val handP50Interval = latencyPercentile(handResultIntervals, handResultIntervalCount, 0.50)
+        val faceP50Interval = latencyPercentile(faceResultIntervals, faceResultIntervalCount, 0.50)
         return Snapshot(
             framesProcessed = framesProcessed,
             framesDroppedThrottle = framesDroppedThrottle,
@@ -396,6 +445,10 @@ object PerfTelemetry {
             faceResultAgeP50Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.50),
             faceResultAgeP95Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.95),
             faceResultAgeP99Ms = latencyPercentile(faceResultAges, faceResultAgeCount, 0.99),
+            cursorDispatchAgeP50Ms = latencyPercentile(cursorDispatchAges, cursorDispatchAgeCount, 0.50),
+            cursorDispatchAgeP95Ms = latencyPercentile(cursorDispatchAges, cursorDispatchAgeCount, 0.95),
+            handResultFps = if (handP50Interval > 0L) 1000f / handP50Interval else 0f,
+            faceResultFps = if (faceP50Interval > 0L) 1000f / faceP50Interval else 0f,
             handDelegate = handDelegate,
             faceDelegate = faceDelegate,
         )
@@ -469,8 +522,11 @@ object PerfTelemetry {
         pipelineExceptions = 0L
         handResultAgeCount = 0; handResultAgeWrite = 0
         faceResultAgeCount = 0; faceResultAgeWrite = 0
-        handDelegate = "CPU"
-        faceDelegate = "CPU"
+        cursorDispatchAgeCount = 0; cursorDispatchAgeWrite = 0
+        handResultIntervalCount = 0; handResultIntervalWrite = 0; lastHandResultAtMs = -1L
+        faceResultIntervalCount = 0; faceResultIntervalWrite = 0; lastFaceResultAtMs = -1L
+        handDelegate = "UNINITIALIZED"
+        faceDelegate = "UNINITIALIZED"
         events.clear()
         lastSummaryAtMs = null
     }

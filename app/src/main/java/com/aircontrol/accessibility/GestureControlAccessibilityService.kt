@@ -645,8 +645,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         super.onConfigurationChanged(newConfig)
         Timber.i("Configuration changed — recomputing coordinate mapping")
         updateScreenMetrics()
-        // Reset smoother so post-rotation landmarks don't cause a jump (fix #63).
+        // Reset both hand and gaze smoothers + history so post-rotation landmarks don't cause a jump (fix #63).
         cursorSmoother.reset()
+        gazeCursorSmoother.reset()
+        gazeHistoryBuffer.clear()
         cursorOverlay?.updateScreenSize(screenWidth, screenHeight)
         statusOverlay?.reposition()
     }
@@ -796,22 +798,33 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 if (frame.isDetected) lastHandDetectedMs = nowMs
 
                 val preference = currentPreferences.handPreference
-                val shouldProcess = when {
-                    !frame.isDetected -> false
-                    preference == com.aircontrol.data.model.HandPreference.ANY -> true
-                    frame.handedness == Handedness.UNKNOWN -> true // don't drop unknown
-                    preference == com.aircontrol.data.model.HandPreference.LEFT ->
-                        frame.handedness == Handedness.LEFT
-                    preference == com.aircontrol.data.model.HandPreference.RIGHT ->
-                        frame.handedness == Handedness.RIGHT
-                    else -> true
-                }
-                if (shouldProcess) {
-                    gestureDetector?.processHandFrameSuspending(frame)
+                val matchingHands = if (preference == com.aircontrol.data.model.HandPreference.ANY) {
+                    frame.validHands
                 } else {
-                    // Feed EMPTY so the engine can disarm cleanly, but only if
-                    // we were previously tracking (avoid resetting on every frame
-                    // of the wrong hand, which caused arming thrash).
+                    val targetHandedness = if (preference == com.aircontrol.data.model.HandPreference.LEFT) {
+                        Handedness.LEFT
+                    } else {
+                        Handedness.RIGHT
+                    }
+                    frame.validHands.filter {
+                        it.handedness == targetHandedness || it.handedness == Handedness.UNKNOWN
+                    }
+                }
+                if (matchingHands.isNotEmpty()) {
+                    val filteredFrame = if (matchingHands.size == frame.hands.size) {
+                        frame
+                    } else {
+                        HandFrame.fromTrackedHands(
+                            hands = matchingHands,
+                            primaryHand = matchingHands.firstOrNull { it.trackId == frame.primaryTrackId }
+                                ?: matchingHands.first(),
+                            timestampMs = frame.timestampMs,
+                            frameAspectRatio = frame.frameAspectRatio,
+                        )
+                    }
+                    gestureDetector?.processHandFrameSuspending(filteredFrame)
+                } else {
+                    // Feed EMPTY so the engine can disarm cleanly when no matching hand is visible.
                     gestureDetector?.processHandFrameSuspending(
                         HandFrame.EMPTY.copy(timestampMs = frame.timestampMs),
                     )
@@ -1175,8 +1188,15 @@ class GestureControlAccessibilityService : AccessibilityService() {
                         // tap only lands while the position is trusted.
                         if (gazeActionable) {
                             handleCursorStillness(finalGazeX, finalGazeY, nowMs, isGaze = true)
+                        } else {
+                            // Cancel pending dwell progress when gaze is non-actionable (e.g. monocular or binocular disagreement)
+                            resetDwellState()
                         }
                     }
+                    com.aircontrol.runtime.PerfTelemetry.recordCursorDispatched(
+                        gaze.timestampMs,
+                        SystemClock.elapsedRealtime(),
+                    )
                 } catch (e: Exception) {
                     Timber.e(e, "Error updating gaze cursor — skipping")
                 }
@@ -1252,7 +1272,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         if (event.minCutoffHint != lastAppliedMinCutoffHint) {
             val newMinCutoff = event.minCutoffHint ?: baseMinCutoff
-            cursorSmoother.updateParams(minCutoff = newMinCutoff, beta = currentCursorBeta)
+            val profile = currentPreferences.cursorResponseProfile
+            cursorSmoother.updateParams(
+                minCutoff = newMinCutoff,
+                beta = currentCursorBeta,
+                leadMs = profile.leadMs,
+                deadZoneNormalized = profile.deadZoneNormalized,
+            )
             lastAppliedMinCutoffHint = event.minCutoffHint
         }
 
@@ -1264,6 +1290,10 @@ class GestureControlAccessibilityService : AccessibilityService() {
         handleCursorStillness(smoothX, smoothY, event.timestampMs)
         handTransport.publish(smoothX to smoothY)
         cursorController?.updatePosition(smoothX, smoothY)
+        com.aircontrol.runtime.PerfTelemetry.recordCursorDispatched(
+            event.timestampMs,
+            SystemClock.elapsedRealtime(),
+        )
     }
 
     private suspend fun handleGestureEvent(event: GestureEvent) {
@@ -1680,14 +1710,13 @@ class GestureControlAccessibilityService : AccessibilityService() {
         val sliderFactor = 1.45f - (s / 100f) * 0.85f
         baseMinCutoff = (profile.minCutoff * sliderFactor).coerceIn(MIN_SMOOTHING_CUTOFF, MAX_SMOOTHING_CUTOFF)
         currentCursorBeta = profile.beta
-        if (lastAppliedMinCutoffHint == null) {
-            cursorSmoother.updateParams(
-                minCutoff = baseMinCutoff,
-                beta = currentCursorBeta,
-                leadMs = profile.leadMs,
-                deadZoneNormalized = profile.deadZoneNormalized,
-            )
-        }
+        val effectiveMinCutoff = lastAppliedMinCutoffHint ?: baseMinCutoff
+        cursorSmoother.updateParams(
+            minCutoff = effectiveMinCutoff,
+            beta = currentCursorBeta,
+            leadMs = profile.leadMs,
+            deadZoneNormalized = profile.deadZoneNormalized,
+        )
         gazeCursorSmoother.updateParams(
             minCutoff = (profile.minCutoff * sliderFactor * 1.05f).coerceIn(MIN_SMOOTHING_CUTOFF, MAX_SMOOTHING_CUTOFF),
             beta = profile.beta * 1.1f,

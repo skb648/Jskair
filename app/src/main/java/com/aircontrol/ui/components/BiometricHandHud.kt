@@ -57,18 +57,32 @@ private val HudBoneChains = arrayOf(
 private val FingertipIndices = intArrayOf(4, 8, 12, 16, 20)
 
 /**
- * Real-time 21-point MediaPipe Hand Skeleton & Tactical Biometric HUD.
+ * UI representation of a single tracked hand for the 21-point Biometric HUD.
+ */
+data class HudHandTrack(
+    val trackId: Int,
+    val handedness: String,
+    val confidence: Float,
+    val isValid: Boolean,
+    val isPrimaryPointer: Boolean,
+    val landmarks: List<Pair<Float, Float>>,
+    val pinchProximity: Float = 0f,
+)
+
+/**
+ * Real-time 21-point MediaPipe Dual-Hand Skeleton & Tactical Biometric HUD.
  *
  * Displays:
  * - Tactical HUD corner brackets, radar crosshair, and scanning sweep
- * - Live 21-landmark hand skeleton with articulated joints and fingertip highlights
- * - Dynamic pinch-tension vector line between thumb tip (4) and index tip (8)
+ * - Up to two simultaneous 21-landmark hand skeletons (Left and Right) with per-hand track IDs and confidence
+ * - Dynamic pinch-tension vector line between thumb tip (4) and index tip (8) for each hand
  * - Telemetry strip for Engine State, Active Pose, Pinch Tension %, and Last Action
  */
 @Composable
 fun BiometricHandHud(
     landmarks: List<Pair<Float, Float>>,
     handDetected: Boolean,
+    trackedHands: List<HudHandTrack> = emptyList(),
     engineState: GestureEngineState = GestureEngineState.DISARMED,
     currentPose: Pose = Pose.NONE,
     pinchProximity: Float = 0f,
@@ -86,6 +100,25 @@ fun BiometricHandHud(
         ),
         label = "scan_line",
     )
+
+    val effectiveHands = if (trackedHands.isNotEmpty()) {
+        trackedHands.filter { it.landmarks.size >= 21 }
+    } else if (handDetected && landmarks.size >= 21) {
+        listOf(
+            HudHandTrack(
+                trackId = 1,
+                handedness = "HAND",
+                confidence = 1f,
+                isValid = true,
+                isPrimaryPointer = true,
+                landmarks = landmarks,
+                pinchProximity = pinchProximity,
+            ),
+        )
+    } else {
+        emptyList()
+    }
+    val anyHandVisible = effectiveHands.isNotEmpty()
 
     val stateColor = when (engineState) {
         GestureEngineState.ARMED,
@@ -105,7 +138,7 @@ fun BiometricHandHud(
             .background(Color(0xFF090E1A))
             .border(
                 width = 1.dp,
-                color = if (handDetected) stateColor.copy(alpha = 0.45f) else ElectricBlue.copy(alpha = 0.18f),
+                color = if (anyHandVisible) stateColor.copy(alpha = 0.45f) else ElectricBlue.copy(alpha = 0.18f),
                 shape = containerShape,
             )
             .padding(12.dp),
@@ -124,21 +157,26 @@ fun BiometricHandHud(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(if (handDetected) stateColor else Color(0xFF475569)),
+                        .background(if (anyHandVisible) stateColor else Color(0xFF475569)),
                 )
+                val headerTitle = when {
+                    effectiveHands.size >= 2 -> "DUAL-HAND LOCK // 2×21-PT"
+                    anyHandVisible -> "BIOMETRIC LOCK // 21-PT"
+                    else -> "SCANNING OPTICAL FIELD"
+                }
                 Text(
-                    text = if (handDetected) "BIOMETRIC LOCK // 21-PT" else "SCANNING OPTICAL FIELD",
+                    text = headerTitle,
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.8.sp,
                     ),
-                    color = if (handDetected) stateColor else TextSecondary,
+                    color = if (anyHandVisible) stateColor else TextSecondary,
                 )
             }
 
             val poseLabel = when {
-                !handDetected -> "NO TARGET"
+                !anyHandVisible -> "NO TARGET"
                 currentPose != Pose.NONE -> currentPose.name.replace('_', ' ')
                 else -> engineState.name
             }
@@ -148,11 +186,36 @@ fun BiometricHandHud(
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = if (handDetected) ElectricBlue else TextSecondary,
+                color = if (anyHandVisible) ElectricBlue else TextSecondary,
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (effectiveHands.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                effectiveHands.forEachIndexed { idx, hand ->
+                    val badgeColor = if (idx == 0) ElectricBlue else Color(0xFF22D3EE)
+                    val confPct = (hand.confidence * 100f).toInt().coerceIn(0, 100)
+                    val pointerTag = if (hand.isPrimaryPointer) " [PTR]" else ""
+                    val validTag = if (hand.isValid) "" else " [HOLD]"
+                    Text(
+                        text = "${hand.handedness} #${hand.trackId} ${confPct}%$pointerTag$validTag",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        color = badgeColor,
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Main 21-Point Skeleton Radar Viewport
         Box(
@@ -179,114 +242,125 @@ fun BiometricHandHud(
                 // 2. Tactical corner brackets
                 val bracketLen = 14f * density
                 val bracketStroke = 1.8f * density
-                val bracketColor = (if (handDetected) stateColor else ElectricBlue).copy(alpha = 0.55f)
-                // Top-left
+                val bracketColor = (if (anyHandVisible) stateColor else ElectricBlue).copy(alpha = 0.55f)
                 drawLine(bracketColor, Offset(0f, 0f), Offset(bracketLen, 0f), bracketStroke)
                 drawLine(bracketColor, Offset(0f, 0f), Offset(0f, bracketLen), bracketStroke)
-                // Top-right
                 drawLine(bracketColor, Offset(w - bracketLen, 0f), Offset(w, 0f), bracketStroke)
                 drawLine(bracketColor, Offset(w, 0f), Offset(w, bracketLen), bracketStroke)
-                // Bottom-left
                 drawLine(bracketColor, Offset(0f, h - bracketLen), Offset(0f, h), bracketStroke)
                 drawLine(bracketColor, Offset(0f, h), Offset(bracketLen, h), bracketStroke)
-                // Bottom-right
                 drawLine(bracketColor, Offset(w - bracketLen, h), Offset(w, h), bracketStroke)
                 drawLine(bracketColor, Offset(w, h - bracketLen), Offset(w, h), bracketStroke)
 
-                if (handDetected && landmarks.size >= 21) {
-                    // Auto-frame the 21 landmarks smoothly inside the HUD viewport with padding
-                    var minX = 1f
-                    var maxX = 0f
-                    var minY = 1f
-                    var maxY = 0f
-                    for (pt in landmarks) {
-                        if (pt.first < minX) minX = pt.first
-                        if (pt.first > maxX) maxX = pt.first
-                        if (pt.second < minY) minY = pt.second
-                        if (pt.second > maxY) maxY = pt.second
-                    }
-                    val spanX = (maxX - minX).coerceAtLeast(0.18f)
-                    val spanY = (maxY - minY).coerceAtLeast(0.18f)
-                    val cxNorm = (minX + maxX) * 0.5f
-                    val cyNorm = (minY + maxY) * 0.5f
-                    val scale = (minOf(w, h) * 0.72f) / maxOf(spanX, spanY)
-
-                    fun mapPt(idx: Int): Offset {
-                        val pt = landmarks[idx]
-                        val px = w * 0.5f + (pt.first - cxNorm) * scale
-                        val py = h * 0.5f + (pt.second - cyNorm) * scale
-                        return Offset(px.coerceIn(8f, w - 8f), py.coerceIn(8f, h - 8f))
-                    }
-
-                    // Draw bone chains
-                    val boneStroke = 2.2f * density
-                    val glowStroke = 5.5f * density
-                    for (chain in HudBoneChains) {
-                        for (i in 0 until chain.size - 1) {
-                            val p1 = mapPt(chain[i])
-                            val p2 = mapPt(chain[i + 1])
-                            drawLine(
-                                color = ElectricBlue.copy(alpha = 0.22f),
-                                start = p1,
-                                end = p2,
-                                strokeWidth = glowStroke,
-                                cap = StrokeCap.Round,
-                            )
-                            drawLine(
-                                color = ElectricBlue.copy(alpha = 0.9f),
-                                start = p1,
-                                end = p2,
-                                strokeWidth = boneStroke,
-                                cap = StrokeCap.Round,
-                            )
+                if (anyHandVisible) {
+                    val isDual = effectiveHands.size >= 2
+                    effectiveHands.forEachIndexed { handIdx, handTrack ->
+                        val handPts = handTrack.landmarks
+                        var minX = 1f
+                        var maxX = 0f
+                        var minY = 1f
+                        var maxY = 0f
+                        for (pt in handPts) {
+                            if (pt.first < minX) minX = pt.first
+                            if (pt.first > maxX) maxX = pt.first
+                            if (pt.second < minY) minY = pt.second
+                            if (pt.second > maxY) maxY = pt.second
                         }
-                    }
+                        val spanX = (maxX - minX).coerceAtLeast(0.18f)
+                        val spanY = (maxY - minY).coerceAtLeast(0.18f)
+                        val cxNorm = (minX + maxX) * 0.5f
+                        val cyNorm = (minY + maxY) * 0.5f
 
-                    // Pinch tension vector between thumb tip (4) and index tip (8)
-                    val thumbTip = mapPt(4)
-                    val indexTip = mapPt(8)
-                    if (pinchProximity > 0.1f) {
-                        val pinchColor = if (pinchProximity > 0.78f) WarningOrange else SuccessGreen
-                        drawLine(
-                            color = pinchColor.copy(alpha = (0.35f + 0.65f * pinchProximity).coerceIn(0f, 1f)),
-                            start = thumbTip,
-                            end = indexTip,
-                            strokeWidth = (1.5f + 2.0f * pinchProximity) * density,
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * density, 4f * density)),
-                        )
-                        val mid = Offset((thumbTip.x + indexTip.x) * 0.5f, (thumbTip.y + indexTip.y) * 0.5f)
-                        drawCircle(
-                            color = pinchColor.copy(alpha = 0.28f * pinchProximity),
-                            radius = (14f * (1f - 0.5f * pinchProximity)) * density,
-                            center = mid,
-                        )
-                    }
-
-                    // Draw 21 landmark joints
-                    val jointRadius = 2.8f * density
-                    val tipRadius = 4.2f * density
-                    for (idx in 0 until 21) {
-                        val pt = mapPt(idx)
-                        val isTip = idx in FingertipIndices
-                        val isPinchPair = idx == 4 || idx == 8
-                        val nodeColor = when {
-                            isPinchPair && pinchProximity > 0.75f -> WarningOrange
-                            isTip -> SuccessGreen
-                            idx == 0 -> ElectricBlue
-                            else -> Color.White
+                        // When two hands are visible, place them in left/right sub-viewports ordered by horizontal camera position
+                        // or track order so both 21-point skeletons are crisp and never overlap into an unreadable tangle.
+                        val viewportCenterX = if (!isDual) {
+                            w * 0.5f
+                        } else {
+                            if (cxNorm <= 0.5f) w * 0.27f else w * 0.73f
                         }
-                        if (isTip) {
+                        val availWidth = if (isDual) w * 0.44f else w
+                        val scale = (minOf(availWidth, h) * 0.72f) / maxOf(spanX, spanY)
+                        val primaryBoneColor = when {
+                            !handTrack.isValid -> WarningOrange
+                            handIdx == 0 -> ElectricBlue
+                            else -> Color(0xFF22D3EE)
+                        }
+
+                        fun mapPt(idx: Int): Offset {
+                            val pt = handPts[idx]
+                            val px = viewportCenterX + (pt.first - cxNorm) * scale
+                            val py = h * 0.5f + (pt.second - cyNorm) * scale
+                            return Offset(px.coerceIn(8f, w - 8f), py.coerceIn(8f, h - 8f))
+                        }
+
+                        val boneStroke = 2.2f * density
+                        val glowStroke = 5.5f * density
+                        for (chain in HudBoneChains) {
+                            for (i in 0 until chain.size - 1) {
+                                val p1 = mapPt(chain[i])
+                                val p2 = mapPt(chain[i + 1])
+                                drawLine(
+                                    color = primaryBoneColor.copy(alpha = 0.22f),
+                                    start = p1,
+                                    end = p2,
+                                    strokeWidth = glowStroke,
+                                    cap = StrokeCap.Round,
+                                )
+                                drawLine(
+                                    color = primaryBoneColor.copy(alpha = 0.9f),
+                                    start = p1,
+                                    end = p2,
+                                    strokeWidth = boneStroke,
+                                    cap = StrokeCap.Round,
+                                )
+                            }
+                        }
+
+                        val handPinch = if (handTrack.pinchProximity > 0f) handTrack.pinchProximity else if (handIdx == 0) pinchProximity else 0f
+                        val thumbTip = mapPt(4)
+                        val indexTip = mapPt(8)
+                        if (handPinch > 0.1f) {
+                            val pinchColor = if (handPinch > 0.78f) WarningOrange else SuccessGreen
+                            drawLine(
+                                color = pinchColor.copy(alpha = (0.35f + 0.65f * handPinch).coerceIn(0f, 1f)),
+                                start = thumbTip,
+                                end = indexTip,
+                                strokeWidth = (1.5f + 2.0f * handPinch) * density,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * density, 4f * density)),
+                            )
+                            val mid = Offset((thumbTip.x + indexTip.x) * 0.5f, (thumbTip.y + indexTip.y) * 0.5f)
                             drawCircle(
-                                color = nodeColor.copy(alpha = 0.28f),
-                                radius = tipRadius * 1.9f,
+                                color = pinchColor.copy(alpha = 0.28f * handPinch),
+                                radius = (14f * (1f - 0.5f * handPinch)) * density,
+                                center = mid,
+                            )
+                        }
+
+                        val jointRadius = 2.8f * density
+                        val tipRadius = 4.2f * density
+                        for (idx in 0 until 21) {
+                            val pt = mapPt(idx)
+                            val isTip = idx in FingertipIndices
+                            val isPinchPair = idx == 4 || idx == 8
+                            val nodeColor = when {
+                                isPinchPair && handPinch > 0.75f -> WarningOrange
+                                isTip -> SuccessGreen
+                                idx == 0 -> primaryBoneColor
+                                else -> Color.White
+                            }
+                            if (isTip) {
+                                drawCircle(
+                                    color = nodeColor.copy(alpha = 0.28f),
+                                    radius = tipRadius * 1.9f,
+                                    center = pt,
+                                )
+                            }
+                            drawCircle(
+                                color = nodeColor,
+                                radius = if (isTip) tipRadius else jointRadius,
                                 center = pt,
                             )
                         }
-                        drawCircle(
-                            color = nodeColor,
-                            radius = if (isTip) tipRadius else jointRadius,
-                            center = pt,
-                        )
                     }
                 } else {
                     // Idle scanning reticle + horizontal laser sweep
@@ -310,9 +384,9 @@ fun BiometricHandHud(
                 }
             }
 
-            if (!handDetected) {
+            if (!anyHandVisible) {
                 Text(
-                    text = "Raise either hand in front of the camera",
+                    text = "Raise one or both hands in front of the camera",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
@@ -329,7 +403,7 @@ fun BiometricHandHud(
         ) {
             val pinchPct = (pinchProximity * 100).toInt().coerceIn(0, 100)
             Text(
-                text = "PINCH TENSION: $pinchPct%",
+                text = "PINCH TENSION: $pinchPct%  •  HANDS: ${effectiveHands.size}/2",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp,

@@ -438,26 +438,26 @@
     <string name="qs_tile_subtitle_setup">Setup required</string>
 
     <string name="settings_cursor_response_profile">Cursor Response Profile</string>
-    <string name="settings_cursor_response_profile_subtitle">Balance between 0ms predictive snap and micro-tremor damping</string>
-    <string name="profile_instant">Instant (0ms)</string>
+    <string name="settings_cursor_response_profile_subtitle">Balance between predictive velocity lead and micro-tremor damping</string>
+    <string name="profile_instant">Instant</string>
     <string name="profile_balanced">Balanced</string>
     <string name="profile_precision">Precision</string>
-    <string name="profile_instant_desc">Predictive velocity lead + direct VSYNC lock for zero-lag live tracking</string>
-    <string name="profile_balanced_desc">Adaptive One Euro filtering + 120Hz VSYNC sub-frame glide</string>
+    <string name="profile_instant_desc">Predictive velocity lead + direct VSYNC lock for minimal tracking lag</string>
+    <string name="profile_balanced_desc">Adaptive One Euro filtering + VSYNC sub-frame glide</string>
     <string name="profile_precision_desc">Maximum stillness stabilization for dense micro-targets</string>
 
     <string name="settings_gpu_acceleration">Hardware GPU Acceleration</string>
     <string name="settings_gpu_acceleration_subtitle">Run MediaPipe hand &amp; eye landmarkers on GPU with automatic CPU fallback</string>
 
     <string name="home_telemetry_title">Live Pipeline Telemetry</string>
-    <string name="home_telemetry_delegate_badge">%1$s ENGINE</string>
-    <string name="home_telemetry_fps_label">FPS</string>
+    <string name="home_telemetry_delegate_badge">%1$s</string>
+    <string name="home_telemetry_fps_label">Camera FPS</string>
     <string name="home_telemetry_inference_label">Inference</string>
-    <string name="home_telemetry_latency_label">Photon→Cursor</string>
+    <string name="home_telemetry_latency_label">Frame→Cursor</string>
     <string name="home_telemetry_ms_value">%1$d ms</string>
     <string name="home_telemetry_fps_value">%1$d / %2$d</string>
 
-    <string name="home_arena_title">Zero-Latency Reflex Arena</string>
+    <string name="home_arena_title">Cursor Reflex Arena</string>
     <string name="home_arena_subtitle">Test live cursor speed &amp; precision — hover or tap the glowing target</string>
     <string name="home_arena_start">Start Test</string>
     <string name="home_arena_stop">Reset</string>

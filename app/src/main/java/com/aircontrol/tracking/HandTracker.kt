@@ -87,8 +87,7 @@ class HandTrackerImpl @Inject constructor(
      * them (see HandInput.frameAspectRatio).
      */
     @Volatile private var lastFrameAspectRatio = 1f
-    @Volatile private var lastTrackedWristX = -1f
-    @Volatile private var lastTrackedWristY = -1f
+    private val multiHandAssociator = MultiHandAssociator()
 
     private val _handFrames = MutableSharedFlow<HandFrame>(
         // Fix (audit #16): deeper buffer — a stalled collector must not eat the
@@ -100,58 +99,73 @@ class HandTrackerImpl @Inject constructor(
 
     @Volatile private var preferredHand: Handedness = Handedness.UNKNOWN
     @Volatile private var gpuEnabled: Boolean = true
-    @Volatile private var _activeDelegate: String = "CPU"
+    @Volatile private var gpuRuntimeFailed: Boolean = false
+    @Volatile private var _activeDelegate: String = "UNINITIALIZED"
     override val activeDelegate: String get() = _activeDelegate
 
     override fun setPreferredHand(preference: Handedness) {
         preferredHand = preference
-        lastTrackedWristX = -1f
-        lastTrackedWristY = -1f
+        multiHandAssociator.onPreferredHandChanged()
     }
 
     override fun setGpuAccelerationEnabled(enabled: Boolean) {
-        if (gpuEnabled == enabled) return
-        gpuEnabled = enabled
-        if (_isInitialized) {
-            close()
-            initialize()
+        synchronized(closeLock) {
+            if (gpuEnabled == enabled) return
+            gpuEnabled = enabled
+            if (enabled) {
+                gpuRuntimeFailed = false
+            }
+            if (_isInitialized && !isClosing) {
+                close()
+                initialize()
+            }
         }
     }
 
     override fun initialize() {
-        if (_isInitialized) {
-            // Perf audit P2: reuse across service stop/start is now the NORMAL
-            // path (models survive a session stop), so this is informational,
-            // not a warning.
-            Timber.d("HandTracker already initialized — reusing the loaded model")
-            return
-        }
-        if (!validateModelFile()) {
-            StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
-            return
-        }
+        synchronized(closeLock) {
+            if (_isInitialized) {
+                Timber.d("HandTracker already initialized — reusing the loaded model")
+                return
+            }
+            if (!validateModelFile()) {
+                _activeDelegate = "ERROR"
+                com.aircontrol.runtime.PerfTelemetry.recordHandDelegate(_activeDelegate)
+                StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
+                return
+            }
 
-        val canTryGpu = gpuEnabled && !android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-        var chosenDelegate = Delegate.CPU
-        val landmarker = if (canTryGpu) {
-            tryInitializeWithDelegate(Delegate.GPU)?.also { chosenDelegate = Delegate.GPU }
-                ?: tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
-        } else {
-            tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+            val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric
+            var resolvedDelegateLabel = "CPU"
+            val landmarker = if (canTryGpu) {
+                tryInitializeWithDelegate(Delegate.GPU)?.also { resolvedDelegateLabel = "GPU" }
+                    ?: tryInitializeWithDelegate(Delegate.CPU)?.also {
+                        resolvedDelegateLabel = "CPU_FALLBACK"
+                        gpuRuntimeFailed = true
+                    }
+            } else {
+                tryInitializeWithDelegate(Delegate.CPU)?.also {
+                    resolvedDelegateLabel = if (gpuEnabled && (gpuRuntimeFailed || isRobolectric)) "CPU_FALLBACK" else "CPU"
+                }
+            }
+            if (landmarker == null) {
+                _activeDelegate = "ERROR"
+                com.aircontrol.runtime.PerfTelemetry.recordHandDelegate(_activeDelegate)
+                StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "HandLandmarker.createFromOptions(CPU) failed", lastInitError)
+                return
+            }
+            handLandmarker = landmarker
+            _activeDelegate = resolvedDelegateLabel
+            _isInitialized = true
+            multiHandAssociator.reset()
+            com.aircontrol.runtime.PerfTelemetry.recordHandDelegate(_activeDelegate)
+            StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE")
+            com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+                "hand-initialized(${_activeDelegate})",
+                android.os.SystemClock.elapsedRealtime(),
+            )
         }
-        if (landmarker == null) {
-            StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "HandLandmarker.createFromOptions(CPU) failed", lastInitError)
-            return
-        }
-        handLandmarker = landmarker
-        _activeDelegate = chosenDelegate.name
-        _isInitialized = true
-        com.aircontrol.runtime.PerfTelemetry.recordHandDelegate(_activeDelegate)
-        StageLog.success(StageLog.Stage.HAND_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE")
-        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
-            "hand-initialized(${_activeDelegate})",
-            android.os.SystemClock.elapsedRealtime(),
-        )
     }
 
     override fun processFrame(mpImage: MPImage, timestampMs: Long, onConsumed: (() -> Unit)?): Boolean {
@@ -173,7 +187,7 @@ class HandTrackerImpl @Inject constructor(
         try {
             synchronized(closeLock) {
                 if (!isClosing) {
-                    val landmarker = handLandmarker ?: null
+                    val landmarker = handLandmarker
                     if (landmarker != null) {
                         val mediaPipeTimestampMs = if (timestampMs <= lastSubmittedTimestampMs) {
                             lastSubmittedTimestampMs + 1L
@@ -185,10 +199,6 @@ class HandTrackerImpl @Inject constructor(
                             val h = mpImage.height
                             if (h > 0) lastFrameAspectRatio = mpImage.width.toFloat() / h
                         }
-                        // Store ours, fire the previous one: if the reservation above was reclaimed
-                        // from a wedged graph, that owner must not be left holding its buffer.
-                        // Storing BEFORE submitting is what lets a result that arrives immediately
-                        // consume this callback instead of losing it.
                         pendingConsumed.replace(
                             InFlightCompletionSlot.Pending(
                                 reservationToken = reservationToken,
@@ -203,11 +213,9 @@ class HandTrackerImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "Error processing hand frame: submission failed")
-            }
+        }
         if (!accepted) {
             inFlight.release(reservationToken)
-            // Exactly-once: cancel only our completion hook so a late old callback cannot consume
-            // a newer session's hook.
             (pendingConsumed.cancelForToken(reservationToken)?.onConsumed ?: onConsumed)?.invoke()
         }
         return accepted
@@ -225,12 +233,6 @@ class HandTrackerImpl @Inject constructor(
     }
 
     override fun close() {
-        // Perf audit P7: the old close() waited a fixed 200 ms on a latch that
-        // only counted down when an async *result* happened to arrive — every
-        // close with no in-flight inference blocked the caller a full 200 ms
-        // (on the MAIN thread via DebugViewModel). MediaPipe's own close()
-        // drains the graph, so the wait bought nothing. The lock guarantees no
-        // submission is in flight while the native landmarker is released.
         synchronized(closeLock) {
             if (!_isInitialized && handLandmarker == null) return // idempotent
             isClosing = true
@@ -241,15 +243,13 @@ class HandTrackerImpl @Inject constructor(
             }
             handLandmarker = null
             _isInitialized = false
+            _activeDelegate = "UNINITIALIZED"
             isClosing = false
-            lastTrackedWristX = -1f
-            lastTrackedWristY = -1f
+            multiHandAssociator.reset()
         }
-        // P0-2: a close while a frame is in flight must not strand its lease. No result callback is
-        // coming for that frame, and the graph is already torn down, so the gate is cleared and the
-        // caller's buffer is handed back here instead.
         inFlight.reset()
         pendingConsumed.clear()?.onConsumed?.invoke()
+        com.aircontrol.runtime.PerfTelemetry.recordHandDelegate("UNINITIALIZED")
 
         Timber.i("HandTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -262,132 +262,83 @@ class HandTrackerImpl @Inject constructor(
 
     @Suppress("DEPRECATION")
     private fun handleResult(result: HandLandmarkerResult, resultTimestampMs: Long) {
-        // Correlate the callback with the exact submission first. A late callback from an older
-        // MediaPipe session must not release or complete a newer frame.
         val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
         inFlight.release(completion.reservationToken)
         completion.onConsumed?.invoke()
         if (isClosing) {
             return
         }
-        // Perf audit P18: end-to-end inference latency — the result timestamp
-        // echoes the elapsedRealtime value submitted with the frame.
-        val latencyMs = android.os.SystemClock.elapsedRealtime() - resultTimestampMs
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        val latencyMs = nowMs - resultTimestampMs
         if (latencyMs in 0..60_000L) {
-            com.aircontrol.runtime.PerfTelemetry.recordHandInference(latencyMs)
+            com.aircontrol.runtime.PerfTelemetry.recordHandInference(latencyMs, nowMs)
         }
 
         val timestampMs = resultTimestampMs
-        if (result.landmarks().isEmpty()) {
-            lastTrackedWristX = -1f
-            lastTrackedWristY = -1f
-            _handFrames.tryEmit(
-                HandFrame(
-                    landmarks = emptyList(),
-                    handedness = Handedness.UNKNOWN,
-                    timestampMs = timestampMs,
-                    confidence = 0f,
-                    frameAspectRatio = lastFrameAspectRatio,
-                ),
-            )
-            return
-        }
+        val landmarkLists = result.landmarks()
+        val handednessLists = result.handednesses()
 
-        // Multi-hand spatial continuity: if multiple hands are present,
-        // stick to the hand closest to the last tracked wrist/palm position.
-        // This prevents the cursor from teleporting when a second hand enters or moves.
-        val handednessResults = result.handednesses()
-        val preferredCandidates = if (preferredHand == Handedness.UNKNOWN) emptyList() else
-            result.landmarks().indices.filter { i ->
-                handednessResults.size > i &&
-                    handednessResults[i].isNotEmpty() &&
-                    when (preferredHand) {
-                        Handedness.LEFT -> handednessResults[i][0].categoryName().equals("LEFT", ignoreCase = true)
-                        Handedness.RIGHT -> handednessResults[i][0].categoryName().equals("RIGHT", ignoreCase = true)
-                        Handedness.UNKNOWN -> false
+        val rawDetections = if (landmarkLists.isEmpty()) {
+            emptyList()
+        } else {
+            landmarkLists.indices.mapNotNull { idx ->
+                val lms = landmarkLists[idx]
+                if (lms.isEmpty()) {
+                    null
+                } else {
+                    val landmark3DList = lms.map { lm ->
+                        Landmark3D(x = lm.x(), y = lm.y(), z = lm.z())
                     }
-            }
-
-        // An explicit LEFT/RIGHT preference is a hard identity constraint at
-        // selection time. Do not let a non-preferred hand overwrite temporal
-        // continuity while the preferred hand is briefly occluded; the service
-        // will otherwise see an apparently valid hand and can re-anchor the
-        // cursor when the preferred hand returns.
-        if (preferredHand != Handedness.UNKNOWN && preferredCandidates.isEmpty()) {
-            lastTrackedWristX = -1f
-            lastTrackedWristY = -1f
-            _handFrames.tryEmit(
-                HandFrame(
-                    landmarks = emptyList(),
-                    handedness = Handedness.UNKNOWN,
-                    timestampMs = timestampMs,
-                    confidence = 0f,
-                    frameAspectRatio = lastFrameAspectRatio,
-                ),
-            )
-            return
-        }
-
-        // Within the preferred set, keep temporal continuity so brief detector
-        // reordering does not jump between two hands that both match the policy.
-        val candidateIndices = if (preferredCandidates.isNotEmpty()) preferredCandidates
-            else result.landmarks().indices.toList()
-        val selectedIdx = if (candidateIndices.size > 1 && lastTrackedWristX >= 0f) {
-            candidateIndices.minByOrNull { i ->
-                val lms = result.landmarks()[i]
-                if (lms.isEmpty()) Float.MAX_VALUE
-                else {
-                    val dx = lms[0].x() - lastTrackedWristX
-                    val dy = lms[0].y() - lastTrackedWristY
-                    dx * dx + dy * dy
+                    val category = if (handednessLists.size > idx && handednessLists[idx].isNotEmpty()) {
+                        when (handednessLists[idx][0].categoryName().uppercase()) {
+                            "LEFT" -> Handedness.LEFT
+                            "RIGHT" -> Handedness.RIGHT
+                            else -> Handedness.UNKNOWN
+                        }
+                    } else {
+                        Handedness.UNKNOWN
+                    }
+                    val score = if (handednessLists.size > idx && handednessLists[idx].isNotEmpty()) {
+                        handednessLists[idx][0].score()
+                    } else {
+                        0f
+                    }
+                    RawHandDetection(
+                        landmarks = landmark3DList,
+                        handedness = category,
+                        confidence = score,
+                    )
                 }
-            } ?: candidateIndices.first()
-        } else {
-            candidateIndices.firstOrNull() ?: 0
-        }
-
-        val landmarks = result.landmarks()[selectedIdx]
-        if (landmarks.isNotEmpty()) {
-            lastTrackedWristX = landmarks[0].x()
-            lastTrackedWristY = landmarks[0].y()
-        }
-        val handedness = result.handednesses()
-        val landmark3DList = landmarks.map { lm ->
-            Landmark3D(x = lm.x(), y = lm.y(), z = lm.z())
-        }
-
-        // Fix A-21: the labels used to be swapped here ("LEFT" -> RIGHT), on the
-        // assumption that MediaPipe reports anatomy for an unmirrored image. It
-        // does not: the Hand landmarker defines handedness for a *selfie* (already
-        // mirrored) input, and CameraService mirrors the frame before handing it
-        // over (postScale(-1, 1) in CameraService.convertIntoLeasedBitmap). The double flip made
-        // "use my left hand only" accept the right hand and reject the left, which
-        // is exactly what users hit when they set a hand preference.
-        val handednessCategory = if (handedness.size > selectedIdx && handedness[selectedIdx].isNotEmpty()) {
-            when (handedness[selectedIdx][0].categoryName().uppercase()) {
-                "LEFT" -> Handedness.LEFT
-                "RIGHT" -> Handedness.RIGHT
-                else -> Handedness.UNKNOWN
             }
-        } else {
-            Handedness.UNKNOWN
         }
 
-        val confidence = if (handedness.size > selectedIdx && handedness[selectedIdx].isNotEmpty()) {
-            handedness[selectedIdx][0].score()
-        } else {
-            0f
-        }
-
-        _handFrames.tryEmit(
-            HandFrame(
-                landmarks = landmark3DList,
-                handedness = handednessCategory,
-                timestampMs = timestampMs,
-                confidence = confidence,
-                frameAspectRatio = lastFrameAspectRatio,
-            ),
+        val associatedFrame = multiHandAssociator.associate(
+            rawDetections = rawDetections,
+            timestampMs = timestampMs,
+            frameAspectRatio = lastFrameAspectRatio,
+            preferredHand = preferredHand,
         )
+        _handFrames.tryEmit(associatedFrame)
+    }
+
+    private fun handleRuntimeDelegateError(delegate: Delegate, error: RuntimeException) {
+        Timber.e(error, "HandLandmarker runtime error (delegate=%s)", delegate)
+        // Release any wedged in-flight buffer immediately so the bitmap pool cannot starve
+        inFlight.reset()
+        pendingConsumed.clear()?.onConsumed?.invoke()
+        if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
+            gpuRuntimeFailed = true
+            com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+                "hand-gpu-runtime-fallback",
+                android.os.SystemClock.elapsedRealtime(),
+            )
+            synchronized(closeLock) {
+                if (_isInitialized && !isClosing) {
+                    close()
+                    initialize()
+                }
+            }
+        }
     }
 
     /** Last exception from [tryInitializeWithDelegate], for the stage record. */
@@ -421,7 +372,7 @@ class HandTrackerImpl @Inject constructor(
                     handleResult(result, result.timestampMs())
                 }
                 .setErrorListener { error ->
-                    Timber.e(error, "HandLandmarker error (delegate=%s)", delegate)
+                    handleRuntimeDelegateError(delegate, error)
                 }
                 .build()
             HandLandmarker.createFromOptions(context, options).also {

@@ -858,6 +858,9 @@ class CameraService : LifecycleService() {
         }
     }
 
+    private val reusableBitmapCanvases = java.util.WeakHashMap<Bitmap, android.graphics.Canvas>(FRAME_BUFFER_SLOTS)
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun buildAnalysisUseCase(
         executor: java.util.concurrent.ExecutorService,
         rgbaOutput: Boolean,
@@ -869,16 +872,46 @@ class CameraService : LifecycleService() {
                     ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
                 )
             ).build()
-        return ImageAnalysis.Builder()
+        val builder = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .apply {
                 if (rgbaOutput) setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             }
-            .build()
+        applySupportedFpsRange(builder, baseConfiguredFps)
+        return builder.build()
             .also { img ->
                 img.setAnalyzer(executor) { imageProxy -> processImageFrame(imageProxy) }
             }
+    }
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun applySupportedFpsRange(builder: ImageAnalysis.Builder, desiredFps: Int) {
+        runCatching {
+            val camManager = getSystemService(Context.CAMERA_SERVICE) as? android.hardware.camera2.CameraManager
+                ?: return
+            val frontCamId = camManager.cameraIdList.firstOrNull { id ->
+                val chars = camManager.getCameraCharacteristics(id)
+                chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) ==
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT
+            } ?: return
+            val chars = camManager.getCameraCharacteristics(frontCamId)
+            val ranges = chars.get(
+                android.hardware.camera2.CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
+            ) ?: return
+            val selected = ranges
+                .filter { it.upper <= desiredFps.coerceAtLeast(30) }
+                .maxWithOrNull(compareBy<android.util.Range<Int>> { it.upper }.thenBy { it.lower })
+                ?: ranges.maxByOrNull { it.upper }
+                ?: return
+            androidx.camera.camera2.interop.Camera2Interop.Extender(builder).setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                selected,
+            )
+            Timber.d("Negotiated camera AE target FPS range: %s (desired=%d)", selected, desiredFps)
+        }.onFailure {
+            Timber.d(it, "Could not negotiate explicit Camera2 FPS range; using CameraX default")
+        }
     }
 
     private suspend fun stopTrackingLocked(clearDesired: Boolean = false) {
@@ -1212,7 +1245,9 @@ class CameraService : LifecycleService() {
                 }
                 cachedMatrix = m; cachedRotationDegrees = rotationDegrees
             }
-            val canvas = android.graphics.Canvas(targetBitmap)
+            val canvas = reusableBitmapCanvases.getOrPut(targetBitmap) {
+                android.graphics.Canvas(targetBitmap)
+            }
             // Opaque full-frame camera bitmap overwrites every pixel of targetBitmap;
             // skipping PorterDuff.CLEAR saves a full 640x480 memory fill per frame.
             canvas.drawBitmap(sourceBitmap, checkNotNull(cachedMatrix), bitmapPaint)

@@ -105,51 +105,70 @@ class FaceTrackerImpl @Inject constructor(
     override val gazeObservations: SharedFlow<GazeObservation> = _gazeObservations.asSharedFlow()
 
     @Volatile private var gpuEnabled: Boolean = true
-    @Volatile private var _activeDelegate: String = "CPU"
+    @Volatile private var gpuRuntimeFailed: Boolean = false
+    @Volatile private var _activeDelegate: String = "UNINITIALIZED"
     override val activeDelegate: String get() = _activeDelegate
 
     override fun setGpuAccelerationEnabled(enabled: Boolean) {
-        if (gpuEnabled == enabled) return
-        gpuEnabled = enabled
-        if (_isInitialized) {
-            close()
-            initialize()
+        synchronized(closeLock) {
+            if (gpuEnabled == enabled) return
+            gpuEnabled = enabled
+            if (enabled) {
+                gpuRuntimeFailed = false
+            }
+            if (_isInitialized && !isClosing) {
+                close()
+                initialize()
+            }
         }
     }
 
     override fun initialize() {
-        if (_isInitialized) {
-            Timber.d("FaceTracker already initialized — reusing the loaded model")
-            return
-        }
-        if (!validateModelFile()) {
-            StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
-            return
-        }
+        synchronized(closeLock) {
+            if (_isInitialized) {
+                Timber.d("FaceTracker already initialized — reusing the loaded model")
+                return
+            }
+            if (!validateModelFile()) {
+                _activeDelegate = "ERROR"
+                com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate(_activeDelegate)
+                StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "$MODEL_FILE not readable from assets")
+                return
+            }
 
-        // isClosing stays true after close so late MediaPipe callbacks are inert.
-        isClosing = false
-        val canTryGpu = gpuEnabled && !android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-        var chosenDelegate = Delegate.CPU
-        val landmarker = if (canTryGpu) {
-            tryInitializeWithDelegate(Delegate.GPU)?.also { chosenDelegate = Delegate.GPU }
-                ?: tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
-        } else {
-            tryInitializeWithDelegate(Delegate.CPU)?.also { chosenDelegate = Delegate.CPU }
+            // isClosing stays true after close so late MediaPipe callbacks are inert.
+            isClosing = false
+            val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric
+            var resolvedDelegateLabel = "CPU"
+            val landmarker = if (canTryGpu) {
+                tryInitializeWithDelegate(Delegate.GPU)?.also { resolvedDelegateLabel = "GPU" }
+                    ?: tryInitializeWithDelegate(Delegate.CPU)?.also {
+                        resolvedDelegateLabel = "CPU_FALLBACK"
+                        gpuRuntimeFailed = true
+                    }
+            } else {
+                tryInitializeWithDelegate(Delegate.CPU)?.also {
+                    resolvedDelegateLabel = if (gpuEnabled && (gpuRuntimeFailed || isRobolectric)) "CPU_FALLBACK" else "CPU"
+                }
+            }
+            if (landmarker == null) {
+                _activeDelegate = "ERROR"
+                com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate(_activeDelegate)
+                StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
+                return
+            }
+            faceLandmarker = landmarker
+            _activeDelegate = resolvedDelegateLabel
+            _isInitialized = true
+            jumpPolicy.reset()
+            com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate(_activeDelegate)
+            StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE matrix=true")
+            com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+                "face-initialized(${_activeDelegate})",
+                android.os.SystemClock.elapsedRealtime(),
+            )
         }
-        if (landmarker == null) {
-            StageLog.failure(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "FaceLandmarker.createFromOptions(CPU) failed", lastInitError)
-            return
-        }
-        faceLandmarker = landmarker
-        _activeDelegate = chosenDelegate.name
-        _isInitialized = true
-        com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate(_activeDelegate)
-        StageLog.success(StageLog.Stage.FACE_TRACKER_INIT, COMPONENT, "delegate=${_activeDelegate} model=$MODEL_FILE matrix=true")
-        com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
-            "face-initialized(${_activeDelegate})",
-            android.os.SystemClock.elapsedRealtime(),
-        )
     }
 
     override fun updatePersonalizedModel(model: PersonalizedGazeCalibrationModel?) {
@@ -244,10 +263,12 @@ class FaceTrackerImpl @Inject constructor(
             }
             faceLandmarker = null
             _isInitialized = false
+            _activeDelegate = "UNINITIALIZED"
             // Intentionally keep isClosing=true until the next initialize().
         }
         inFlight.reset()
         pendingConsumed.clear()?.onConsumed?.invoke()
+        com.aircontrol.runtime.PerfTelemetry.recordFaceDelegate("UNINITIALIZED")
 
         Timber.i("FaceTracker closed")
         com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
@@ -273,11 +294,10 @@ class FaceTrackerImpl @Inject constructor(
         if (isClosing || !_isInitialized) {
             return
         }
-        // Perf audit P18: end-to-end inference latency (the result timestamp
-        // echoes the elapsedRealtime value submitted with the frame).
-        val latencyMs = android.os.SystemClock.elapsedRealtime() - resultTimestampMs
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        val latencyMs = nowMs - resultTimestampMs
         if (latencyMs in 0..60_000L) {
-            com.aircontrol.runtime.PerfTelemetry.recordFaceInference(latencyMs)
+            com.aircontrol.runtime.PerfTelemetry.recordFaceInference(latencyMs, nowMs)
         }
 
         val faceLandmarks = result.faceLandmarks()
@@ -573,7 +593,7 @@ class FaceTrackerImpl @Inject constructor(
                     handleResult(result, result.timestampMs())
                 }
                 .setErrorListener { error ->
-                    Timber.e(error, "FaceLandmarker error (delegate=%s)", delegate)
+                    handleRuntimeDelegateError(delegate, error)
                 }
                 .build()
             FaceLandmarker.createFromOptions(context, options).also {
@@ -583,6 +603,25 @@ class FaceTrackerImpl @Inject constructor(
             lastInitError = e
             Timber.w(e, "Failed to initialize FaceLandmarker with %s delegate, initialization failed", delegate)
             null
+        }
+    }
+
+    private fun handleRuntimeDelegateError(delegate: Delegate, error: RuntimeException) {
+        Timber.e(error, "FaceLandmarker runtime error (delegate=%s)", delegate)
+        inFlight.reset()
+        pendingConsumed.clear()?.onConsumed?.invoke()
+        if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
+            gpuRuntimeFailed = true
+            com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
+                "face-gpu-runtime-fallback",
+                android.os.SystemClock.elapsedRealtime(),
+            )
+            synchronized(closeLock) {
+                if (_isInitialized && !isClosing) {
+                    close()
+                    initialize()
+                }
+            }
         }
     }
 

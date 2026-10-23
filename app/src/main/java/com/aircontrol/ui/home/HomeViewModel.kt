@@ -46,11 +46,13 @@ data class SessionStats(
     val uptimeSeconds: Long = 0L,
 )
 
-/** Real-time photon-to-cursor telemetry exposed to the Home HUD. */
+/** Real-time pipeline telemetry exposed to the Home HUD. */
 data class LivePipelineTelemetry(
-    val activeDelegate: String = "GPU",
+    val activeDelegate: String = "UNINITIALIZED",
     val actualFps: Int = 0,
     val configuredFps: Int = 24,
+    val handResultFps: Int = 0,
+    val faceResultFps: Int = 0,
     val inferenceMs: Long = 0L,
     val photonToCursorMs: Long = 0L,
 )
@@ -119,6 +121,9 @@ class HomeViewModel @Inject constructor(
     private val _liveLandmarks = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val liveLandmarks: StateFlow<List<Pair<Float, Float>>> = _liveLandmarks.asStateFlow()
 
+    private val _trackedHands = MutableStateFlow<List<com.aircontrol.ui.components.HudHandTrack>>(emptyList())
+    val trackedHands: StateFlow<List<com.aircontrol.ui.components.HudHandTrack>> = _trackedHands.asStateFlow()
+
     val engineState: StateFlow<GestureEngineState> = gestureDetector.engineState
     val currentPose: StateFlow<Pose> = gestureDetector.currentPose
     val pinchProximity: StateFlow<Float> = gestureDetector.pinchProximity
@@ -148,6 +153,7 @@ class HomeViewModel @Inject constructor(
                     _sessionStats.value = SessionStats()
                     _handDetected.value = false
                     _liveLandmarks.value = emptyList()
+                    _trackedHands.value = emptyList()
                     _lastActionLabel.value = ""
                 }
             }
@@ -166,12 +172,34 @@ class HomeViewModel @Inject constructor(
     private fun startHandDetectionCollection() {
         handCollectJob?.cancel()
         handCollectJob = viewModelScope.launch {
-            handTracker.handFrames.collect { frame ->
+            combine(
+                handTracker.handFrames,
+                gestureDetector.perHandStates,
+            ) { frame, perHandMap ->
+                frame to perHandMap
+            }.collect { (frame, perHandMap) ->
                 _handDetected.value = frame.isDetected
                 _liveLandmarks.value = if (frame.isDetected && frame.landmarks.size >= 21) {
                     frame.landmarks.map { (1f - it.x).coerceIn(0f, 1f) to it.y.coerceIn(0f, 1f) }
                 } else {
                     emptyList()
+                }
+                _trackedHands.value = frame.validHands.map { hand ->
+                    val snapshot = perHandMap[hand.trackId]
+                    val label = when (hand.handedness) {
+                        com.aircontrol.tracking.Handedness.LEFT -> "LEFT"
+                        com.aircontrol.tracking.Handedness.RIGHT -> "RIGHT"
+                        com.aircontrol.tracking.Handedness.UNKNOWN -> "HAND"
+                    }
+                    com.aircontrol.ui.components.HudHandTrack(
+                        trackId = hand.trackId,
+                        handedness = label,
+                        confidence = hand.confidence,
+                        isValid = hand.isValid,
+                        isPrimaryPointer = snapshot?.isPrimaryPointer ?: (hand.trackId == frame.primaryTrackId),
+                        landmarks = hand.landmarks.map { (1f - it.x).coerceIn(0f, 1f) to it.y.coerceIn(0f, 1f) },
+                        pinchProximity = snapshot?.pinchProximity ?: 0f,
+                    )
                 }
             }
         }
@@ -182,6 +210,7 @@ class HomeViewModel @Inject constructor(
         handCollectJob = null
         _handDetected.value = false
         _liveLandmarks.value = emptyList()
+        _trackedHands.value = emptyList()
     }
 
     private fun startUptimeTimer() {
@@ -192,30 +221,32 @@ class HomeViewModel @Inject constructor(
                 val snap = PerfTelemetry.snapshot()
                 val prefs = userPreferences.value
                 val eyeMode = prefs.eyeTrackingEnabled
+                // Truthful delegate reporting: report actual initialized tracker delegate or UNINITIALIZED (never guess "GPU").
                 val delegate = when {
                     eyeMode && faceTracker.isInitialized() -> faceTracker.activeDelegate
                     handTracker.isInitialized() -> handTracker.activeDelegate
-                    prefs.gpuAccelerationEnabled -> "GPU"
-                    else -> "CPU"
+                    eyeMode -> snap.faceDelegate
+                    else -> snap.handDelegate
                 }
                 val inferMs = if (eyeMode && snap.faceInferAvgMs > 0L) {
                     snap.faceInferAvgMs
                 } else {
                     snap.handInferAvgMs
                 }
-                val endToEndMs = if (eyeMode && snap.faceResultAgeP50Ms > 0L) {
-                    snap.faceResultAgeP50Ms
-                } else if (snap.handResultAgeP50Ms > 0L) {
-                    snap.handResultAgeP50Ms
-                } else {
-                    (snap.conversionAvgMs + inferMs).coerceAtLeast(0L)
+                val stageAgeMs = when {
+                    snap.cursorDispatchAgeP50Ms > 0L -> snap.cursorDispatchAgeP50Ms
+                    eyeMode && snap.faceResultAgeP50Ms > 0L -> snap.faceResultAgeP50Ms
+                    snap.handResultAgeP50Ms > 0L -> snap.handResultAgeP50Ms
+                    else -> (snap.conversionAvgMs + inferMs).coerceAtLeast(0L)
                 }
                 _liveTelemetry.value = LivePipelineTelemetry(
                     activeDelegate = delegate,
                     actualFps = snap.actualFps.toInt(),
                     configuredFps = if (snap.configuredFps > 0) snap.configuredFps else prefs.analysisFps,
+                    handResultFps = snap.handResultFps.toInt(),
+                    faceResultFps = snap.faceResultFps.toInt(),
                     inferenceMs = inferMs,
-                    photonToCursorMs = endToEndMs,
+                    photonToCursorMs = stageAgeMs,
                 )
                 delay(500L)
                 _sessionStats.value = _sessionStats.value.copy(

@@ -109,9 +109,15 @@ class CursorSmoother(
     private var velY: Float = 0f
     private var lastTimestampMs: Long? = null
 
-    fun filter(x: Float, y: Float, timestampMs: Long): Pair<Float, Float> {
+    fun filter(
+        x: Float,
+        y: Float,
+        timestampMs: Long,
+        confidence: Float = 1f,
+    ): Pair<Float, Float> {
         val inputX = x.coerceIn(0f, 1f)
         val inputY = y.coerceIn(0f, 1f)
+        val clampedConfidence = confidence.coerceIn(0f, 1f)
 
         // Ballistic boost + kinematic velocity estimation
         val prevTime = lastTimestampMs
@@ -120,29 +126,38 @@ class CursorSmoother(
         val prevRawX = lastRawX
         val prevRawY = lastRawY
         if (prevTime != null && oldX != null && oldY != null) {
-            val dt = ((timestampMs - prevTime).coerceAtLeast(1L) / 1000f).coerceIn(0.001f, 0.1f)
-            val dx = inputX - oldX
-            val dy = inputY - oldY
-            val rawDist = sqrt(dx * dx + dy * dy)
-            val speed = rawDist / dt
-            if (speed > FAST_SPEED_THRESHOLD) {
-                val boost = (speed - FAST_SPEED_THRESHOLD) * BALLISTIC_BOOST_FACTOR
-                xFilter.updateParams(baseMinCutoff + boost, baseBeta)
-                yFilter.updateParams(baseMinCutoff + boost, baseBeta)
-            } else {
+            val deltaMs = timestampMs - prevTime
+            if (deltaMs <= 0L || deltaMs > GAP_RESET_THRESHOLD_MS) {
+                // Frame gap or out-of-order sample: reset velocity so a dropout never produces a prediction spike.
+                velX = 0f
+                velY = 0f
                 xFilter.updateParams(baseMinCutoff, baseBeta)
                 yFilter.updateParams(baseMinCutoff, baseBeta)
-            }
+            } else {
+                val dt = (deltaMs / 1000f).coerceIn(0.001f, 0.1f)
+                val dx = inputX - oldX
+                val dy = inputY - oldY
+                val rawDist = sqrt(dx * dx + dy * dy)
+                val speed = rawDist / dt
+                if (speed > FAST_SPEED_THRESHOLD && clampedConfidence >= MIN_CONFIDENCE_FOR_PREDICTION) {
+                    val boost = (speed - FAST_SPEED_THRESHOLD) * BALLISTIC_BOOST_FACTOR
+                    xFilter.updateParams(baseMinCutoff + boost, baseBeta)
+                    yFilter.updateParams(baseMinCutoff + boost, baseBeta)
+                } else {
+                    xFilter.updateParams(baseMinCutoff, baseBeta)
+                    yFilter.updateParams(baseMinCutoff, baseBeta)
+                }
 
-            if (prevRawX != null && prevRawY != null) {
-                val instVx = (inputX - prevRawX) / dt
-                val instVy = (inputY - prevRawY) / dt
-                // Smooth velocity estimate with fast EMA and clamp to prevent overshoot on deceleration
-                velX = (velX * 0.35f + instVx * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
-                velY = (velY * 0.35f + instVy * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
-                // Zero out velocity if direction reverses (prevents overshoot when stopping)
-                if (instVx * velX <= 0f) velX = 0f
-                if (instVy * velY <= 0f) velY = 0f
+                if (prevRawX != null && prevRawY != null) {
+                    val instVx = (inputX - prevRawX) / dt
+                    val instVy = (inputY - prevRawY) / dt
+                    // Smooth velocity estimate with fast EMA and clamp to prevent overshoot on deceleration
+                    velX = (velX * 0.35f + instVx * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
+                    velY = (velY * 0.35f + instVy * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
+                    // Zero out velocity if direction reverses (prevents overshoot when stopping)
+                    if (instVx * velX <= 0f) velX = 0f
+                    if (instVy * velY <= 0f) velY = 0f
+                }
             }
         }
         lastTimestampMs = timestampMs
@@ -152,10 +167,11 @@ class CursorSmoother(
         val fxBase = xFilter.filter(inputX, timestampMs)
         val fyBase = yFilter.filter(inputY, timestampMs)
 
-        // Apply kinematic velocity lead compensation only when moving above stillness threshold
+        // Apply kinematic velocity lead compensation only when moving above stillness threshold AND confidence is sufficient
+        val confidenceFactor = ((clampedConfidence - MIN_CONFIDENCE_FOR_PREDICTION) / 0.40f).coerceIn(0f, 1f)
         val speedNorm = sqrt(velX * velX + velY * velY)
-        val leadScale = if (leadTimeSec > 0f && speedNorm > LEAD_MIN_SPEED) {
-            ((speedNorm - LEAD_MIN_SPEED) / LEAD_FULL_SPEED).coerceIn(0f, 1f)
+        val leadScale = if (leadTimeSec > 0f && speedNorm > LEAD_MIN_SPEED && confidenceFactor > 0f) {
+            ((speedNorm - LEAD_MIN_SPEED) / LEAD_FULL_SPEED).coerceIn(0f, 1f) * confidenceFactor
         } else {
             0f
         }
@@ -227,5 +243,7 @@ class CursorSmoother(
         private const val MAX_LEAD_OFFSET = 0.025f
         private const val LEAD_MIN_SPEED = 0.08f
         private const val LEAD_FULL_SPEED = 0.45f
+        private const val GAP_RESET_THRESHOLD_MS = 120L
+        private const val MIN_CONFIDENCE_FOR_PREDICTION = 0.45f
     }
 }

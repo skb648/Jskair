@@ -29,8 +29,12 @@ data class HandInput(
      * frame geometry behave exactly as before.
      */
     val frameAspectRatio: Float = 1f,
+    /** Stable temporal track identifier assigned by MultiHandAssociator. */
+    val trackId: Int = 0,
+    /** True when crossing/overlap disambiguation flagged this hand identity as ambiguous. */
+    val isAmbiguous: Boolean = false,
 ) {
-    val isDetected: Boolean get() = landmarks.size == LANDMARK_COUNT && confidence > 0f
+    val isDetected: Boolean get() = !isAmbiguous && landmarks.size == LANDMARK_COUNT && confidence > 0f
 
     companion object {
         const val LANDMARK_COUNT = 21
@@ -43,3 +47,27 @@ data class HandInput(
         )
     }
 }
+
+/**
+ * Snapshot of a single hand track's gesture state within a multi-hand frame.
+ */
+data class HandGestureSnapshot(
+    val trackId: Int,
+    val handedness: Handedness,
+    val engineState: GestureEngineState,
+    val currentPose: Pose,
+    val armingProgress: Float,
+    val pinchProximity: Float,
+    val lowConfidence: Boolean,
+    val isPrimaryPointer: Boolean,
+)
+
+/**
+ * Multi-hand frame input carrying up to two simultaneous [HandInput] tracks.
+ */
+data class MultiHandInput(
+    val hands: List<HandInput>,
+    val primaryTrackId: Int? = hands.firstOrNull { it.isDetected }?.trackId,
+    val timestampMs: Long,
+)
+

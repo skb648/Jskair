@@ -219,6 +219,34 @@ data class CalibrationMetrics(
         require(sampleCount >= 0 && validationSampleCount >= 0)
         require(listOfNotNull(meanPixelError, medianPixelError, p95PixelError, maxPixelError).all { it.isFinite() })
     }
+
+    /**
+     * Estimates mean and p95 visual-angle error in degrees for a physical display size
+     * and viewing distance (defaults to the 11-inch Galaxy Tab A9+ active panel at 40 cm).
+     */
+    fun estimateAngularErrorDeg(
+        viewingDistanceMm: Double = DEFAULT_TABLET_VIEWING_DISTANCE_MM,
+        screenWidthMm: Double = DEFAULT_TABLET_WIDTH_MM,
+        screenHeightMm: Double = DEFAULT_TABLET_HEIGHT_MM,
+    ): Pair<Double, Double> {
+        require(viewingDistanceMm > 0.0 && screenWidthMm > 0.0 && screenHeightMm > 0.0)
+        val diagMm = sqrt(screenWidthMm * screenWidthMm + screenHeightMm * screenHeightMm) / sqrt(2.0)
+        val meanMm = sqrt(
+            (horizontalMae * screenWidthMm) * (horizontalMae * screenWidthMm) +
+                (verticalMae * screenHeightMm) * (verticalMae * screenHeightMm),
+        ).coerceAtLeast(meanNormalizedError * diagMm * 0.7)
+        val scaleRatio = if (meanNormalizedError > 1e-6) p95NormalizedError / meanNormalizedError else 1.0
+        val p95Mm = meanMm * scaleRatio
+        val meanDeg = Math.toDegrees(kotlin.math.atan2(meanMm, viewingDistanceMm))
+        val p95Deg = Math.toDegrees(kotlin.math.atan2(p95Mm, viewingDistanceMm))
+        return meanDeg to p95Deg
+    }
+
+    companion object {
+        const val DEFAULT_TABLET_VIEWING_DISTANCE_MM = 400.0
+        const val DEFAULT_TABLET_WIDTH_MM = 236.9
+        const val DEFAULT_TABLET_HEIGHT_MM = 148.0
+    }
 }
 
 data class CalibrationDatasetSplit(val training: List<CalibrationSample>, val validation: List<CalibrationSample>) {
@@ -530,7 +558,9 @@ object PersonalizedGazeCalibrationFitter {
             return sorted[low] * (1 - weight) + sorted[high] * weight
         }
         val pixelErrors = if (screenWidthPx != null && screenHeightPx != null && screenWidthPx > 0 && screenHeightPx > 0) {
-            scalarErrors.map { it * sqrt(screenWidthPx.toDouble() * screenWidthPx + screenHeightPx.toDouble() * screenHeightPx) }
+            val w = screenWidthPx.toDouble()
+            val h = screenHeightPx.toDouble()
+            errors.map { pt -> sqrt((pt.dx * w) * (pt.dx * w) + (pt.dy * h) * (pt.dy * h)) }
         } else null
         return CalibrationMetrics(
             meanNormalizedError = scalarErrors.average(), medianNormalizedError = quantile(0.50),

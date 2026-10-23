@@ -5,10 +5,13 @@ import com.aircontrol.gesture.detection.DynamicGestureDetector
 import com.aircontrol.gesture.config.GestureEngineConfig
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
+import com.aircontrol.gesture.model.HandGestureSnapshot
 import com.aircontrol.gesture.model.HandInput
 import com.aircontrol.gesture.model.LandmarkTemplate
+import com.aircontrol.gesture.model.MultiHandInput
 import com.aircontrol.gesture.model.Pose
 import com.aircontrol.tracking.HandFrame
+import com.aircontrol.tracking.TrackedHand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,9 +36,9 @@ import kotlin.concurrent.Volatile
 
 /**
  * Bridges the Android tracking layer (HandFrame from MediaPipe)
- * with the pure-Kotlin gesture engine (HandInput).
+ * with the pure-Kotlin gesture engine (HandInput / MultiHandInput).
  *
- * Converts [HandFrame] → [HandInput] and exposes the engine's
+ * Converts [HandFrame] → [MultiHandInput] and exposes the engine's
  * [GestureEvent] flow and [GestureEngineState] for UI consumption.
  */
 interface GestureDetector : AutoCloseable {
@@ -50,6 +53,9 @@ interface GestureDetector : AutoCloseable {
     val lowConfidence: StateFlow<Boolean>
     /** Normalized pinch proximity (0.0 = open, 1.0 = fingertips touching). */
     val pinchProximity: StateFlow<Float>
+    /** Independent per-hand gesture state snapshots keyed by trackId. */
+    val perHandStates: StateFlow<Map<Int, HandGestureSnapshot>>
+        get() = MutableStateFlow<Map<Int, HandGestureSnapshot>>(emptyMap())
     fun processHandFrame(frame: HandFrame)
     /** Suspending variant used by the realtime service so semantic backpressure never blocks a thread. */
     suspend fun processHandFrameSuspending(frame: HandFrame)
@@ -64,11 +70,7 @@ interface GestureDetector : AutoCloseable {
     /**
      * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
      * user-defined landmark templates that the engine matches against live
-     * hand frames. The templates are converted from app-layer
-     * [com.aircontrol.data.model.CustomGesture] objects by the caller.
-     *
-     * Safe to call from any thread. The templates are applied atomically on
-     * the next frame.
+     * hand frames.
      */
     fun updateCustomTemplates(templates: List<LandmarkTemplate>)
 
@@ -78,23 +80,8 @@ interface GestureDetector : AutoCloseable {
      */
     fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float)
 
-    /**
-     * Debug-only visibility into the swipe state machine (phase, intent score against
-     * both thresholds, candidate age and the explicit hold reason). `null` until the
-     * first hand frame, and never updated in a release build, because the whole
-     * channel is attached only when `BuildConfig.DEBUG` is set.
-     */
     val swipeDebug: StateFlow<DynamicGestureDetector.SwipeDebugInfo?>
-
-    /**
-     * How many times each rejection has *begun* this session. Onset-counted on
-     * purpose: a hand held mid-sweep for forty frames is one rejection the user
-     * experienced, not forty, and a counter that tracks frames would make every
-     * ordinary gesture look like a systemic failure.
-     */
     val swipeRejectionCounts: StateFlow<Map<String, Int>>
-
-    /** Most recent swipe verdicts that changed state, newest first, capped. */
     val swipeDebugLog: StateFlow<List<String>>
 
     fun reset()
@@ -109,15 +96,9 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // AtomicReference overkill but kept for thread-safe swap; could be @Volatile var
     private val engineRef = AtomicReference(GestureEngine(GestureEngineConfig()))
     private val engine: GestureEngine get() = engineRef.get()
 
-    /**
-     * GestureEngine contains temporal mutable state (debounce history, pinch
-     * phases, swipe trajectory). All frame and configuration mutations pass
-     * through this one owner; concurrent collectors cannot interleave frames.
-     */
     private val frameSerial = ReentrantLock()
     private var engineEventsJob: Job? = null
     @Volatile
@@ -146,6 +127,9 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     private val _pinchProximity = MutableStateFlow(0f)
     override val pinchProximity: StateFlow<Float> = _pinchProximity.asStateFlow()
 
+    private val _perHandStates = MutableStateFlow<Map<Int, HandGestureSnapshot>>(emptyMap())
+    override val perHandStates: StateFlow<Map<Int, HandGestureSnapshot>> = _perHandStates.asStateFlow()
+
     private val debugInstrumentation = com.aircontrol.BuildConfig.DEBUG
 
     private val _swipeDebug = MutableStateFlow<DynamicGestureDetector.SwipeDebugInfo?>(null)
@@ -166,15 +150,6 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         if (debugInstrumentation) attachSwipeDecisionHook()
     }
 
-    /**
-     * The engine's decision channel carries what the detector cannot know: a swipe
-     * that *was* committed, and a swipe the cross-modal arbiter took away because an
-     * active pinch or drag owns the same motion. Both are the answers users ask for
-     * ("it saw me and did nothing" vs "the pointer stole it"), so they go to the same
-     * capped log and counters. In a release build this hook is never assigned, which
-     * leaves `GestureEngine.onSwipeDecision` null and its three call sites a single
-     * null check - no allocation, no logcat, no per-frame work on the frame thread.
-     */
     private fun attachSwipeDecisionHook() {
         engine.onSwipeDecision = { detected, direction, confidence, reason, _, _, timestampMs ->
             val outcome = if (detected) "COMMITTED ${direction?.name}" else "REJECTED ${reason ?: "UNCLAIMED"}"
@@ -185,13 +160,6 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         }
     }
 
-    /**
-     * Read the swipe machine's snapshot after the engine has consumed the frame, so the
-     * values shown are the state it ended the frame in. Only the *transition* into a
-     * hold reason is counted or logged; the latest snapshot itself is always published,
-     * and StateFlow's equality conflation means a held reason republishes nothing to the
-     * UI, so an uninteresting 40-frame sweep costs 40 field writes and zero emissions.
-     */
     private fun publishSwipeDebug() {
         val info = engine.swipeDebugInfo()
         _swipeDebug.value = info
@@ -230,8 +198,13 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
     override suspend fun processHandFrameSuspending(frame: HandFrame) {
         frameSerial.lock()
         try {
-            val input = frame.toHandInput()
-            engine.processFrameSuspending(input)
+            if (frame.hands.size <= 1 && frame.primaryTrackId != null) {
+                val input = frame.toHandInput()
+                engine.processFrameSuspending(input)
+            } else {
+                val multiInput = frame.toMultiHandInput()
+                engine.processMultiHandFrameSuspending(multiInput)
+            }
 
             // Forward state from engine while still owning the same serial turn.
             _engineState.value = engine.engineState.value
@@ -239,6 +212,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             _armingProgress.value = engine.armingProgress.value
             _lowConfidence.value = engine.lowConfidence.value
             _pinchProximity.value = engine.pinchProximity.value
+            _perHandStates.value = engine.perHandStates.value
             if (debugInstrumentation) publishSwipeDebug()
         } finally {
             frameSerial.unlock()
@@ -258,23 +232,12 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         }
     }
 
-    /**
-     * Bug: Custom Gestures Not Triggering Fix — Delegates to the engine's
-     * [GestureEngine.updateCustomTemplates]. The templates are forwarded as-is
-     * (they're already converted from app-layer CustomGesture objects by the
-     * caller in GestureControlAccessibilityService).
-     */
     override fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
         frameSerial.lock()
         try { engine.updateCustomTemplates(templates.toList()) }
         finally { frameSerial.unlock() }
     }
 
-    /**
-     * Fix A-11: forward the user's "swipes need an open palm" setting to the
-     * engine. Without this the engine kept its compiled-in default, so the
-     * Settings switch did nothing and pointer travel kept scrolling pages.
-     */
     override fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean) {
         frameSerial.lock()
         try {
@@ -299,21 +262,11 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         Timber.d("Gesture detector reset")
     }
 
-    /**
-     * Semantic and cursor flows are exposed directly from the current engine.
-     * There is deliberately no second DROP_OLDEST fan-out buffer here.
-     */
     private fun collectEngineEvents() {
         engineEventsJob?.cancel()
         engineEventsJob = null
     }
 
-    /**
-     * Rejections and verdicts are per-session on purpose - the same convention as the
-     * gaze ring buffer in [com.aircontrol.tracking.GazeDiagnostics] - so a counter that
-     * says "4 NO_TRAVEL" describes the minutes the user just tried, not everything
-     * since install.
-     */
     private fun clearSwipeDebug() {
         lastRecordedHoldReason = null
         swipeCounters.clear()
@@ -330,6 +283,7 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         _lowConfidence.value = false
         _armingProgress.value = 0f
         _pinchProximity.value = 0f
+        _perHandStates.value = emptyMap()
     }
 
     override fun close() {
@@ -339,18 +293,19 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
         Timber.d("GestureDetector closed and scope cancelled")
     }
 
-    /**
-     * Maps [HandFrame] from the tracking layer to [HandInput] for the gesture engine.
-     * This is the only place where Android tracking types touch the pure-Kotlin engine.
-     */
     private fun HandFrame.toHandInput(): HandInput {
+        val effectiveConfidence = if (isDetected) confidence else 0f
         return HandInput(
-            landmarks = landmarks.map { lm ->
-                com.aircontrol.gesture.model.Landmark3D(
-                    x = lm.x,
-                    y = lm.y,
-                    z = lm.z,
-                )
+            landmarks = if (isDetected) {
+                landmarks.map { lm ->
+                    com.aircontrol.gesture.model.Landmark3D(
+                        x = lm.x,
+                        y = lm.y,
+                        z = lm.z,
+                    )
+                }
+            } else {
+                emptyList()
             },
             handedness = when (handedness) {
                 com.aircontrol.tracking.Handedness.LEFT -> com.aircontrol.gesture.model.Handedness.LEFT
@@ -358,8 +313,46 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
                 com.aircontrol.tracking.Handedness.UNKNOWN -> com.aircontrol.gesture.model.Handedness.UNKNOWN
             },
             timestampMs = timestampMs,
-            confidence = confidence,
+            confidence = effectiveConfidence,
             frameAspectRatio = frameAspectRatio,
+            trackId = primaryTrackId ?: 0,
+            isAmbiguous = hands.firstOrNull { it.trackId == primaryTrackId }?.isAmbiguous == true,
+        )
+    }
+
+    private fun HandFrame.toMultiHandInput(): MultiHandInput {
+        val mappedHands = hands.map { it.toHandInput() }
+        return MultiHandInput(
+            hands = mappedHands,
+            primaryTrackId = primaryTrackId,
+            timestampMs = timestampMs,
+        )
+    }
+
+    private fun TrackedHand.toHandInput(): HandInput {
+        val effectiveConfidence = if (isValid) confidence else 0f
+        return HandInput(
+            landmarks = if (isValid) {
+                landmarks.map { lm ->
+                    com.aircontrol.gesture.model.Landmark3D(
+                        x = lm.x,
+                        y = lm.y,
+                        z = lm.z,
+                    )
+                }
+            } else {
+                emptyList()
+            },
+            handedness = when (handedness) {
+                com.aircontrol.tracking.Handedness.LEFT -> com.aircontrol.gesture.model.Handedness.LEFT
+                com.aircontrol.tracking.Handedness.RIGHT -> com.aircontrol.gesture.model.Handedness.RIGHT
+                com.aircontrol.tracking.Handedness.UNKNOWN -> com.aircontrol.gesture.model.Handedness.UNKNOWN
+            },
+            timestampMs = timestampMs,
+            confidence = effectiveConfidence,
+            frameAspectRatio = frameAspectRatio,
+            trackId = trackId,
+            isAmbiguous = isAmbiguous,
         )
     }
 

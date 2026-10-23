@@ -5,9 +5,12 @@ import com.aircontrol.gesture.detection.DynamicGestureDetector
 import com.aircontrol.gesture.detection.StaticPoseClassifier
 import com.aircontrol.gesture.model.GestureEngineState
 import com.aircontrol.gesture.model.GestureEvent
+import com.aircontrol.gesture.model.HandGestureSnapshot
 import com.aircontrol.gesture.model.HandInput
+import com.aircontrol.gesture.model.Handedness
 import com.aircontrol.gesture.model.LandmarkIndex
 import com.aircontrol.gesture.model.LandmarkTemplate
+import com.aircontrol.gesture.model.MultiHandInput
 import com.aircontrol.gesture.model.PinchPhase
 import com.aircontrol.gesture.model.Pose
 import com.aircontrol.gesture.model.SwipeDirection
@@ -30,6 +33,7 @@ private enum class PinchState { IDLE, HOVER, PINCH_START, PINCH_HOLD, PINCH_RELE
 
 class GestureEngine(
     initialConfig: GestureEngineConfig = GestureEngineConfig(),
+    private val isSecondarySlot: Boolean = false,
 ) {
     @Volatile var config: GestureEngineConfig = initialConfig
         private set
@@ -39,6 +43,28 @@ class GestureEngine(
     private val poseClassifier = StaticPoseClassifier(initialConfig)
     private val dynamicDetector = DynamicGestureDetector(initialConfig)
     private val stateMachine = GestureStateMachine(initialConfig)
+
+    /** Secondary slot engine for genuine dual-hand tracking (only allocated on primary engine). */
+    private val secondarySlot: GestureEngine? = if (!isSecondarySlot) {
+        GestureEngine(initialConfig, isSecondarySlot = true)
+    } else {
+        null
+    }
+    private var primarySlotTrackId: Int? = null
+    private var primarySlotHandedness: Handedness = Handedness.UNKNOWN
+    private var secondarySlotTrackId: Int? = null
+    private var secondarySlotHandedness: Handedness = Handedness.UNKNOWN
+    private var lastCrossHandDiscreteActionMs: Long = 0L
+    private var customTemplatesCache: List<LandmarkTemplate> = emptyList()
+
+    /**
+     * When bufferedMode is active on a slot during multi-hand arbitration, emitted
+     * semantic and cursor events are staged in [stagedSemanticEvents] / [stagedCursorEvents]
+     * so the multi-hand coordinator can arbitrate conflicts before emitting externally.
+     */
+    private var bufferedMode: Boolean = false
+    private val stagedSemanticEvents = ArrayList<GestureEvent>(4)
+    private val stagedCursorEvents = ArrayList<GestureEvent.CursorMoved>(2)
 
     /**
      * Continuous cursor transport: latest-wins is intentional because old positions
@@ -78,13 +104,12 @@ class GestureEngine(
     val currentPose: StateFlow<Pose> = _currentPose.asStateFlow()
     private val _armingProgress = MutableStateFlow(0f)
     val armingProgress: StateFlow<Float> = _armingProgress.asStateFlow()
-    // Fix (verified G6): expose the low-confidence condition so the UI
-    // service can explain why poses/pinches are being muted instead of
-    // rejecting them with no hint at all.
     private val _lowConfidence = MutableStateFlow(false)
     val lowConfidence: StateFlow<Boolean> = _lowConfidence.asStateFlow()
     private val _pinchProximity = MutableStateFlow(0f)
     val pinchProximity: StateFlow<Float> = _pinchProximity.asStateFlow()
+    private val _perHandStates = MutableStateFlow<Map<Int, HandGestureSnapshot>>(emptyMap())
+    val perHandStates: StateFlow<Map<Int, HandGestureSnapshot>> = _perHandStates.asStateFlow()
 
     private var pinchState = PinchState.IDLE
     private var pinchStateEntryTimeMs = 0L
@@ -119,23 +144,20 @@ class GestureEngine(
     @Volatile private var lastPalmY = 0.5f
     @Volatile private var hasPalmPosition = false
 
-    fun stop() { scopeJob.cancel() }
+    internal val isPinchActive: Boolean
+        get() = wasPinching || pinchState == PinchState.PINCH_START || pinchState == PinchState.PINCH_HOLD || pinchState == PinchState.PINCH_RELEASE
+
+    fun stop() {
+        secondarySlot?.stop()
+        scopeJob.cancel()
+    }
 
     /**
      * Optional debug hook (spec §18) — null in production, so there is NO log
-     * spam by default. When set, it fires once per swipe DECISION that had real
-     * evidence (committed, suppressed, or rejected past the displacement gate):
-     * (detected, direction, confidence, reason, dispX, dispY, timestampMs).
-     * Frames with no meaningful motion never fire it.
+     * spam by default.
      */
     @Volatile var onSwipeDecision: ((detected: Boolean, direction: SwipeDirection?, confidence: Float, reason: String?, displacementX: Float, displacementY: Float, timestampMs: Long) -> Unit)? = null
 
-    /**
-     * Debug-only: the swipe state machine's view of the current motion (spec §18).
-     * Forwarded untouched — the engine adds nothing, so what the overlay shows is what
-     * the detector used. Callers that must not pay per frame (release builds) simply
-     * never call it.
-     */
     fun swipeDebugInfo(): DynamicGestureDetector.SwipeDebugInfo = dynamicDetector.swipeDebugInfo()
 
     fun updateSensitivity(sensitivity: Int) {
@@ -144,6 +166,7 @@ class GestureEngine(
         poseClassifier.updateConfig(newConfig)
         dynamicDetector.updateConfig(newConfig)
         stateMachine.updateConfig(newConfig)
+        secondarySlot?.updateSensitivity(sensitivity)
     }
 
     fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean) {
@@ -151,6 +174,7 @@ class GestureEngine(
         val newConfig = config.copy(swipeRequiresOpenHand = requiresOpenHand)
         config = newConfig
         dynamicDetector.updateConfig(newConfig)
+        secondarySlot?.updateSwipeRequiresOpenHand(requiresOpenHand)
     }
 
     fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {
@@ -160,17 +184,316 @@ class GestureEngine(
         poseClassifier.updateConfig(newConfig)
         dynamicDetector.updateConfig(newConfig)
         stateMachine.updateConfig(newConfig)
+        secondarySlot?.updateCalibration(handSizeMm, pinchDistanceMm)
     }
 
     fun updateCustomTemplates(templates: List<LandmarkTemplate>) {
+        customTemplatesCache = templates
         poseClassifier.updateCustomTemplates(templates)
         lastCustomGestureId = null
+        secondarySlot?.updateCustomTemplates(templates)
+    }
+
+    private suspend fun emitSemanticEvent(event: GestureEvent) {
+        if (bufferedMode) {
+            stagedSemanticEvents.add(event)
+        } else {
+            _semanticEvents.emit(event)
+        }
+    }
+
+    private fun emitCursorEvent(event: GestureEvent.CursorMoved) {
+        if (bufferedMode) {
+            stagedCursorEvents.clear()
+            stagedCursorEvents.add(event)
+        } else {
+            _cursorEvents.tryEmit(event)
+        }
     }
 
     /** Compatibility entry point for synchronous unit callers. Production adapters use the suspend variant. */
     fun processFrame(input: HandInput) = kotlinx.coroutines.runBlocking { processFrameSuspending(input) }
 
+    /** Multi-hand synchronous entry point for unit callers. */
+    fun processMultiHandFrame(multiInput: MultiHandInput) =
+        kotlinx.coroutines.runBlocking { processMultiHandFrameSuspending(multiInput) }
+
+    /**
+     * Processes up to two simultaneously tracked hands with independent per-track
+     * gesture state machines and cross-hand action arbitration.
+     */
+    suspend fun processMultiHandFrameSuspending(multiInput: MultiHandInput) {
+        val secondary = secondarySlot
+        val validHands = multiInput.hands.filter { it.isDetected }
+        val singleHandMatchesPrimary = validHands.size <= 1 &&
+            secondarySlotTrackId == null &&
+            (validHands.isEmpty() || primarySlotTrackId == null || validHands[0].trackId == 0 || validHands[0].trackId == primarySlotTrackId)
+        if (secondary == null || singleHandMatchesPrimary) {
+            // Fast path when only single-hand input is active and no secondary hand track is bound
+            val primaryHand = if (multiInput.primaryTrackId != null) {
+                validHands.firstOrNull { it.trackId == multiInput.primaryTrackId || it.trackId == 0 }
+                    ?: HandInput.EMPTY.copy(timestampMs = multiInput.timestampMs)
+            } else {
+                HandInput.EMPTY.copy(timestampMs = multiInput.timestampMs)
+            }
+            if (primaryHand.isDetected && primaryHand.trackId != 0) {
+                primarySlotTrackId = primaryHand.trackId
+                primarySlotHandedness = primaryHand.handedness
+            }
+            processSingleSlotSuspending(primaryHand)
+            if (!primaryHand.isDetected && _engineState.value == GestureEngineState.DISARMED && !this.isPinchActive) {
+                primarySlotTrackId = null
+            }
+            publishSingleSlotSnapshot(multiInput)
+            return
+        }
+
+        val timestampMs = multiInput.timestampMs
+        // Map incoming hands by trackId to Slot A (this) and Slot B (secondary)
+        var handForSlotA: HandInput? = null
+        var handForSlotB: HandInput? = null
+        val unassigned = ArrayList<HandInput>(2)
+
+        for (hand in validHands) {
+            val tid = if (hand.trackId != 0) hand.trackId else when (hand.handedness) {
+                Handedness.LEFT -> 1
+                Handedness.RIGHT -> 2
+                Handedness.UNKNOWN -> 1
+            }
+            val normalizedHand = if (hand.trackId == tid) hand else hand.copy(trackId = tid)
+            when (tid) {
+                primarySlotTrackId -> handForSlotA = normalizedHand
+                secondarySlotTrackId -> handForSlotB = normalizedHand
+                else -> unassigned.add(normalizedHand)
+            }
+        }
+
+        for (hand in unassigned) {
+            val prefersPrimarySlot = hand.trackId == multiInput.primaryTrackId
+            if (handForSlotA == null && !this.isPinchActive && (primarySlotTrackId == null || prefersPrimarySlot || handForSlotB != null)) {
+                if (primarySlotTrackId != null && primarySlotTrackId != hand.trackId) {
+                    resetSingleSlotOnly()
+                }
+                primarySlotTrackId = hand.trackId
+                primarySlotHandedness = hand.handedness
+                handForSlotA = hand
+            } else if (handForSlotB == null && !secondary.isPinchActive) {
+                if (secondarySlotTrackId != null && secondarySlotTrackId != hand.trackId) {
+                    secondary.resetSingleSlotOnly()
+                }
+                secondarySlotTrackId = hand.trackId
+                secondarySlotHandedness = hand.handedness
+                handForSlotB = hand
+            }
+        }
+
+        val inputA = handForSlotA ?: HandInput.EMPTY.copy(timestampMs = timestampMs, trackId = primarySlotTrackId ?: 0)
+        val inputB = handForSlotB ?: HandInput.EMPTY.copy(timestampMs = timestampMs, trackId = secondarySlotTrackId ?: 0)
+
+        if (handForSlotA != null) primarySlotHandedness = handForSlotA.handedness
+        if (handForSlotB != null) secondarySlotHandedness = handForSlotB.handedness
+
+        val slotAPinchingBefore = this.isPinchActive
+        val slotBPinchingBefore = secondary.isPinchActive
+
+        // Run both slots in buffered mode so we can arbitrate conflicts before emitting externally
+        this.bufferedMode = true
+        this.stagedSemanticEvents.clear()
+        this.stagedCursorEvents.clear()
+        secondary.bufferedMode = true
+        secondary.stagedSemanticEvents.clear()
+        secondary.stagedCursorEvents.clear()
+
+        try {
+            this.processSingleSlotSuspending(inputA)
+            if (secondarySlotTrackId != null || handForSlotB != null) {
+                secondary.processSingleSlotSuspending(inputB)
+            }
+        } finally {
+            this.bufferedMode = false
+            secondary.bufferedMode = false
+        }
+
+        // Determine which slot owns pointer & primary eligibility
+        val pointerOwnerIsSlotA = when {
+            slotAPinchingBefore || this.isPinchActive -> true
+            slotBPinchingBefore || secondary.isPinchActive -> false
+            multiInput.primaryTrackId != null && multiInput.primaryTrackId == secondarySlotTrackId -> false
+            multiInput.primaryTrackId != null && multiInput.primaryTrackId == primarySlotTrackId -> true
+            multiInput.primaryTrackId == null -> true // Neither eligible for pointer
+            else -> handForSlotA != null
+        }
+
+        val primaryEligible = multiInput.primaryTrackId != null
+        val ownerEvents = if (pointerOwnerIsSlotA) this.stagedSemanticEvents else secondary.stagedSemanticEvents
+        val otherEvents = if (pointerOwnerIsSlotA) secondary.stagedSemanticEvents else this.stagedSemanticEvents
+        val otherWasPinching = if (pointerOwnerIsSlotA) slotBPinchingBefore else slotAPinchingBefore
+        val ownerNowPinching = if (pointerOwnerIsSlotA) (slotAPinchingBefore || this.isPinchActive) else (slotBPinchingBefore || secondary.isPinchActive)
+
+        var discreteFiredThisFrame = false
+
+        // 1. Emit owner semantic events (if eligible or terminating an active pinch/disarm)
+        for (ev in ownerEvents) {
+            val isLifecycleOrRelease = ev is GestureEvent.Armed ||
+                ev is GestureEvent.Disarmed ||
+                (ev is GestureEvent.Pinch && ev.phase == PinchPhase.END)
+            if (!primaryEligible && !isLifecycleOrRelease) continue
+
+            val isDiscrete = ev is GestureEvent.Swipe ||
+                ev is GestureEvent.PoseTriggered ||
+                ev is GestureEvent.PalmHome ||
+                ev is GestureEvent.CustomGestureTriggered ||
+                (ev is GestureEvent.Pinch && ev.phase == PinchPhase.START)
+
+            if (isDiscrete) {
+                discreteFiredThisFrame = true
+                lastCrossHandDiscreteActionMs = timestampMs
+            }
+            _semanticEvents.emit(ev)
+        }
+
+        // 2. Arbitrate secondary slot semantic events:
+        //    - Always allow Pinch(END) if secondary slot was already pinching (never strand a drag!).
+        //    - Block new pinches/swipes/poses from secondary if owner is pinching, or if a discrete
+        //      action already fired in this frame or within CROSS_HAND_ARBITRATION_MS, or if hand
+        //      preference restricted eligibility to a single hand that isn't this slot.
+        val secondaryAllowedToAct = primaryEligible &&
+            !ownerNowPinching &&
+            !discreteFiredThisFrame &&
+            (lastCrossHandDiscreteActionMs == 0L || timestampMs - lastCrossHandDiscreteActionMs >= CROSS_HAND_ARBITRATION_MS)
+
+        for (ev in otherEvents) {
+            val isPinchEnd = ev is GestureEvent.Pinch && ev.phase == PinchPhase.END
+            if (isPinchEnd && otherWasPinching) {
+                _semanticEvents.emit(ev)
+                continue
+            }
+            if (!secondaryAllowedToAct) {
+                // If secondary tried to start a pinch while blocked by primary, cancel secondary's pinch state
+                if (ev is GestureEvent.Pinch && ev.phase == PinchPhase.START) {
+                    val blockedSlot = if (pointerOwnerIsSlotA) secondary else this
+                    blockedSlot.abortPinchInternal()
+                }
+                continue
+            }
+            val isDiscrete = ev is GestureEvent.Swipe ||
+                ev is GestureEvent.PoseTriggered ||
+                ev is GestureEvent.PalmHome ||
+                ev is GestureEvent.CustomGestureTriggered ||
+                (ev is GestureEvent.Pinch && ev.phase == PinchPhase.START)
+            if (isDiscrete) {
+                if (discreteFiredThisFrame) continue
+                discreteFiredThisFrame = true
+                lastCrossHandDiscreteActionMs = timestampMs
+                _semanticEvents.emit(ev)
+            } else if (ev is GestureEvent.Pinch && ev.phase == PinchPhase.MOVE && otherWasPinching) {
+                _semanticEvents.emit(ev)
+            }
+        }
+
+        // 3. Emit cursor event ONLY from the pointer-owning slot when eligible
+        if (primaryEligible) {
+            val ownerCursor = if (pointerOwnerIsSlotA) this.stagedCursorEvents else secondary.stagedCursorEvents
+            ownerCursor.lastOrNull()?.let { _cursorEvents.tryEmit(it) }
+        }
+
+        // 4. Clean up disarmed unbound slots
+        if (handForSlotA == null && _engineState.value == GestureEngineState.DISARMED && !this.isPinchActive) {
+            primarySlotTrackId = null
+        }
+        if (handForSlotB == null && secondary.engineState.value == GestureEngineState.DISARMED && !secondary.isPinchActive) {
+            secondarySlotTrackId = null
+        }
+
+        // 5. Publish per-hand snapshots and synchronize top-level state flows to the active pointer slot
+        val snapshots = LinkedHashMap<Int, HandGestureSnapshot>(2)
+        primarySlotTrackId?.let { tid ->
+            if (handForSlotA != null || _engineState.value != GestureEngineState.DISARMED) {
+                snapshots[tid] = HandGestureSnapshot(
+                    trackId = tid,
+                    handedness = primarySlotHandedness,
+                    engineState = _engineState.value,
+                    currentPose = _currentPose.value,
+                    armingProgress = _armingProgress.value,
+                    pinchProximity = _pinchProximity.value,
+                    lowConfidence = _lowConfidence.value,
+                    isPrimaryPointer = pointerOwnerIsSlotA && primaryEligible,
+                )
+            }
+        }
+        secondarySlotTrackId?.let { tid ->
+            if (handForSlotB != null || secondary.engineState.value != GestureEngineState.DISARMED) {
+                snapshots[tid] = HandGestureSnapshot(
+                    trackId = tid,
+                    handedness = secondarySlotHandedness,
+                    engineState = secondary.engineState.value,
+                    currentPose = secondary.currentPose.value,
+                    armingProgress = secondary.armingProgress.value,
+                    pinchProximity = secondary.pinchProximity.value,
+                    lowConfidence = secondary.lowConfidence.value,
+                    isPrimaryPointer = !pointerOwnerIsSlotA && primaryEligible,
+                )
+            }
+        }
+        _perHandStates.value = snapshots
+
+        if (!pointerOwnerIsSlotA && primaryEligible) {
+            _engineState.value = secondary.engineState.value
+            _currentPose.value = secondary.currentPose.value
+            _armingProgress.value = secondary.armingProgress.value
+            _lowConfidence.value = secondary.lowConfidence.value
+            _pinchProximity.value = secondary.pinchProximity.value
+        }
+    }
+
+    private fun publishSingleSlotSnapshot(multiInput: MultiHandInput) {
+        val snapshots = LinkedHashMap<Int, HandGestureSnapshot>(2)
+        for (hand in multiInput.hands) {
+            val tid = if (hand.trackId != 0) hand.trackId else 1
+            val isPrimary = multiInput.primaryTrackId == tid || (multiInput.primaryTrackId == null && hand.isDetected && multiInput.hands.size == 1)
+            snapshots[tid] = HandGestureSnapshot(
+                trackId = tid,
+                handedness = hand.handedness,
+                engineState = if (isPrimary) _engineState.value else GestureEngineState.DISARMED,
+                currentPose = if (isPrimary) _currentPose.value else Pose.NONE,
+                armingProgress = if (isPrimary) _armingProgress.value else 0f,
+                pinchProximity = if (isPrimary) _pinchProximity.value else 0f,
+                lowConfidence = if (isPrimary) _lowConfidence.value else false,
+                isPrimaryPointer = isPrimary && multiInput.primaryTrackId != null,
+            )
+        }
+        _perHandStates.value = snapshots
+    }
+
+    private fun abortPinchInternal() {
+        wasPinching = false
+        currentPinchPhase = null
+        pinchState = PinchState.IDLE
+        pinchDragUnlocked = false
+    }
+
     suspend fun processFrameSuspending(input: HandInput) {
+        processSingleSlotSuspending(input)
+        if (input.isDetected) {
+            val tid = if (input.trackId != 0) input.trackId else 1
+            _perHandStates.value = mapOf(
+                tid to HandGestureSnapshot(
+                    trackId = tid,
+                    handedness = input.handedness,
+                    engineState = _engineState.value,
+                    currentPose = _currentPose.value,
+                    armingProgress = _armingProgress.value,
+                    pinchProximity = _pinchProximity.value,
+                    lowConfidence = _lowConfidence.value,
+                    isPrimaryPointer = true,
+                ),
+            )
+        } else {
+            _perHandStates.value = emptyMap()
+        }
+    }
+
+    private suspend fun processSingleSlotSuspending(input: HandInput) {
         val timestampMs = input.timestampMs
         val isLowConfidence = input.isDetected && input.confidence < CONFIDENCE_THRESHOLD
         // Hardening round 10 (spec §5/§17 — threshold oscillation): entering
@@ -312,7 +635,7 @@ class GestureEngine(
                     palmHomeFired = false
                 } else if (!palmHomeFired && timestampMs - palmHoldStartMs >= config.palmHomeHoldMs && palmHomeConditionsMet(input, timestampMs)) {
                     palmHomeFired = true
-                    _semanticEvents.emit(GestureEvent.PalmHome(timestampMs))
+                    emitSemanticEvent(GestureEvent.PalmHome(timestampMs))
                 }
             } else resetPalmTracking()
         } else resetPalmTracking()
@@ -321,10 +644,10 @@ class GestureEngine(
             when (transition.newState) {
                 GestureEngineState.ARMED -> {
                     armedSinceMs = timestampMs
-                    _semanticEvents.emit(GestureEvent.Armed(timestampMs))
+                    emitSemanticEvent(GestureEvent.Armed(timestampMs))
                 }
                 GestureEngineState.DISARMED -> {
-                    _semanticEvents.emit(GestureEvent.Disarmed(timestampMs))
+                    emitSemanticEvent(GestureEvent.Disarmed(timestampMs))
                     wasPinching = false
                     lastCustomGestureId = null
                 }
@@ -344,9 +667,9 @@ class GestureEngine(
                 if (_engineState.value == GestureEngineState.ARMING) {
                     _engineState.value = GestureEngineState.ARMED
                     armedSinceMs = timestampMs
-                    _semanticEvents.emit(GestureEvent.Armed(timestampMs))
+                    emitSemanticEvent(GestureEvent.Armed(timestampMs))
                 }
-                _semanticEvents.emit(GestureEvent.Swipe(swipeResult.direction, timestampMs))
+                emitSemanticEvent(GestureEvent.Swipe(swipeResult.direction, timestampMs))
                 onSwipeDecision?.invoke(
                     true, swipeResult.direction, swipeResult.confidence, null,
                     swipeResult.displacementX, swipeResult.displacementY, timestampMs,
@@ -364,20 +687,15 @@ class GestureEngine(
                 )
             }
             if (transition.shouldExecute && !lowConfidence) {
-                // Round 10 (spec §11): poses were the last event type that
-                // could still commit from unreliable tracking — 7 stable but
-                // blurry frames could misclassify as VICTORY and change the
-                // volume. Pose actions are discrete and can be destructive,
-                // so low-confidence tracking mutes them like swipes/templates.
                 val actionablePose = pose.takeIf { it != Pose.NONE && it != Pose.OPEN_PALM && it != Pose.FIST }
-                if (actionablePose != null) _semanticEvents.emit(GestureEvent.PoseTriggered(actionablePose, timestampMs))
+                if (actionablePose != null) emitSemanticEvent(GestureEvent.PoseTriggered(actionablePose, timestampMs))
             }
             if (!lowConfidence && input.isDetected) {
                 val matchedTemplate = poseClassifier.matchCustomTemplate(input)
                 if (matchedTemplate != null) {
                     if (matchedTemplate.gestureId != lastCustomGestureId) {
                         lastCustomGestureId = matchedTemplate.gestureId
-                        _semanticEvents.emit(GestureEvent.CustomGestureTriggered(matchedTemplate.gestureId, matchedTemplate.name, timestampMs))
+                        emitSemanticEvent(GestureEvent.CustomGestureTriggered(matchedTemplate.gestureId, matchedTemplate.name, timestampMs))
                     }
                 } else lastCustomGestureId = null
             }
@@ -387,27 +705,12 @@ class GestureEngine(
         val effectiveCursorX = if (isPinchAnchored) pinchAnchoredX else lastPalmX
         val effectiveCursorY = if (isPinchAnchored) pinchAnchoredY else lastPalmY
         if (input.isDetected && hasPalmPosition && (transition.newState == GestureEngineState.ARMING || transition.newState == GestureEngineState.ARMED || transition.newState == GestureEngineState.EXECUTING || transition.newState == GestureEngineState.COOLDOWN)) {
-            // Fix B4: EXECUTING is included so the dot keeps following the palm
-            // while a triggered action is in flight. Previously the dot froze
-            // for the duration of every EXECUTING burst, which read as a stutter
-            // right at the moment the user was most engaged.
             val isSilent = transition.newState == GestureEngineState.ARMING
             val hint = if (lowConfidence) LOW_CONFIDENCE_SMOOTHER_MIN_CUTOFF else null
-            _cursorEvents.tryEmit(GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs, isSilent, hint))
+            emitCursorEvent(GestureEvent.CursorMoved(effectiveCursorX, effectiveCursorY, timestampMs, isSilent, hint))
         }
     }
 
-    /**
-     * Pinch click/drag FSM.
-     *
-     * Hardening round 9 (spec §11 — prefer CANCEL over GUESS): [allowEntry] is
-     * false while tracking is in low-confidence mode. No NEW pinch may START
-     * (IDLE→HOVER, HOVER→PINCH_START, and the 80ms START→HOLD confirmation are
-     * gated), so blurry frames can never commit a click/drag. An ONGOING pinch
-     * is deliberately not interrupted mid-hold (killing a drag because one
-     * stretch of frames went soft would strand the press); it keeps flowing
-     * MOVE updates and always terminates with END.
-     */
     private suspend fun processPinch(input: HandInput, timestampMs: Long, allowEntry: Boolean) {
         val currentState = _engineState.value
         val isAllowedState = currentState == GestureEngineState.ARMED ||
@@ -422,7 +725,7 @@ class GestureEngine(
         if (!input.isDetected) {
             _pinchProximity.value = 0f
             if (wasPinching) {
-                _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                emitSemanticEvent(GestureEvent.Pinch(PinchPhase.END, pinchStartX, pinchStartY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 wasPinching = false; currentPinchPhase = null; pinchState = PinchState.IDLE; pinchDragUnlocked = false
             } else if (pinchState != PinchState.IDLE) {
                 pinchState = PinchState.IDLE
@@ -465,12 +768,12 @@ class GestureEngine(
                 if (timeInState >= config.pinchConfirmMs && allowEntry) {
                     if (_engineState.value == GestureEngineState.ARMING) {
                         _engineState.value = GestureEngineState.ARMED
-                        _semanticEvents.emit(GestureEvent.Armed(timestampMs))
+                        emitSemanticEvent(GestureEvent.Armed(timestampMs))
                     }
                     pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs; wasPinching = true; currentPinchPhase = PinchPhase.START
                     pinchDragUnlocked = false
                     pinchStartX = pinchAnchoredX; pinchStartY = pinchAnchoredY
-                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    emitSemanticEvent(GestureEvent.Pinch(PinchPhase.START, pinchAnchoredX, pinchAnchoredY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 } else if (thumbIndexDistance > exitThreshold) { pinchState = PinchState.HOVER; pinchStateEntryTimeMs = timestampMs }
             }
             PinchState.PINCH_HOLD -> {
@@ -483,7 +786,7 @@ class GestureEngine(
                     val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
                     val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
                     currentPinchPhase = PinchPhase.MOVE
-                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.MOVE, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    emitSemanticEvent(GestureEvent.Pinch(PinchPhase.MOVE, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                 }
             }
             PinchState.PINCH_RELEASE -> {
@@ -491,7 +794,7 @@ class GestureEngine(
                     pinchState = PinchState.IDLE; pinchStateEntryTimeMs = timestampMs; wasPinching = false; currentPinchPhase = PinchPhase.END; lastPinchEndMs = timestampMs
                     val emitX = if (pinchDragUnlocked) lastPalmX else pinchAnchoredX
                     val emitY = if (pinchDragUnlocked) lastPalmY else pinchAnchoredY
-                    _semanticEvents.emit(GestureEvent.Pinch(PinchPhase.END, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
+                    emitSemanticEvent(GestureEvent.Pinch(PinchPhase.END, emitX, emitY, timestampMs, pinchAnchoredX, pinchAnchoredY, currentVelocity))
                     currentPinchPhase = null
                     pinchDragUnlocked = false
                 } else if (thumbIndexDistance < enterThreshold) { pinchState = PinchState.PINCH_HOLD; pinchStateEntryTimeMs = timestampMs }
@@ -523,29 +826,35 @@ class GestureEngine(
         prevFrameTimestampMs = timestampMs
     }
 
-    fun reset() {
+    private fun resetSingleSlotOnly() {
         poseClassifier.reset(); poseClassifier.effectiveDebounceFrames = config.poseDebounceFrames; dynamicDetector.reset(); stateMachine.reset()
+        poseClassifier.updateCustomTemplates(customTemplatesCache)
         pinchState = PinchState.IDLE; pinchStateEntryTimeMs = 0L; wasPinching = false; currentPinchPhase = null; pinchDragUnlocked = false
         pinchStartX = 0f; pinchStartY = 0f; pinchAnchoredX = 0f; pinchAnchoredY = 0f; lastPinchEndMs = 0L; lastCustomGestureId = null
         lowConfBadFrames = 0; lowConfGoodFrames = 0; lowConfidenceMode = false; _lowConfidence.value = false; prevIndexTipX = 0.5f; prevIndexTipY = 0.5f; prevIndexTipTimestampMs = 0L; currentVelocity = 0f
         resetPalmTracking(); handStillSinceMs = 0L; thumbPoseSinceMs = 0L; measuredFrameIntervalMs = 0L; prevFrameTimestampMs = 0L; armedSinceMs = 0L
         lastPalmX = 0.5f; lastPalmY = 0.5f; hasPalmPosition = false
+        stagedSemanticEvents.clear(); stagedCursorEvents.clear(); bufferedMode = false
         _engineState.value = GestureEngineState.DISARMED; _currentPose.value = Pose.NONE; _armingProgress.value = 0f; _pinchProximity.value = 0f
     }
 
+    fun reset() {
+        resetSingleSlotOnly()
+        secondarySlot?.resetSingleSlotOnly()
+        primarySlotTrackId = null
+        primarySlotHandedness = Handedness.UNKNOWN
+        secondarySlotTrackId = null
+        secondarySlotHandedness = Handedness.UNKNOWN
+        lastCrossHandDiscreteActionMs = 0L
+        _perHandStates.value = emptyMap()
+    }
+
     companion object {
-        // Typical wrist->middle-MCP span in aspect-corrected normalized image
-        // coordinates; used to keep pose-velocity thresholds calibrated after
-        // hand-size normalization (Fix verified G4).
         private const val REFERENCE_HAND_SCALE = 0.2f
-        // Prevents minor finger closure jitter from triggering accidental drag/selection,
-        // while allowing deliberate slide gestures to unlock drag smoothly.
         private const val PINCH_DRAG_UNLOCK_THRESHOLD = 0.048f
-        // Fix U-6: an 80ms post-release lockout added to the felt tap latency on
-        // every second tap of a fast double-tap. 40ms still blocks a single
-        // physical pinch from re-entering as two clicks.
         private const val PINCH_COOLDOWN_MS = 40L
         private const val SWIPE_SUPPRESSION_AFTER_PINCH_MS = 60L
+        private const val CROSS_HAND_ARBITRATION_MS = 180L
         private const val CONFIDENCE_THRESHOLD = 0.7f
         private const val LOW_CONFIDENCE_MIN_FRAMES = 3
         private const val LOW_CONFIDENCE_EXIT_FRAMES = 3
