@@ -116,6 +116,9 @@ data class GestureEngineConfig(
     val autoDisarmTimeoutMs: Long = 15_000L,
     val fistDisarmDurationMs: Long = 1000L,
     val swipeCooldownMs: Long = 180L,
+    // Palm → Home is opt-in. OPEN_PALM is also the arming pose, so an always-on
+    // palm-hold-to-Home threw users to the launcher right after starting tracking.
+    val palmHomeEnabled: Boolean = false,
     val palmHomeHoldMs: Long = 2500L,
     // Fix #5: Reduced from 0.26f to 0.18f so user can rest forearm/elbow on table or lap
     // without forcing elevated "gorilla arm" hand posture right up against the lens.

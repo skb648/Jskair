@@ -464,7 +464,9 @@ class ActionDispatcher @Inject constructor(
                 val custom = matchCustomGesture(event.pose)
                 custom ?: gestureMap[poseKey(event.pose)]
             }
-            is GestureEvent.PalmHome -> gestureMap[KEY_PALM_HOME]
+            // Defense in depth: never navigate Home unless the user opted in.
+            is GestureEvent.PalmHome ->
+                if (currentPreferences.palmHomeEnabled) gestureMap[KEY_PALM_HOME] else GestureAction.NONE
             is GestureEvent.CustomGestureTriggered -> customGesturesList
                 .firstOrNull { it.id == event.gestureId && it.isEnabled }
                 ?.action

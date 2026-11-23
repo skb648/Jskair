@@ -69,7 +69,10 @@ class AirControlServiceImpl @Inject constructor(
         jobs.add(scope.launch {
             handTracker.handFrames.collect { frame ->
                 try {
-                    gestureDetector.processHandFrame(frame)
+                    // Suspending variant: never blocks the collector thread with runBlocking.
+                    gestureDetector.processHandFrameSuspending(frame)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Error processing hand frame — skipping")
                 }

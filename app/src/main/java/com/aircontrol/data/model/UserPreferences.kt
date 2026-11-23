@@ -77,7 +77,7 @@ data class UserPreferences(
     // [gazeCalibration] when present and loadable.
     val personalizedGazeCalibration: String = "",
     // Zero-latency cursor motion profile (INSTANT default for zero-lag live response).
-    val cursorResponseProfile: CursorResponseProfile = CursorResponseProfile.INSTANT,
+    val cursorResponseProfile: CursorResponseProfile = CursorResponseProfile.BALANCED,
     // Auto GPU hardware acceleration with safe CPU fallback.
     val gpuAccelerationEnabled: Boolean = true,
 ) {

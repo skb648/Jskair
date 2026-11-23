@@ -398,9 +398,13 @@ class HandTrackerImpl @Inject constructor(
     companion object {
         private const val COMPONENT = "HandTrackerImpl"
         private const val MODEL_FILE = "hand_landmarker.task"
-        private const val NUM_HANDS = 2
-        private const val MIN_DETECTION_CONFIDENCE = 0.40f
-        private const val MIN_TRACKING_CONFIDENCE = 0.35f
-        private const val MIN_PRESENCE_CONFIDENCE = 0.38f
+        // One hand: a second detected hand (or a face/background false positive at low
+        // confidence) was stealing the primary slot and resetting gestures mid-pinch.
+        private const val NUM_HANDS = 1
+        // Restored to MediaPipe-recommended thresholds. The lowered values (0.35-0.40) let
+        // weak, flickering detections through, which made gestures fire and drop randomly.
+        private const val MIN_DETECTION_CONFIDENCE = 0.55f
+        private const val MIN_TRACKING_CONFIDENCE = 0.50f
+        private const val MIN_PRESENCE_CONFIDENCE = 0.50f
     }
 }

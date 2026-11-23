@@ -180,8 +180,8 @@ class DebugViewModel @Inject constructor(
                 _handFrame.value = frame
                 _isHandDetected.value = frame.isDetected
 
-                // Feed to gesture detector
-                gestureDetector.processHandFrame(frame)
+                // Feed to gesture detector (suspending: runBlocking on Main caused jank/ANR)
+                gestureDetector.processHandFrameSuspending(frame)
 
                 // Measure FPS using 1-second windows
                 frameCount++

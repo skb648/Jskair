@@ -113,16 +113,16 @@ class GestureControlAccessibilityService : AccessibilityService() {
     private val cursorSmoother = CursorSmoother(
         minCutoff = DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF,
         beta = DEFAULT_CURSOR_SMOOTHER_BETA,
-        leadMs = com.aircontrol.data.model.CursorResponseProfile.INSTANT.leadMs,
-        deadZoneNormalized = com.aircontrol.data.model.CursorResponseProfile.INSTANT.deadZoneNormalized,
+        leadMs = com.aircontrol.data.model.CursorResponseProfile.BALANCED.leadMs,
+        deadZoneNormalized = com.aircontrol.data.model.CursorResponseProfile.BALANCED.deadZoneNormalized,
     )
 
     // Gaze smoothing for "eye is mouse" mode.
     private val gazeCursorSmoother = CursorSmoother(
         minCutoff = GAZE_SMOOTHER_MIN_CUTOFF,
         beta = GAZE_SMOOTHER_BETA,
-        leadMs = com.aircontrol.data.model.CursorResponseProfile.INSTANT.leadMs * 0.75f,
-        deadZoneNormalized = com.aircontrol.data.model.CursorResponseProfile.INSTANT.deadZoneNormalized,
+        leadMs = 0f,
+        deadZoneNormalized = GAZE_FIXATION_DEAD_ZONE,
     )
 
     // Blink detector for blink-to-click.
@@ -703,6 +703,7 @@ class GestureControlAccessibilityService : AccessibilityService() {
                 ActionDispatcher.setCursorMapping(prefs.effectiveCursorGain, prefs.sitBackMode)
                 ActionDispatcher.setInvertScrollDirection(prefs.invertScrollDirection)
                 gestureDetector?.updateSwipeRequiresOpenHand(prefs.swipeRequiresOpenHand)
+                gestureDetector?.updatePalmHomeEnabled(prefs.palmHomeEnabled)
                 gazeCalibration = com.aircontrol.tracking.GazeCalibration.fromString(prefs.gazeCalibration)
 
                 // Fix A5: push the persisted personalized gaze model into the
@@ -1713,11 +1714,14 @@ class GestureControlAccessibilityService : AccessibilityService() {
             leadMs = profile.leadMs,
             deadZoneNormalized = profile.deadZoneNormalized,
         )
+        // Gaze is far noisier than a hand landmark, so it keeps its own heavy smoothing and a
+        // fixation lock. It must never inherit the hand profile (high beta + lead made the
+        // gaze dot shake and overshoot). The slider only nudges the gaze cutoff a little.
         gazeCursorSmoother.updateParams(
-            minCutoff = (profile.minCutoff * sliderFactor * 1.05f).coerceIn(MIN_SMOOTHING_CUTOFF, MAX_SMOOTHING_CUTOFF),
-            beta = profile.beta * 1.1f,
-            leadMs = profile.leadMs * 0.75f,
-            deadZoneNormalized = profile.deadZoneNormalized,
+            minCutoff = (GAZE_SMOOTHER_MIN_CUTOFF * sliderFactor).coerceIn(0.2f, 1.2f),
+            beta = GAZE_SMOOTHER_BETA,
+            leadMs = 0f,
+            deadZoneNormalized = GAZE_FIXATION_DEAD_ZONE,
         )
     }
 
@@ -2225,11 +2229,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
         private const val CURSOR_FREEZE_MS_PINCH = 350L
 
         // Fast, lag-free cursor tracking with crisp jitter damping
-        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.35f
-        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 16.0f
+        private const val DEFAULT_CURSOR_SMOOTHER_MIN_CUTOFF = 1.1f
+        private const val DEFAULT_CURSOR_SMOOTHER_BETA = 3.5f
 
         // Smoothing slider range (minCutoff in Hz). Higher cutoff = less lag.
-        private const val MIN_SMOOTHING_CUTOFF = 0.9f
+        private const val MIN_SMOOTHING_CUTOFF = 0.5f
         private const val MAX_SMOOTHING_CUTOFF = 4.0f
 
         // Camera watchdog / retry policy (Fix A-1, A-2).
@@ -2250,8 +2254,11 @@ class GestureControlAccessibilityService : AccessibilityService() {
 
         // Fix E1: gaze One Euro constants — velocity-adaptive with zero lag during saccades
         // and rock-solid jitter suppression when resting on a UI element.
-        private const val GAZE_SMOOTHER_MIN_CUTOFF = 1.4f
-        private const val GAZE_SMOOTHER_BETA = 18.0f
+        private const val GAZE_SMOOTHER_MIN_CUTOFF = 0.5f
+        private const val GAZE_SMOOTHER_BETA = 1.5f
+        // Fixation lock radius (normalized). The dot stays still while the eyes rest on a target
+        // and unlocks once gaze moves ~2x this distance.
+        private const val GAZE_FIXATION_DEAD_ZONE = 0.008f
 
         // Fix A6: consecutive missed gaze frames tolerated before the dot hides.
         private const val GAZE_HIDE_MISS_FRAMES = 4

@@ -442,7 +442,7 @@
     <string name="profile_instant">Instant</string>
     <string name="profile_balanced">Balanced</string>
     <string name="profile_precision">Precision</string>
-    <string name="profile_instant_desc">Predictive velocity lead + direct VSYNC lock for minimal tracking lag</string>
+    <string name="profile_instant_desc">Light smoothing + small velocity lead for fast movement</string>
     <string name="profile_balanced_desc">Adaptive One Euro filtering + VSYNC sub-frame glide</string>
     <string name="profile_precision_desc">Maximum stillness stabilization for dense micro-targets</string>
 

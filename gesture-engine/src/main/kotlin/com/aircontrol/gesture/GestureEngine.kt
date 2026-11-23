@@ -177,6 +177,13 @@ class GestureEngine(
         secondarySlot?.updateSwipeRequiresOpenHand(requiresOpenHand)
     }
 
+    fun updatePalmHomeEnabled(enabled: Boolean) {
+        if (config.palmHomeEnabled == enabled) return
+        config = config.copy(palmHomeEnabled = enabled)
+        if (!enabled) resetPalmTracking()
+        secondarySlot?.updatePalmHomeEnabled(enabled)
+    }
+
     fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {
         val ratio = if (handSizeMm > 0f && pinchDistanceMm > 0f) pinchDistanceMm / handSizeMm else null
         val newConfig = config.copy(calibratedPinchRatio = ratio)
@@ -473,6 +480,12 @@ class GestureEngine(
     }
 
     suspend fun processFrameSuspending(input: HandInput) {
+        if (input.isDetected && input.trackId != 0) {
+            // Keep slot ownership in sync with the single-hand path. Otherwise a later
+            // multi-hand frame sees the same hand as "unassigned" and resets its gesture state.
+            primarySlotTrackId = input.trackId
+            primarySlotHandedness = input.handedness
+        }
         processSingleSlotSuspending(input)
         if (input.isDetected) {
             val tid = if (input.trackId != 0) input.trackId else 1
@@ -620,7 +633,7 @@ class GestureEngine(
 
         processPinch(input, timestampMs, allowEntry = !lowConfidence)
 
-        if (transition.newState == GestureEngineState.ARMED && input.isDetected) {
+        if (config.palmHomeEnabled && transition.newState == GestureEngineState.ARMED && input.isDetected) {
             if (pose == Pose.OPEN_PALM) {
                 val travel = if (palmHoldAnchorX >= 0f) {
                     maxOf(kotlin.math.abs(lastPalmX - palmHoldAnchorX), kotlin.math.abs(lastPalmY - palmHoldAnchorY))

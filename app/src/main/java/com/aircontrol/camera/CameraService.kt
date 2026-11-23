@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import com.aircontrol.runtime.StageLog
@@ -96,7 +97,7 @@ class CameraService : LifecycleService() {
         private const val WATCHDOG_PERIOD_MS = 3_000L
 
         /** Fluid up-to-60 FPS analysis rate while eye tracking is active for ultra-low-latency gaze. */
-        private const val EYE_MODE_FPS_CAP = 60
+        private const val EYE_MODE_FPS_CAP = 30
 
         /** After a tracker is found missing, retry every N ticks. */
         private const val TRACKER_RETRY_TICKS = 3
@@ -156,7 +157,21 @@ class CameraService : LifecycleService() {
         }
 
         fun resetState() = publishState(ServiceState())
+
+        // Service-instance ownership. Android keeps at most one CameraService
+        // instance alive, but the previous instance's asynchronous teardown
+        // (tracker close, executor drain) can still be running when the next
+        // instance starts. Without these guards that late teardown closed the
+        // Hilt-singleton trackers the NEW session had just initialized and
+        // published a STOPPED state over the new RUNNING state, which made the
+        // analyzer drop every frame ("service is on but nothing works").
+        private val instanceCounter = java.util.concurrent.atomic.AtomicLong(0L)
+        @Volatile private var activeInstanceId: Long = 0L
+        @Volatile private var pendingTeardown: kotlinx.coroutines.Job? = null
+        private const val TEARDOWN_WAIT_MS = 3_000L
     }
+
+    private var instanceId: Long = 0L
 
     // Dependencies
     private lateinit var handTracker: HandTracker
@@ -400,6 +415,8 @@ class CameraService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        instanceId = instanceCounter.incrementAndGet()
+        activeInstanceId = instanceId
 
         StageLog.success(StageLog.Stage.SERVICE_CREATE, STAGE_COMPONENT, "pid=${android.os.Process.myPid()}")
         val app = applicationContext as? com.aircontrol.AirControlApp
@@ -507,7 +524,7 @@ class CameraService : LifecycleService() {
                     ACTION_STOP_AND_DISABLE -> {
                         desiredTrackingEnabled = false
                         lifecycleGeneration++
-                        stopTrackingLocked(clearDesired = true)
+                        stopTrackingLocked(clearDesired = true, commandStartId = startId)
                         runCatching {
                             if (::settingsRepository.isInitialized) settingsRepository.updateGesturesEnabled(false)
                         }.onFailure { Timber.e(it, "Could not persist gesturesEnabled=false on stop") }
@@ -516,7 +533,7 @@ class CameraService : LifecycleService() {
                     ACTION_STOP -> {
                         desiredTrackingEnabled = false
                         lifecycleGeneration++
-                        stopTrackingLocked(clearDesired = true)
+                        stopTrackingLocked(clearDesired = true, commandStartId = startId)
                         return@launch
                     }
                     ACTION_PAUSE -> {
@@ -561,14 +578,17 @@ class CameraService : LifecycleService() {
         desiredTrackingEnabled = false
         isInForeground = false
         lifecycleGeneration++
-        publishState(ServiceState(
-            isRunning = false,
-            isPaused = false,
-            actualState = TrackingState.STOPPING,
-            desiredTrackingEnabled = false,
-            generation = lifecycleGeneration,
-            reason = "service-destroyed",
-        ))
+        val ownsSharedState = activeInstanceId == instanceId
+        if (ownsSharedState) {
+            publishState(ServiceState(
+                isRunning = false,
+                isPaused = false,
+                actualState = TrackingState.STOPPING,
+                desiredTrackingEnabled = false,
+                generation = lifecycleGeneration,
+                reason = "service-destroyed",
+            ))
+        }
         synchronized(jobsLock) {
             pipelineJobs.forEach { it.cancel() }
             pipelineJobs.clear()
@@ -594,9 +614,14 @@ class CameraService : LifecycleService() {
 
         val executor = analysisExecutor
         analysisExecutor = null
-        serviceScope.launch(Dispatchers.IO) {
-            runCatching { handTracker.close() }.onFailure { Timber.e(it, "hand tracker close on destroy failed") }
-            runCatching { faceTracker.close() }.onFailure { Timber.e(it, "face tracker close on destroy failed") }
+        val destroyedInstanceId = instanceId
+        pendingTeardown = serviceScope.launch(Dispatchers.IO) {
+            if (::handTracker.isInitialized) {
+                runCatching { handTracker.close() }.onFailure { Timber.e(it, "hand tracker close on destroy failed") }
+            }
+            if (::faceTracker.isInitialized) {
+                runCatching { faceTracker.close() }.onFailure { Timber.e(it, "face tracker close on destroy failed") }
+            }
             executor?.shutdown()
             try {
                 if (executor != null && !executor.awaitTermination(2, TimeUnit.SECONDS)) executor.shutdownNow()
@@ -607,7 +632,8 @@ class CameraService : LifecycleService() {
             // closes above release any outstanding lease first.
             frameBitmaps.drain()
             cachedMatrix = null
-            publishState(ServiceState())
+            // Only the newest instance may publish into the shared state flow.
+            if (activeInstanceId == destroyedInstanceId) publishState(ServiceState())
             serviceScope.cancel()
         }
         Timber.i("CameraService destroyed")
@@ -677,6 +703,7 @@ class CameraService : LifecycleService() {
         StageLog.success(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "generation=$generation")
 
         acceptingFrames = false
+        awaitPreviousInstanceTeardown()
         withContext(Dispatchers.Default) { handTracker.initialize() }
         if (!handTracker.isInitialized()) {
             StageLog.failure(StageLog.Stage.HAND_TRACKER_INIT, STAGE_COMPONENT, "handTracker.isInitialized()=false after initialize(); session FAILED, retry scheduled")
@@ -736,6 +763,21 @@ class CameraService : LifecycleService() {
         PerfTelemetry.recordCameraLifecycle("started", SystemClock.elapsedRealtime())
         ensureWatchdogAndMonitoring()
         registerPowerSaveReceiver()
+    }
+
+    /**
+     * Waits (bounded) for a previous service instance to finish closing the shared
+     * trackers, so its teardown cannot close the trackers this session initializes.
+     */
+    private suspend fun awaitPreviousInstanceTeardown() {
+        val teardown = pendingTeardown ?: return
+        if (teardown.isCompleted) {
+            pendingTeardown = null
+            return
+        }
+        StageLog.success(StageLog.Stage.CAMERA_INIT_FOREGROUND, STAGE_COMPONENT, "waiting for previous instance teardown")
+        withTimeoutOrNull(TEARDOWN_WAIT_MS) { teardown.join() }
+        if (pendingTeardown === teardown) pendingTeardown = null
     }
 
     /** Installs all long-lived service collectors. */
@@ -961,7 +1003,7 @@ class CameraService : LifecycleService() {
         }
     }
 
-    private suspend fun stopTrackingLocked(clearDesired: Boolean = false) {
+    private suspend fun stopTrackingLocked(clearDesired: Boolean = false, commandStartId: Int? = null) {
         val wasStopped = _state.value.actualState == TrackingState.STOPPED &&
             !cameraBound && pipelineJobs.isEmpty()
         if (wasStopped) {
@@ -973,7 +1015,7 @@ class CameraService : LifecycleService() {
                 generation = lifecycleGeneration,
             ))
             stopForegroundCompat()
-            stopSelf()
+            stopSelfForCommand(commandStartId)
             return
         }
 
@@ -1036,8 +1078,21 @@ class CameraService : LifecycleService() {
         postRecoveryFps = 0
         PerfTelemetry.recordCameraLifecycle("stopped", SystemClock.elapsedRealtime())
         stopForegroundCompat()
-        stopSelf()
+        stopSelfForCommand(commandStartId)
         Timber.i("Tracking stopped (desired=%s)", desiredTrackingEnabled)
+    }
+
+    /**
+     * Stops the service only if no newer start command arrived after the stop
+     * command. A plain stopSelf() also destroyed a START that was queued behind
+     * the STOP (rapid Stop → Start, Quick Settings tile, activity auto-resume).
+     */
+    private fun stopSelfForCommand(commandStartId: Int?) {
+        if (commandStartId == null) {
+            stopSelf()
+        } else if (!stopSelfResult(commandStartId)) {
+            Timber.i("Newer start command pending; keeping CameraService alive")
+        }
     }
 
     private fun stopForegroundCompat() {

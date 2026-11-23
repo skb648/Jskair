@@ -433,7 +433,7 @@
     <string name="profile_instant">इंस्टेंट</string>
     <string name="profile_balanced">संतुलित</string>
     <string name="profile_precision">सटीक</string>
-    <string name="profile_instant_desc">न्यूनतम ट्रैकिंग लैग के लिए प्रेडिक्टिव वेलोसिटी लीड + डायरेक्ट VSYNC लॉक</string>
+    <string name="profile_instant_desc">तेज़ मूवमेंट के लिए हल्की स्मूदिंग + छोटा वेलोसिटी लीड</string>
     <string name="profile_balanced_desc">अनुकूली One Euro फ़िल्टरिंग + VSYNC सब-फ़्रेम ग्लाइड</string>
     <string name="profile_precision_desc">छोटे लक्ष्यों के लिए अधिकतम स्थिरता</string>
 

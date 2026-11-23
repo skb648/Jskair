@@ -492,7 +492,7 @@ class SettingsRepositoryImpl @Inject constructor(
         personalizedGazeCalibration = preferences[PreferencesKeys.PERSONALIZED_GAZE_CALIBRATION] ?: "",
         cursorResponseProfile = preferences[PreferencesKeys.CURSOR_RESPONSE_PROFILE]
             ?.let { stored -> runCatching { CursorResponseProfile.valueOf(stored) }.getOrNull() }
-            ?: CursorResponseProfile.INSTANT,
+            ?: CursorResponseProfile.BALANCED,
         gpuAccelerationEnabled = preferences[PreferencesKeys.GPU_ACCELERATION_ENABLED] ?: true,
     )
 
