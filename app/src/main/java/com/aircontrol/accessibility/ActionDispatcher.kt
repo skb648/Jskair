@@ -211,6 +211,56 @@ class ActionDispatcher @Inject constructor(
             Pose.FIST to emptySet(),
         )
 
+        /**
+         * Scroll stroke that can never be read as a system navigation gesture.
+         *
+         * Root cause of "auto back / goes Home": scroll strokes started at the cursor, clamped
+         * only 6% from the edge. With the cursor near a side edge, a horizontal scroll began
+         * inside Android's Back gesture zone; near the bottom, SCROLL_UP began in the Home
+         * gesture zone. Strokes now always start in the middle of the screen.
+         * Returns [startX, startY, endX, endY] in pixels.
+         */
+        internal fun safeScrollPath(
+            x: Float,
+            y: Float,
+            dx: Float,
+            dy: Float,
+            screenWidth: Int,
+            screenHeight: Int,
+        ): FloatArray {
+            val w = screenWidth.toFloat().coerceAtLeast(1f)
+            val h = screenHeight.toFloat().coerceAtLeast(1f)
+            val startX = x.coerceIn(w * SCROLL_START_MIN_X, w * (1f - SCROLL_START_MIN_X))
+            val startY = y.coerceIn(h * SCROLL_START_MIN_Y, h * SCROLL_START_MAX_Y)
+            val endX = (startX + dx * w * 0.40f).coerceIn(w * 0.08f, w * 0.92f)
+            val endY = (startY + dy * h * 0.42f).coerceIn(h * 0.12f, h * 0.85f)
+            return floatArrayOf(startX, startY, endX, endY)
+        }
+
+        /** Moves a touch-down point out of the system Back/Home/notification gesture zones. */
+        internal fun safeGestureStart(
+            x: Float,
+            y: Float,
+            screenWidth: Int,
+            screenHeight: Int,
+            density: Float,
+        ): FloatArray {
+            val w = screenWidth.toFloat().coerceAtLeast(1f)
+            val h = screenHeight.toFloat().coerceAtLeast(1f)
+            val side = maxOf(SIDE_GESTURE_ZONE_DP * density, w * 0.06f).coerceAtMost(w * 0.25f)
+            val top = maxOf(TOP_GESTURE_ZONE_DP * density, h * 0.03f).coerceAtMost(h * 0.2f)
+            val bottom = maxOf(BOTTOM_GESTURE_ZONE_DP * density, h * 0.05f).coerceAtMost(h * 0.2f)
+            return floatArrayOf(x.coerceIn(side, w - side), y.coerceIn(top, h - bottom))
+        }
+
+        private const val SCROLL_START_MIN_X = 0.25f
+        private const val SCROLL_START_MIN_Y = 0.25f
+        private const val SCROLL_START_MAX_Y = 0.70f
+        // Android's back gesture zone is up to ~40 dp at the highest sensitivity.
+        private const val SIDE_GESTURE_ZONE_DP = 48f
+        private const val TOP_GESTURE_ZONE_DP = 32f
+        private const val BOTTOM_GESTURE_ZONE_DP = 64f
+
         fun buildDefaultMap(): ConcurrentHashMap<String, GestureAction> {
             val defaultMap = ConcurrentHashMap<String, GestureAction>()
             defaultMap[KEY_SWIPE_LEFT] = GestureAction.SCROLL_LEFT
@@ -663,18 +713,10 @@ class ActionDispatcher @Inject constructor(
         val mult = if (invertScrollDirection) -1f else 1f
         val effectiveDx = dx * mult
         val effectiveDy = dy * mult
-        val marginX = screenWidth * 0.06f
-        val marginY = screenHeight * 0.06f
-        val scrollLengthX = screenWidth * 0.40f
-        val scrollLengthY = screenHeight * 0.42f
-        val safeStartX = x.coerceIn(marginX, screenWidth - marginX)
-        val safeStartY = y.coerceIn(marginY, screenHeight - marginY)
+        val p = safeScrollPath(x, y, effectiveDx, effectiveDy, screenWidth, screenHeight)
         val path = Path().apply {
-            moveTo(safeStartX, safeStartY)
-            lineTo(
-                (safeStartX + effectiveDx * scrollLengthX).coerceIn(0f, screenWidth.toFloat()),
-                (safeStartY + effectiveDy * scrollLengthY).coerceIn(0f, screenHeight.toFloat()),
-            )
+            moveTo(p[0], p[1])
+            lineTo(p[2], p[3])
         }
         return submitGesture(
             service,
@@ -688,14 +730,18 @@ class ActionDispatcher @Inject constructor(
     private fun dispatchDrag(service: AccessibilityService, x: Float, y: Float, screenWidth: Int, screenHeight: Int): Boolean {
         wasEverDraggingThisPinch = true
         if (!isDragging) {
-            val path = Path().apply { moveTo(x.coerceAtLeast(1f), y.coerceAtLeast(1f)) }
+            // A drag that starts inside the system gesture zone is read by Android as
+            // Back (left/right edge) or Home (bottom edge). Start it just inside the zone.
+            val density = runCatching { service.resources.displayMetrics.density }.getOrDefault(2.75f)
+            val start = safeGestureStart(x, y, screenWidth, screenHeight, density)
+            val path = Path().apply { moveTo(start[0], start[1]) }
             lastDragStroke = GestureDescription.StrokeDescription(path, 0, DRAG_STEP_DURATION_MS, true)
             isDragging = submitGesture(service, GestureDescription.Builder().addStroke(lastDragStroke!!).build(), GestureAction.DRAG)
-            dragCurrentX = x
-            dragCurrentY = y
+            dragCurrentX = start[0]
+            dragCurrentY = start[1]
             pinchStartTimeMs = nowMonotonicMs()
-            pinchStartX = x
-            pinchStartY = y
+            pinchStartX = start[0]
+            pinchStartY = start[1]
             pinchIsDrag = isDragging
             return isDragging
         }

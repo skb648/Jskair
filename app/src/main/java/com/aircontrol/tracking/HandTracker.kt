@@ -98,7 +98,10 @@ class HandTrackerImpl @Inject constructor(
     override val handFrames: SharedFlow<HandFrame> = _handFrames.asSharedFlow()
 
     @Volatile private var preferredHand: Handedness = Handedness.UNKNOWN
-    @Volatile private var gpuEnabled: Boolean = true
+    // CPU by default: GPU delegates can kill the whole process inside OEM drivers
+    // (see 5a3a971). GPU is opt-in from Settings and guarded by [gpuCrashGuard].
+    @Volatile private var gpuEnabled: Boolean = false
+    private val gpuCrashGuard by lazy { GpuCrashGuard(context, "hand") }
     @Volatile private var gpuRuntimeFailed: Boolean = false
     @Volatile private var _activeDelegate: String = "UNINITIALIZED"
     override val activeDelegate: String get() = _activeDelegate
@@ -136,13 +139,15 @@ class HandTrackerImpl @Inject constructor(
             }
 
             val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric
+            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric &&
+                gpuCrashGuard.beforeGpuAttempt()
             var resolvedDelegateLabel = "CPU"
             val landmarker = if (canTryGpu) {
                 tryInitializeWithDelegate(Delegate.GPU)?.also { resolvedDelegateLabel = "GPU" }
                     ?: tryInitializeWithDelegate(Delegate.CPU)?.also {
                         resolvedDelegateLabel = "CPU_FALLBACK"
                         gpuRuntimeFailed = true
+                        gpuCrashGuard.markFailed()
                     }
             } else {
                 tryInitializeWithDelegate(Delegate.CPU)?.also {
@@ -233,6 +238,7 @@ class HandTrackerImpl @Inject constructor(
     }
 
     override fun close() {
+        runCatching { gpuCrashGuard.onGracefulClose() }
         synchronized(closeLock) {
             if (!_isInitialized && handLandmarker == null) return // idempotent
             isClosing = true
@@ -265,6 +271,7 @@ class HandTrackerImpl @Inject constructor(
         val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
         inFlight.release(completion.reservationToken)
         completion.onConsumed?.invoke()
+        if (_activeDelegate == "GPU") gpuCrashGuard.onGpuResult()
         if (isClosing) {
             return
         }
@@ -328,6 +335,7 @@ class HandTrackerImpl @Inject constructor(
         pendingConsumed.clear()?.onConsumed?.invoke()
         if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
             gpuRuntimeFailed = true
+            runCatching { gpuCrashGuard.markFailed() }
             _isInitialized = false
             com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
                 "hand-gpu-runtime-fallback",

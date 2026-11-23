@@ -449,7 +449,8 @@ class CameraService : LifecycleService() {
         analysisExecutor = Executors.newSingleThreadExecutor { r ->
             Thread({
                 runCatching {
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+                    // URGENT_DISPLAY (-8) starved the UI and system threads on mid-range phones.
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
                 }
                 r.run()
             }, "aircontrol-analysis").apply { isDaemon = true }

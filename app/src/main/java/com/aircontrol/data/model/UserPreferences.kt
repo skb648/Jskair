@@ -79,7 +79,7 @@ data class UserPreferences(
     // Zero-latency cursor motion profile (INSTANT default for zero-lag live response).
     val cursorResponseProfile: CursorResponseProfile = CursorResponseProfile.BALANCED,
     // Auto GPU hardware acceleration with safe CPU fallback.
-    val gpuAccelerationEnabled: Boolean = true,
+    val gpuAccelerationEnabled: Boolean = false,
 ) {
     /**
      * Legacy name for the smoothing slider. The stored key is `cursor_speed` for

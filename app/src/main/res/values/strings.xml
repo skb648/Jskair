@@ -447,7 +447,7 @@
     <string name="profile_precision_desc">Maximum stillness stabilization for dense micro-targets</string>
 
     <string name="settings_gpu_acceleration">Hardware GPU Acceleration</string>
-    <string name="settings_gpu_acceleration_subtitle">Run MediaPipe hand &amp; eye landmarkers on GPU with automatic CPU fallback</string>
+    <string name="settings_gpu_acceleration_subtitle">Experimental. Faster on some phones, but can crash on others. If the app closes by itself, keep this off.</string>
 
     <string name="home_telemetry_title">Live Pipeline Telemetry</string>
     <string name="home_telemetry_delegate_badge">%1$s</string>

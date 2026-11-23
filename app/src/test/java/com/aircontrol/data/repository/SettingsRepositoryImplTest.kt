@@ -344,6 +344,8 @@ class SettingsRepositoryImplTest {
     @Test
     fun `updateCursorResponseProfile and updateGpuAccelerationEnabled persist values`() = testScope.runTest {
         assertEquals(CursorResponseProfile.BALANCED, repository.userPreferences.first().cursorResponseProfile)
+        assertFalse(repository.userPreferences.first().gpuAccelerationEnabled)
+        repository.updateGpuAccelerationEnabled(true)
         assertTrue(repository.userPreferences.first().gpuAccelerationEnabled)
 
         repository.updateCursorResponseProfile(CursorResponseProfile.PRECISION)

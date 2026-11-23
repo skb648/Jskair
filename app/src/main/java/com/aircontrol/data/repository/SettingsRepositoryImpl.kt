@@ -493,7 +493,7 @@ class SettingsRepositoryImpl @Inject constructor(
         cursorResponseProfile = preferences[PreferencesKeys.CURSOR_RESPONSE_PROFILE]
             ?.let { stored -> runCatching { CursorResponseProfile.valueOf(stored) }.getOrNull() }
             ?: CursorResponseProfile.BALANCED,
-        gpuAccelerationEnabled = preferences[PreferencesKeys.GPU_ACCELERATION_ENABLED] ?: true,
+        gpuAccelerationEnabled = preferences[PreferencesKeys.GPU_ACCELERATION_ENABLED] ?: false,
     )
 
     private fun mapGestureMapConfig(preferences: Preferences): GestureMapConfig {
