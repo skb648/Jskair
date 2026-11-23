@@ -104,7 +104,10 @@ class FaceTrackerImpl @Inject constructor(
     )
     override val gazeObservations: SharedFlow<GazeObservation> = _gazeObservations.asSharedFlow()
 
-    @Volatile private var gpuEnabled: Boolean = true
+    // CPU by default: GPU delegates can kill the whole process inside OEM drivers
+    // (see 5a3a971). GPU is opt-in from Settings and guarded by [gpuCrashGuard].
+    @Volatile private var gpuEnabled: Boolean = false
+    private val gpuCrashGuard by lazy { GpuCrashGuard(context, "face") }
     @Volatile private var gpuRuntimeFailed: Boolean = false
     @Volatile private var _activeDelegate: String = "UNINITIALIZED"
     override val activeDelegate: String get() = _activeDelegate
@@ -139,13 +142,15 @@ class FaceTrackerImpl @Inject constructor(
             // isClosing stays true after close so late MediaPipe callbacks are inert.
             isClosing = false
             val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric
+            val canTryGpu = gpuEnabled && !gpuRuntimeFailed && !isRobolectric &&
+                gpuCrashGuard.beforeGpuAttempt()
             var resolvedDelegateLabel = "CPU"
             val landmarker = if (canTryGpu) {
                 tryInitializeWithDelegate(Delegate.GPU)?.also { resolvedDelegateLabel = "GPU" }
                     ?: tryInitializeWithDelegate(Delegate.CPU)?.also {
                         resolvedDelegateLabel = "CPU_FALLBACK"
                         gpuRuntimeFailed = true
+                        gpuCrashGuard.markFailed()
                     }
             } else {
                 tryInitializeWithDelegate(Delegate.CPU)?.also {
@@ -248,6 +253,7 @@ class FaceTrackerImpl @Inject constructor(
     }
 
     override fun close() {
+        runCatching { gpuCrashGuard.onGracefulClose() }
         // Perf audit P7: no unconditional 200 ms latch wait — MediaPipe's own
         // close() drains the graph, and the lock keeps submissions out.
         synchronized(closeLock) {
@@ -291,6 +297,7 @@ class FaceTrackerImpl @Inject constructor(
         val completion = pendingConsumed.takeForTimestamp(resultTimestampMs) ?: return
         inFlight.release(completion.reservationToken)
         completion.onConsumed?.invoke()
+        if (_activeDelegate == "GPU") gpuCrashGuard.onGpuResult()
         if (isClosing || !_isInitialized) {
             return
         }
@@ -612,6 +619,7 @@ class FaceTrackerImpl @Inject constructor(
         pendingConsumed.clear()?.onConsumed?.invoke()
         if (delegate == Delegate.GPU && !gpuRuntimeFailed) {
             gpuRuntimeFailed = true
+            runCatching { gpuCrashGuard.markFailed() }
             _isInitialized = false
             com.aircontrol.runtime.PerfTelemetry.recordTrackerEvent(
                 "face-gpu-runtime-fallback",

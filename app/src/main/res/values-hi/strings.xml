@@ -433,12 +433,12 @@
     <string name="profile_instant">इंस्टेंट</string>
     <string name="profile_balanced">संतुलित</string>
     <string name="profile_precision">सटीक</string>
-    <string name="profile_instant_desc">न्यूनतम ट्रैकिंग लैग के लिए प्रेडिक्टिव वेलोसिटी लीड + डायरेक्ट VSYNC लॉक</string>
+    <string name="profile_instant_desc">तेज़ मूवमेंट के लिए हल्की स्मूदिंग + छोटा वेलोसिटी लीड</string>
     <string name="profile_balanced_desc">अनुकूली One Euro फ़िल्टरिंग + VSYNC सब-फ़्रेम ग्लाइड</string>
     <string name="profile_precision_desc">छोटे लक्ष्यों के लिए अधिकतम स्थिरता</string>
 
     <string name="settings_gpu_acceleration">हार्डवेयर GPU एक्सेलेरेशन</string>
-    <string name="settings_gpu_acceleration_subtitle">स्वचालित CPU फ़ॉलबैक के साथ GPU पर MediaPipe हैंड और आई लैंडमार्कर चलाएँ</string>
+    <string name="settings_gpu_acceleration_subtitle">प्रयोगात्मक। कुछ फ़ोन पर तेज़, लेकिन कुछ पर ऐप क्रैश हो सकता है। अगर ऐप अपने-आप बंद हो, तो इसे बंद रखें।</string>
 
     <string name="home_telemetry_title">लाइव पाइपलाइन टेलीमेट्री</string>
     <string name="home_telemetry_delegate_badge">%1$s</string>

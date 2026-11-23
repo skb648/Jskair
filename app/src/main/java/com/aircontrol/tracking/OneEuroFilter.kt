@@ -1,7 +1,6 @@
 package com.aircontrol.tracking
 
 import kotlin.math.abs
-import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
@@ -84,30 +83,40 @@ class OneEuroFilter(
 }
 
 /**
- * Cursor-specific filter. It suppresses micro jitter while preserving intentional
- * movement, eliminates rubber-band lag via velocity-adaptive ballistic cutoff opening,
- * compensates for camera + inference latency via clamped kinematic velocity lead prediction,
- * and uses a continuous blend to exit the dead-zone without threshold step artifacts.
+ * Cursor-specific filter built on [OneEuroFilter].
+ *
+ * - One Euro smoothing per axis (low cutoff at rest, opens up with speed).
+ * - Ballistic boost: only real, fast sweeps (raw speed above [FAST_SPEED_THRESHOLD]) open the
+ *   cutoff further, so sensor noise at rest never disables smoothing.
+ * - Optional velocity lead, estimated from the *filtered* signal (not raw noise), suppressed at
+ *   low confidence and reset after frame gaps.
+ * - Stillness lock with hysteresis: after a few near-still frames the cursor locks in place and
+ *   only unlocks once the filtered point leaves a radius larger than the dead zone. This removes
+ *   rest tremor without adding lag to normal motion.
  */
 class CursorSmoother(
     minCutoff: Float = 1.1f,
-    beta: Float = 12.0f,
+    beta: Float = 3.0f,
     leadMs: Float = 0f,
     deadZoneNormalized: Float = DEFAULT_DEAD_ZONE_NORMALIZED,
 ) {
     private var baseMinCutoff: Float = minCutoff
     private var baseBeta: Float = beta
     private var leadTimeSec: Float = (leadMs / 1000f).coerceIn(0f, MAX_LEAD_TIME_SEC)
-    private var activeDeadZone: Float = deadZoneNormalized.coerceIn(0.0001f, 0.005f)
+    private var activeDeadZone: Float = deadZoneNormalized.coerceIn(MIN_DEAD_ZONE, MAX_DEAD_ZONE)
     private val xFilter = OneEuroFilter(baseMinCutoff, baseBeta)
     private val yFilter = OneEuroFilter(baseMinCutoff, baseBeta)
     private var lastOutputX: Float? = null
     private var lastOutputY: Float? = null
     private var lastRawX: Float? = null
     private var lastRawY: Float? = null
+    private var lastBaseX: Float? = null
+    private var lastBaseY: Float? = null
     private var velX: Float = 0f
     private var velY: Float = 0f
     private var lastTimestampMs: Long? = null
+    private var resting: Boolean = false
+    private var stillFrames: Int = 0
 
     fun filter(
         x: Float,
@@ -119,45 +128,36 @@ class CursorSmoother(
         val inputY = y.coerceIn(0f, 1f)
         val clampedConfidence = confidence.coerceIn(0f, 1f)
 
-        // Ballistic boost + kinematic velocity estimation
         val prevTime = lastTimestampMs
-        val oldX = lastOutputX
-        val oldY = lastOutputY
         val prevRawX = lastRawX
         val prevRawY = lastRawY
-        if (prevTime != null && oldX != null && oldY != null) {
+        var dtSec = 0f
+        if (prevTime != null && prevRawX != null && prevRawY != null) {
             val deltaMs = timestampMs - prevTime
             if (deltaMs <= 0L || deltaMs > GAP_RESET_THRESHOLD_MS) {
-                // Frame gap or out-of-order sample: reset velocity so a dropout never produces a prediction spike.
+                // Frame gap or out-of-order sample: never extrapolate across a dropout.
                 velX = 0f
                 velY = 0f
+                lastBaseX = null
+                lastBaseY = null
                 xFilter.updateParams(baseMinCutoff, baseBeta)
                 yFilter.updateParams(baseMinCutoff, baseBeta)
             } else {
-                val dt = (deltaMs / 1000f).coerceIn(0.001f, 0.1f)
-                val dx = inputX - oldX
-                val dy = inputY - oldY
-                val rawDist = sqrt(dx * dx + dy * dy)
-                val speed = rawDist / dt
-                if (speed > FAST_SPEED_THRESHOLD && clampedConfidence >= MIN_CONFIDENCE_FOR_PREDICTION) {
-                    val boost = (speed - FAST_SPEED_THRESHOLD) * BALLISTIC_BOOST_FACTOR
-                    xFilter.updateParams(baseMinCutoff + boost, baseBeta)
-                    yFilter.updateParams(baseMinCutoff + boost, baseBeta)
+                dtSec = (deltaMs / 1000f).coerceIn(0.001f, 0.1f)
+                val dx = inputX - prevRawX
+                val dy = inputY - prevRawY
+                val rawSpeed = sqrt(dx * dx + dy * dy) / dtSec
+                val cutoff = if (rawSpeed > FAST_SPEED_THRESHOLD &&
+                    clampedConfidence >= MIN_CONFIDENCE_FOR_PREDICTION
+                ) {
+                    val boost = ((rawSpeed - FAST_SPEED_THRESHOLD) * BALLISTIC_BOOST_FACTOR)
+                        .coerceAtMost(MAX_BALLISTIC_BOOST)
+                    baseMinCutoff + boost
                 } else {
-                    xFilter.updateParams(baseMinCutoff, baseBeta)
-                    yFilter.updateParams(baseMinCutoff, baseBeta)
+                    baseMinCutoff
                 }
-
-                if (prevRawX != null && prevRawY != null) {
-                    val instVx = (inputX - prevRawX) / dt
-                    val instVy = (inputY - prevRawY) / dt
-                    // Smooth velocity estimate with fast EMA and clamp to prevent overshoot on deceleration
-                    velX = (velX * 0.35f + instVx * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
-                    velY = (velY * 0.35f + instVy * 0.65f).coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
-                    // Zero out velocity if direction reverses (prevents overshoot when stopping)
-                    if (instVx * velX <= 0f) velX = 0f
-                    if (instVy * velY <= 0f) velY = 0f
-                }
+                xFilter.updateParams(cutoff, baseBeta)
+                yFilter.updateParams(cutoff, baseBeta)
             }
         }
         lastTimestampMs = timestampMs
@@ -167,7 +167,21 @@ class CursorSmoother(
         val fxBase = xFilter.filter(inputX, timestampMs)
         val fyBase = yFilter.filter(inputY, timestampMs)
 
-        // Apply kinematic velocity lead compensation only when moving above stillness threshold AND confidence is sufficient
+        // Velocity from the filtered signal: far less noisy than raw landmarks, so the lead
+        // term no longer amplifies jitter.
+        val pbx = lastBaseX
+        val pby = lastBaseY
+        if (dtSec > 0f && pbx != null && pby != null) {
+            val instVx = (fxBase - pbx) / dtSec
+            val instVy = (fyBase - pby) / dtSec
+            velX = (velX * VELOCITY_EMA_KEEP + instVx * (1f - VELOCITY_EMA_KEEP))
+                .coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
+            velY = (velY * VELOCITY_EMA_KEEP + instVy * (1f - VELOCITY_EMA_KEEP))
+                .coerceIn(-MAX_PREDICT_VELOCITY, MAX_PREDICT_VELOCITY)
+        }
+        lastBaseX = fxBase
+        lastBaseY = fyBase
+
         val confidenceFactor = ((clampedConfidence - MIN_CONFIDENCE_FOR_PREDICTION) / 0.40f).coerceIn(0f, 1f)
         val speedNorm = sqrt(velX * velX + velY * velY)
         val leadScale = if (leadTimeSec > 0f && speedNorm > LEAD_MIN_SPEED && confidenceFactor > 0f) {
@@ -180,23 +194,26 @@ class CursorSmoother(
         val fx = (fxBase + leadDx).coerceIn(0f, 1f)
         val fy = (fyBase + leadDy).coerceIn(0f, 1f)
 
+        val oldX = lastOutputX
+        val oldY = lastOutputY
         if (oldX != null && oldY != null) {
             val dx = fx - oldX
             val dy = fy - oldY
             val distance = sqrt(dx * dx + dy * dy)
-
-            // Ultra-tight micro dead zone clamps sensor noise at pure rest
-            if (distance < activeDeadZone) return oldX to oldY
-
-            // Instant and responsive breakout: blend across a micro transition margin to prevent
-            // single-frame step artifacts, then track filter output at 100% speed without drag.
-            val excess = distance - activeDeadZone
-            val blend = (excess / (activeDeadZone * 0.5f)).coerceIn(0.0f, 1.0f)
-            val smoothX = (oldX + dx * blend).coerceIn(0f, 1f)
-            val smoothY = (oldY + dy * blend).coerceIn(0f, 1f)
-            lastOutputX = smoothX
-            lastOutputY = smoothY
-            return smoothX to smoothY
+            if (resting) {
+                // Locked: hold until the point clearly leaves the lock radius.
+                if (distance < activeDeadZone * REST_EXIT_MULTIPLIER) return oldX to oldY
+                resting = false
+                stillFrames = 0
+            } else if (distance < activeDeadZone) {
+                stillFrames++
+                if (stillFrames >= REST_ENTER_FRAMES) {
+                    resting = true
+                    return oldX to oldY
+                }
+            } else {
+                stillFrames = 0
+            }
         }
 
         lastOutputX = fx
@@ -205,7 +222,11 @@ class CursorSmoother(
     }
 
     val lastPosition: Pair<Float, Float>?
-        get() = if (lastOutputX != null && lastOutputY != null) lastOutputX!! to lastOutputY!! else null
+        get() {
+            val lx = lastOutputX
+            val ly = lastOutputY
+            return if (lx != null && ly != null) lx to ly else null
+        }
 
     fun reset() {
         xFilter.reset()
@@ -214,9 +235,13 @@ class CursorSmoother(
         lastOutputY = null
         lastRawX = null
         lastRawY = null
+        lastBaseX = null
+        lastBaseY = null
         velX = 0f
         velY = 0f
         lastTimestampMs = null
+        resting = false
+        stillFrames = 0
     }
 
     fun updateParams(
@@ -228,16 +253,21 @@ class CursorSmoother(
         this.baseMinCutoff = minCutoff
         this.baseBeta = beta
         this.leadTimeSec = (leadMs / 1000f).coerceIn(0f, MAX_LEAD_TIME_SEC)
-        this.activeDeadZone = deadZoneNormalized.coerceIn(0.0001f, 0.005f)
+        this.activeDeadZone = deadZoneNormalized.coerceIn(MIN_DEAD_ZONE, MAX_DEAD_ZONE)
         xFilter.updateParams(minCutoff, beta)
         yFilter.updateParams(minCutoff, beta)
     }
 
     companion object {
-        // Micro-deadzone ~0.6 px on a 1080p display: clamps stillness tremor without slowing motion
-        private const val DEFAULT_DEAD_ZONE_NORMALIZED = 0.0006f
-        private const val FAST_SPEED_THRESHOLD = 0.05f
-        private const val BALLISTIC_BOOST_FACTOR = 28.0f
+        private const val DEFAULT_DEAD_ZONE_NORMALIZED = 0.0015f
+        private const val MIN_DEAD_ZONE = 0.0001f
+        // Gaze needs a much larger fixation lock than the hand cursor.
+        private const val MAX_DEAD_ZONE = 0.03f
+        // Normalized screens per second. Below this, motion is treated as precise/noise.
+        private const val FAST_SPEED_THRESHOLD = 0.6f
+        private const val BALLISTIC_BOOST_FACTOR = 4.0f
+        private const val MAX_BALLISTIC_BOOST = 8.0f
+        private const val VELOCITY_EMA_KEEP = 0.5f
         private const val MAX_LEAD_TIME_SEC = 0.024f
         private const val MAX_PREDICT_VELOCITY = 2.5f
         private const val MAX_LEAD_OFFSET = 0.025f
@@ -245,5 +275,7 @@ class CursorSmoother(
         private const val LEAD_FULL_SPEED = 0.45f
         private const val GAP_RESET_THRESHOLD_MS = 120L
         private const val MIN_CONFIDENCE_FOR_PREDICTION = 0.45f
+        private const val REST_ENTER_FRAMES = 3
+        private const val REST_EXIT_MULTIPLIER = 2.0f
     }
 }

@@ -77,7 +77,7 @@ class CursorOverlay(
 
     private val hideDelayMs = 180L
     private var reducedMotion = false
-    private var directVsyncSnap = true
+    private var directVsyncSnap = false
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {

@@ -279,7 +279,7 @@ class GestureEngineFixesTest {
     @Test
     fun `palm home fires only for a still presented palm`() = runTest {
         val events = mutableListOf<GestureEvent>()
-        val engine = engineWith()
+        val engine = engineWith(GestureEngineConfig(palmHomeEnabled = true))
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
 
@@ -301,9 +301,48 @@ class GestureEngineFixesTest {
     }
 
     @Test
-    fun `palm home never fires while the hand travels`() = runTest {
+    fun `palm home is off by default so holding the arming palm never goes Home`() = runTest {
         val events = mutableListOf<GestureEvent>()
         val engine = engineWith()
+        val job = launch { engine.gestureEvents.toList(events) }
+        runCurrent()
+
+        var ts = arm(engine)
+        ts += 1500L
+        repeat(70) { i ->
+            engine.processFrame(hand(ts))
+            ts += 100L
+            if (i % 3 == 0) runCurrent()
+        }
+        runCurrent()
+        assertEquals("PalmHome must not fire while disabled", 0, events.count { it is GestureEvent.PalmHome })
+        job.cancel()
+    }
+
+    @Test
+    fun `palm home can be enabled at runtime`() = runTest {
+        val events = mutableListOf<GestureEvent>()
+        val engine = engineWith()
+        engine.updatePalmHomeEnabled(true)
+        val job = launch { engine.gestureEvents.toList(events) }
+        runCurrent()
+
+        var ts = arm(engine)
+        ts += 1500L
+        repeat(70) { i ->
+            engine.processFrame(hand(ts))
+            ts += 100L
+            if (i % 3 == 0) runCurrent()
+        }
+        runCurrent()
+        assertEquals(1, events.count { it is GestureEvent.PalmHome })
+        job.cancel()
+    }
+
+    @Test
+    fun `palm home never fires while the hand travels`() = runTest {
+        val events = mutableListOf<GestureEvent>()
+        val engine = engineWith(GestureEngineConfig(palmHomeEnabled = true))
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
 
@@ -325,7 +364,7 @@ class GestureEngineFixesTest {
     @Test
     fun `palm home never fires for a hand resting far from the camera`() = runTest {
         val events = mutableListOf<GestureEvent>()
-        val engine = engineWith()
+        val engine = engineWith(GestureEngineConfig(palmHomeEnabled = true))
         val job = launch { engine.gestureEvents.toList(events) }
         runCurrent()
 

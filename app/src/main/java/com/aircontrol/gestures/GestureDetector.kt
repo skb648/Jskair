@@ -66,6 +66,8 @@ interface GestureDetector : AutoCloseable {
      * engine so that moving the cursor can never scroll the page.
      */
     fun updateSwipeRequiresOpenHand(requiresOpenHand: Boolean)
+    /** Palm → Home is opt-in; the engine never emits PalmHome while disabled. */
+    fun updatePalmHomeEnabled(enabled: Boolean) {}
 
     /**
      * Bug: Custom Gestures Not Triggering Fix — Updates the dynamic list of
@@ -244,6 +246,12 @@ class GestureDetectorImpl @Inject constructor() : GestureDetector {
             Timber.i("Updating swipe pose gate: requiresOpenHand=%s", requiresOpenHand)
             engine.updateSwipeRequiresOpenHand(requiresOpenHand)
         } finally { frameSerial.unlock() }
+    }
+
+    override fun updatePalmHomeEnabled(enabled: Boolean) {
+        frameSerial.lock()
+        try { engine.updatePalmHomeEnabled(enabled) }
+        finally { frameSerial.unlock() }
     }
 
     override fun updateCalibration(handSizeMm: Float, pinchDistanceMm: Float) {

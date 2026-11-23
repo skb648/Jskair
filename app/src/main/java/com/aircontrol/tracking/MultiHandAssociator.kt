@@ -166,7 +166,17 @@ class MultiHandAssociator {
             hand.isValid && (preferredHand == Handedness.UNKNOWN || hand.handedness == preferredHand)
         }
 
-        val selectedPrimary = selectPrimaryHand(eligibleForPrimary)
+        // Handedness labels from a mirrored front camera flicker. If the current primary hand is
+        // the only valid hand and it briefly gets the "wrong" label, keep it as primary instead
+        // of dropping it (which reset the gesture mid-pinch / mid-drag).
+        val continuityFallback = if (eligibleForPrimary.isEmpty()) {
+            val validHands = finalHands.filter { it.isValid }
+            val previousPrimary = primaryTrackId
+            validHands.singleOrNull()?.takeIf { previousPrimary != null && it.trackId == previousPrimary }
+        } else {
+            null
+        }
+        val selectedPrimary = continuityFallback ?: selectPrimaryHand(eligibleForPrimary)
         if (selectedPrimary != null) {
             primaryTrackId = selectedPrimary.trackId
             val wrist = selectedPrimary.landmarks[0]

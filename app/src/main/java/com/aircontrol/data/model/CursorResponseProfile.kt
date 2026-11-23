@@ -15,26 +15,25 @@ enum class CursorResponseProfile(
     val directVsyncSnap: Boolean,
 ) {
     /**
-     * Zero-Latency Instant: Predictive kinematic lead (~14 ms) + direct VSYNC locking + high
-     * dynamic cutoff for instantaneous, live 1:1 tracking.
+     * Instant: light smoothing and a small velocity lead (~8 ms) for fast users. Still glides on
+     * VSYNC so low camera frame rates do not look like stutter.
      */
     INSTANT(
-        minCutoff = 2.4f,
-        beta = 28.0f,
-        leadMs = 14.0f,
-        deadZoneNormalized = 0.00045f,
-        directVsyncSnap = true,
+        minCutoff = 1.6f,
+        beta = 6.0f,
+        leadMs = 8.0f,
+        deadZoneNormalized = 0.0012f,
+        directVsyncSnap = false,
     ),
 
     /**
-     * Balanced: Moderate kinematic lead (~8 ms) + 120Hz VSYNC sub-frame glide + adaptive One Euro
-     * damping for everyday use.
+     * Balanced (default): steady at rest, responsive in motion, no prediction overshoot.
      */
     BALANCED(
-        minCutoff = 1.45f,
-        beta = 18.0f,
-        leadMs = 8.0f,
-        deadZoneNormalized = 0.0006f,
+        minCutoff = 1.1f,
+        beta = 3.5f,
+        leadMs = 0.0f,
+        deadZoneNormalized = 0.0016f,
         directVsyncSnap = false,
     ),
 
@@ -42,10 +41,10 @@ enum class CursorResponseProfile(
      * Precision: Extra stillness stabilization and fine micro-target locking for dense UI controls.
      */
     PRECISION(
-        minCutoff = 0.95f,
-        beta = 12.0f,
+        minCutoff = 0.7f,
+        beta = 2.0f,
         leadMs = 0.0f,
-        deadZoneNormalized = 0.00085f,
+        deadZoneNormalized = 0.0022f,
         directVsyncSnap = false,
     ),
 }
